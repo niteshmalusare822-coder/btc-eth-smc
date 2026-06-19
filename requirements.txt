@@ -1,0 +1,6 @@
+flask
+flask-cors
+ccxt
+pandas
+numpy
+gunicorn
