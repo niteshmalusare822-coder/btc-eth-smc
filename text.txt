@@ -1,0 +1,11 @@
+btc-eth-smc/
+│
+├── app.py
+├── scanner.py
+├── requirements.txt
+├── render.yaml
+│
+└── frontend/
+    ├── index.html
+    ├── style.css
+    └── script.js
