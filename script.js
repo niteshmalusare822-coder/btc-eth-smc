@@ -39,11 +39,15 @@ function renderCoin(data) {
 async function loadDashboard() {
     try {
         const response = await fetch(API_URL);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
         const data = await response.json();
         document.getElementById("btc-content").innerHTML = renderCoin(data.btc);
         document.getElementById("eth-content").innerHTML = renderCoin(data.eth);
         document.getElementById("status").innerHTML = "Live";
     } catch (err) {
+        console.error("Fetch error:", err);   // ✅ Error log added
         document.getElementById("status").innerHTML = "Disconnected";
     }
 }
