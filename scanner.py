@@ -301,11 +301,35 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_5m, regi
     return None, "WAIT (no aligned confluence yet)"
 
 
+# ── Simple in-memory cache for HTF bias (avoids refetching 1h/4h repeatedly) ──
+import time as _time
+_HTF_CACHE = {}
+_HTF_CACHE_TTL = 60  # seconds
+
+def _get_htf_bias_cached(symbol):
+    now = _time.time()
+    cached = _HTF_CACHE.get(symbol)
+    if cached and (now - cached["ts"]) < _HTF_CACHE_TTL:
+        return cached["bias"]
+
+    htf_bias = "NEUTRAL"
+    df_1h, _ = fetch_ohlcv_failover(symbol, "1h", CONFIG['LIMIT'])
+    df_4h, _ = fetch_ohlcv_failover(symbol, "4h", CONFIG['LIMIT'])
+    if df_1h is not None and df_4h is not None:
+        snap_1h = analyze_timeframe(df_1h)
+        snap_4h = analyze_timeframe(df_4h)
+        htf_bias = get_htf_bias(snap_1h, snap_4h)
+
+    _HTF_CACHE[symbol] = {"bias": htf_bias, "ts": now}
+    return htf_bias
+
+
 # ── PUBLIC ENTRY POINT — called by app.py ───────────────
 def analyze(symbol, timeframe="5m"):
     """
     Returns a signal dict for the dashboard.
     Uses SMC structure + regime filter + multi-timeframe scoring.
+    HTF (1h/4h) bias is cached per symbol for 60s to avoid redundant fetches.
     """
     df_entry, ex_id = fetch_ohlcv_failover(symbol, timeframe, CONFIG['LIMIT'])
     if df_entry is None:
@@ -315,14 +339,8 @@ def analyze(symbol, timeframe="5m"):
     price = float(snap_entry["price"])
     rsi_now = float(snap_entry["rsi"]) if not pd.isna(snap_entry["rsi"]) else None
 
-    # Higher timeframe bias (1h + 4h) — best-effort, skip if unavailable
-    htf_bias = "NEUTRAL"
-    df_1h, _ = fetch_ohlcv_failover(symbol, "1h", CONFIG['LIMIT'])
-    df_4h, _ = fetch_ohlcv_failover(symbol, "4h", CONFIG['LIMIT'])
-    if df_1h is not None and df_4h is not None:
-        snap_1h = analyze_timeframe(df_1h)
-        snap_4h = analyze_timeframe(df_4h)
-        htf_bias = get_htf_bias(snap_1h, snap_4h)
+    # Higher timeframe bias — cached per symbol, refreshed every 60s
+    htf_bias = _get_htf_bias_cached(symbol)
 
     buy_score, sell_score = get_ltf_scores(snap_entry, snap_entry)
 
