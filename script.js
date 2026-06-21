@@ -1,72 +1,52 @@
 const API_URL = "https://crypto-scanner-api-xnwd.onrender.com/api/dashboard";
 
-
-function signalClass(signal){
-
-if(signal==="BUY")
-    return "signal-buy";
-if(signal==="SELL")
-    return "signal-sell";
-return "signal-wait";
-
+function signalClass(signal) {
+    if (signal === "BUY") return "signal-buy";
+    if (signal === "SELL") return "signal-sell";
+    return "signal-wait";
 }
 
-function renderCoin(data){
+function renderCoin(data) {
+    let html = "";
+    for (const tf in data) {
+        const d = data[tf];
 
-let html = "";
-for(const tf in data){
-    html += `
-    <div class="timeframe">
-        <h3>${tf}</h3>
-        <p>
-        Price:
-        $${data[tf].price}
-        </p>
-        <p>
-        RSI:
-        ${data[tf].rsi}
-        </p>
-        <p class="${signalClass(data[tf].signal)}">
-        ${data[tf].signal}
-        </p>
-    </div>
-    `;
-}
-return html;
+        if (d.error) {
+            html += `
+            <div class="timeframe">
+                <h3>${tf}</h3>
+                <p class="signal-wait">No data</p>
+            </div>
+            `;
+            continue;
+        }
 
-}
-
-async function loadDashboard(){
-
-try{
-    const response =
-    await fetch(API_URL);
-    const data =
-    await response.json();
-    document.getElementById(
-        "btc-content"
-    ).innerHTML =
-    renderCoin(data.btc);
-    document.getElementById(
-        "eth-content"
-    ).innerHTML =
-    renderCoin(data.eth);
-    document.getElementById(
-        "status"
-    ).innerHTML =
-    "Live";
-}catch(err){
-    document.getElementById(
-        "status"
-    ).innerHTML =
-    "Disconnected";
+        html += `
+        <div class="timeframe">
+            <h3>${tf}</h3>
+            <p>Price: $${d.price}</p>
+            <p>RSI: ${d.rsi ?? "-"}</p>
+            <p class="${signalClass(d.signal)}">${d.signal}</p>
+            <p class="meta">Bias: ${d.htf_bias ?? "-"} | Regime: ${d.regime ?? "-"}</p>
+            <p class="meta">Score: BUY ${d.buy_score ?? "-"} / SELL ${d.sell_score ?? "-"}</p>
+            <p class="reason">${d.reason ?? ""}</p>
+        </div>
+        `;
+    }
+    return html;
 }
 
+async function loadDashboard() {
+    try {
+        const response = await fetch(API_URL);
+        const data = await response.json();
+        document.getElementById("btc-content").innerHTML = renderCoin(data.btc);
+        document.getElementById("eth-content").innerHTML = renderCoin(data.eth);
+        document.getElementById("status").innerHTML = "Live";
+    } catch (err) {
+        document.getElementById("status").innerHTML = "Disconnected";
+    }
 }
 
 loadDashboard();
-
-setInterval(
-loadDashboard,
-10000
-);
+setInterval(loadDashboard, 15000);
