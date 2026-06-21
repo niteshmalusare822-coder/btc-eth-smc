@@ -1,53 +1,66 @@
-body{
-margin:0;
-background:#111;
-color:white;
-font-family:Arial, sans-serif;
+body {
+    margin: 0;
+    background: #111;
+    color: white;
+    font-family: Arial, sans-serif;
 }
 
-header{
-padding:20px;
-text-align:center;
-background:#1a1a1a;
+header {
+    padding: 20px;
+    text-align: center;
+    background: #1a1a1a;
 }
 
-.grid{
-display:grid;
-grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
-gap:20px;
-padding:20px;
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 20px;
+    padding: 20px;
 }
 
-.coin-card{
-background:#1f1f1f;
-border-radius:15px;
-padding:20px;
+.coin-card {
+    background: #1f1f1f;
+    border-radius: 15px;
+    padding: 20px;
 }
 
-.signal-buy{
-color:#00ff66;
-font-weight:bold;
+.signal-buy {
+    color: #00ff66;
+    font-weight: bold;
 }
 
-.signal-sell{
-color:#ff4444;
-font-weight:bold;
+.signal-sell {
+    color: #ff4444;
+    font-weight: bold;
 }
 
-.signal-wait{
-color:#ffaa00;
-font-weight:bold;
+.signal-wait {
+    color: #ffaa00;
+    font-weight: bold;
 }
 
-.timeframe{
-margin:10px 0;
-padding:10px;
-background:#2a2a2a;
-border-radius:10px;
+.timeframe {
+    margin: 10px 0;
+    padding: 10px;
+    background: #2a2a2a;
+    border-radius: 10px;
 }
 
-.chart{
-width:100%;
-height:500px;
-border:none;
+.meta {
+    font-size: 12px;
+    color: #aaaaaa;
+    margin: 4px 0;
+}
+
+.reason {
+    font-size: 12px;
+    color: #888888;
+    font-style: italic;
+    margin: 4px 0 0 0;
+}
+
+.chart {
+    width: 100%;
+    height: 500px;
+    border: none;
 }
