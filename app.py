@@ -4,7 +4,15 @@ from scanner import analyze
 
 app = Flask(__name__)
 
-CORS(app)
+# CORS configuration
+CORS(app, resources={r"/api/*": {"origins": "https://niteshmalusare822-coder.github.io"}})
+
+# ✅ Add headers after every response
+@app.after_request
+def add_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 @app.route("/")
 def home():
