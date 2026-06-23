@@ -1,6 +1,6 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
-from scanner import analyze, run_backtest
+from scanner import analyze, run_backtest, run_backtest_full
 import math
 
 app = Flask(__name__)
@@ -61,6 +61,15 @@ def dashboard():
 
 # ── Backtest endpoint ────────────────────────────────────
 @app.route("/api/backtest/<symbol>/<timeframe>")
+@app.route("/api/backtest-full/<symbol>/<timeframe>")
+   def backtest_full(symbol, timeframe):
+       try:
+           sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT"}
+           full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
+           result = run_backtest_full(full_symbol, timeframe)
+           return jsonify(sanitize(result))
+       except Exception as e:
+           return jsonify({"error": str(e)}), 500
 def backtest(symbol, timeframe):
     """
     Usage:
