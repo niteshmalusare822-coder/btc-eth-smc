@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BTC ETH SMC Dashboard</title>
+<link rel="stylesheet" href="style.css?v=3">
+<style>
+  /* Backtest section styles */
+  .backtest-section {
+    max-width: 900px;
+    margin: 24px auto;
+    background: #1e1e2e;
+    border-radius: 12px;
+    padding: 16px;
+    border: 1px solid #333;
+  }
+  .backtest-section h3 {
+    color: #fff;
+    margin-bottom: 12px;
+    font-size: 1.1em;
+  }
+  .backtest-controls {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .backtest-controls select,
+  .backtest-controls button {
+    padding: 8px 16px;
+    border-radius: 8px;
+    border: 1px solid #444;
+    background: #2a2a3e;
+    color: #fff;
+    font-size: 0.95em;
+    cursor: pointer;
+  }
+  .backtest-controls button {
+    background: #5c6bc0;
+    border: none;
+    font-weight: bold;
+  }
+  .backtest-controls button:hover {
+    background: #7986cb;
+  }
+  #backtest-result {
+    background: #12121e;
+    border-radius: 8px;
+    padding: 12px;
+    color: #ccc;
+    font-size: 0.9em;
+    min-height: 48px;
+  }
+</style>
+</head>
+<body>
+<header>
+    <h1>BTC & ETH Futures Dashboard</h1>
+    <div id="status">Connecting...</div>
+</header>
+
+<!-- Main signal grid -->
+<div class="grid">
+  <div class="coin-card">
+    <h2>BTC/USDT</h2>
+    <div id="btc-content"></div>
+  </div>
+  <div class="coin-card">
+    <h2>ETH/USDT</h2>
+    <div id="eth-content"></div>
+  </div>
+</div>
+
+<!-- Backtest Section -->
+<div class="backtest-section">
+  <h3>🧪 Backtest — Last 300 Candles</h3>
+  <div class="backtest-controls">
+    <select id="bt-symbol">
+      <option value="BTC">BTC</option>
+      <option value="ETH">ETH</option>
+    </select>
+    <select id="bt-tf">
+      <option value="1m">1m (Scalping)</option>
+      <option value="5m" selected>5m (Scalping)</option>
+      <option value="15m">15m (Swing)</option>
+    </select>
+    <button onclick="runBacktest(
+      document.getElementById('bt-symbol').value,
+      document.getElementById('bt-tf').value
+    )">▶ Run Backtest</button>
+  </div>
+  <div id="backtest-result">
+    👆 Symbol aur timeframe choose karo, phir Run karo
+  </div>
+</div>
+
+<!-- TradingView Chart -->
+<iframe
+  src="https://s.tradingview.com/widgetembed/?symbol=MEXC:BTCUSDT&interval=5"
+  class="chart">
+</iframe>
+
+<script src="script.js?v=3"></script>
+</body>
+</html>
