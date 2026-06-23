@@ -82,6 +82,7 @@ async function runBacktest(symbol, timeframe) {
                ✅ Wins: <b style="color:#00e676">${data.wins}</b> &nbsp;|&nbsp;
                ❌ Losses: <b style="color:#ff4d4d">${data.losses}</b></p>
             <p>Win Rate: <b style="color:${wrColor};font-size:1.2em">${data.win_rate}%</b></p>
+            <p>Profit Factor: <b>${data.profit_factor ?? "-"}</b> &nbsp;|&nbsp; Expectancy: <b style="color:${data.expectancy_pct >= 0 ? '#00e676' : '#ff4d4d'}">${data.expectancy_pct}%</b> &nbsp;|&nbsp; Avg R:R: <b>${data.avg_rr ?? "-"}</b></p>
             <hr style="border-color:#444;margin:8px 0;">
             <p><b>Recent Trades:</b></p>
             ${trades || "<p>No trades found</p>"}
