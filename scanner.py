@@ -26,7 +26,7 @@ CONFIG = {
     'SL_ATR_MULT': 0.75,           # Tight SL for scalping (2:1 RR)
     'RSI_OVERBOUGHT': 75,
     'RSI_OVERSOLD': 25,
-    'BACKTEST_CANDLES': 300,       # Backtest window
+    'BACKTEST_CANDLES': 1500,      # Backtest window — bada sample size      # Backtest window
     'BACKTEST_OUTCOME_WINDOW': 20, # Kitne candles aage dekhe TP/SL ke liye
 }
 
