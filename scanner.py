@@ -540,3 +540,214 @@ def analyze(symbol, timeframe="1m"):
         "sl":         sl,
         "atr":        round(atr_now, 4) if atr_now else None,
     }
+
+# ── FULL MULTI-TIMEFRAME BACKTEST (mirrors live analyze() logic) ──────
+def _vectorized_regime(df):
+    """Per-row regime classification (vectorized version of detect_market_regime)."""
+    atr    = calc_atr(df, CONFIG['ATR_PERIOD'])
+    atr_ma = atr.rolling(CONFIG['ATR_MA_PERIOD']).mean()
+    ci     = calc_choppiness_index(df, CONFIG['CHOPPINESS_PERIOD'])
+    adx    = calc_adx(df, CONFIG['ADX_PERIOD'])
+
+    atr_ratio = atr / atr_ma.replace(0, np.nan)
+    is_compressed = atr_ratio < CONFIG['ATR_COMPRESSION_RATIO']
+    is_choppy     = ci > CONFIG['CHOPPINESS_TREND_MAX']
+    is_trending   = adx >= CONFIG['ADX_MIN']
+
+    regime = pd.Series("RANGING", index=df.index)
+    regime[is_trending & ~is_choppy & ~is_compressed] = "TRENDING"
+    regime[is_compressed] = "COMPRESSION"
+    return regime, ci, adx
+
+
+def _build_tf_features(df):
+    """Compute all per-row indicators/events needed for scoring, vectorized."""
+    df = add_indicators_vectorized(df)
+    df = detect_candle_patterns_vectorized(df)
+    df = detect_pro_divergence_vectorized(df)
+    df = detect_structure_live_pro(df, CONFIG['SWING_LOOKBACK'])
+    regime, ci, adx_full = _vectorized_regime(df)
+    df["regime_label"] = regime
+    return df
+
+
+def _htf_bias_series(df15, df1h):
+    """Vectorized version of get_htf_bias, per-row, for merge_asof."""
+    def score_component(df, weight):
+        s = pd.Series(0.0, index=df.index)
+        s += np.where(df["structure_trend"] == "BULL", weight,
+              np.where(df["structure_trend"] == "BEAR", -weight, 0.0))
+        s += np.where(df["ema5"] > df["ema20"], weight*0.5, -weight*0.5)
+        s += np.where(df["rsi"] > 55, weight*0.3, np.where(df["rsi"] < 45, -weight*0.3, 0.0))
+        return s
+
+    s15 = score_component(df15, 1.0).rename("s15")
+    s1h = score_component(df1h, 1.5).rename("s1h")
+
+    out15 = pd.DataFrame({"time": df15.index, "s15": s15.values})
+    out1h = pd.DataFrame({"time": df1h.index, "s1h": s1h.values})
+    merged = pd.merge_asof(out15.sort_values("time"), out1h.sort_values("time"),
+                            on="time", direction="backward")
+    merged["score"] = merged["s15"] + merged["s1h"]
+    merged["bias"] = np.where(merged["score"] >= 1.0, "BULLISH",
+                       np.where(merged["score"] <= -1.0, "BEARISH", "NEUTRAL"))
+    merged = merged.set_index("time")
+    return merged["bias"]
+
+
+def _ltf_score_series(df1m, df5m):
+    """Vectorized version of get_ltf_scores, per-row, for merge_asof."""
+    def score_component(df, w):
+        buy  = pd.Series(0.0, index=df.index)
+        sell = pd.Series(0.0, index=df.index)
+        buy  += np.where(df["pat_sig"] == "BUY",  2*w, 0.0)
+        sell += np.where(df["pat_sig"] == "SELL", 2*w, 0.0)
+        buy  += np.where(df["divergence"] == "BULL_DIV", 3*w, 0.0)
+        sell += np.where(df["divergence"] == "BEAR_DIV", 3*w, 0.0)
+        is_choch = df["structure_event"].astype(str).str.contains("CHoCH")
+        bull_evt = df["structure_event"].isin(["BOS_BULL", "CHoCH_BULL"])
+        bear_evt = df["structure_event"].isin(["BOS_BEAR", "CHoCH_BEAR"])
+        buy  += np.where(bull_evt, np.where(is_choch, 2*w, 1.5*w), 0.0)
+        sell += np.where(bear_evt, np.where(is_choch, 2*w, 1.5*w), 0.0)
+        buy  += np.where(df["close"] > df["vwap"], 0.5*w, 0.0)
+        sell += np.where(df["close"] <= df["vwap"], 0.5*w, 0.0)
+        buy  += np.where(df["ema5"] > df["ema20"], 0.5*w, 0.0)
+        sell += np.where(df["ema5"] <= df["ema20"], 0.5*w, 0.0)
+        buy  += np.where(df["rsi"] < 35, 1.0*w, 0.0)
+        sell += np.where(df["rsi"] > 65, 1.0*w, 0.0)
+        return buy, sell
+
+    b1, s1 = score_component(df1m, 1.0)
+    b5, s5 = score_component(df5m, 1.2)
+
+    out1m = pd.DataFrame({"time": df1m.index, "b1": b1.values, "s1": s1.values})
+    out5m = pd.DataFrame({"time": df5m.index, "b5": b5.values, "s5": s5.values})
+    merged = pd.merge_asof(out1m.sort_values("time"), out5m.sort_values("time"),
+                            on="time", direction="backward")
+    merged["buy_score"]  = round((merged["b1"] + merged["b5"]), 2)
+    merged["sell_score"] = round((merged["s1"] + merged["s5"]), 2)
+    merged = merged.set_index("time")
+    return merged[["buy_score", "sell_score"]]
+
+
+def run_backtest_full(symbol, entry_timeframe="15m"):
+    """
+    Backtest that mirrors the LIVE multi-timeframe strategy:
+    - HTF bias from 15m + 1h
+    - LTF score from 1m + 5m
+    - Regime/ADX/RSI filters same as decide_direction()
+    NOTE: liquidity-sweep & volume-profile(POC) terms are omitted (too
+    expensive per-bar); everything else mirrors analyze().
+    """
+    limit = CONFIG['BACKTEST_CANDLES']
+
+    df_entry, ex_id = fetch_ohlcv_failover(symbol, entry_timeframe, limit)
+    df_1m,  _ = fetch_ohlcv_failover(symbol, "1m",  limit)
+    df_5m,  _ = fetch_ohlcv_failover(symbol, "5m",  limit)
+    df_15m, _ = fetch_ohlcv_failover(symbol, "15m", limit)
+    df_1h,  _ = fetch_ohlcv_failover(symbol, "1h",  limit)
+
+    if any(x is None for x in [df_entry, df_1m, df_5m, df_15m, df_1h]):
+        return {"error": "insufficient data across timeframes"}
+
+    df_entry = _build_tf_features(df_entry)
+    df_1m    = _build_tf_features(df_1m)
+    df_5m    = _build_tf_features(df_5m)
+    df_15m   = _build_tf_features(df_15m)
+    df_1h    = _build_tf_features(df_1h)
+
+    bias_series = _htf_bias_series(df_15m, df_1h)
+    score_df    = _ltf_score_series(df_1m, df_5m)
+
+    # Align bias + scores onto entry timeframe timestamps (backward = no lookahead)
+    entry_times = pd.DataFrame({"time": df_entry.index})
+    bias_aligned = pd.merge_asof(entry_times, bias_series.rename("bias").reset_index(),
+                                  on="time", direction="backward")
+    score_aligned = pd.merge_asof(entry_times, score_df.reset_index(),
+                                   on="time", direction="backward")
+
+    df_entry = df_entry.reset_index()
+    df_entry["bias"]       = bias_aligned["bias"]
+    df_entry["buy_score"]  = score_aligned["buy_score"]
+    df_entry["sell_score"] = score_aligned["sell_score"]
+
+    closes = df_entry["close"].values
+    highs  = df_entry["high"].values
+    lows   = df_entry["low"].values
+    n      = len(df_entry)
+    WINDOW = CONFIG['BACKTEST_OUTCOME_WINDOW']
+    results = []
+
+    for i in range(60, n - WINDOW):
+        row = df_entry.iloc[i]
+        rsi, adx, atr = row["rsi"], row["adx"], row["atr"]
+        if pd.isna(adx) or adx < CONFIG['ADX_MIN']: continue
+        if pd.isna(rsi): continue
+        if rsi > CONFIG['RSI_OVERBOUGHT'] or rsi < CONFIG['RSI_OVERSOLD']: continue
+        if pd.isna(atr): continue
+
+        buy_score, sell_score = row["buy_score"], row["sell_score"]
+        if pd.isna(buy_score) or pd.isna(sell_score): continue
+
+        gap = abs(buy_score - sell_score)
+        if gap < CONFIG['SCORE_GAP_MIN']: continue
+
+        bias = row["bias"]
+        regime = row["regime_label"]
+        if regime == "RANGING": continue   # same as decide_direction's choppy block
+
+        direction = None
+        if buy_score >= CONFIG['SCORE_THRESHOLD'] and buy_score > sell_score and bias in ("BULLISH", "NEUTRAL"):
+            direction = "BUY"
+        elif sell_score >= CONFIG['SCORE_THRESHOLD'] and sell_score > buy_score and bias in ("BEARISH", "NEUTRAL"):
+            direction = "SELL"
+        if direction is None: continue
+
+        price = closes[i]
+        tp, sl = calc_tp_sl(direction, price, atr)
+        if tp is None: continue
+
+        outcome, exit_price = "OPEN", None
+        for j in range(i+1, min(i+WINDOW+1, n)):
+            fh, fl = highs[j], lows[j]
+            if direction == "BUY":
+                if fh >= tp: outcome, exit_price = "WIN", tp; break
+                if fl <= sl: outcome, exit_price = "LOSS", sl; break
+            else:
+                if fl <= tp: outcome, exit_price = "WIN", tp; break
+                if fh >= sl: outcome, exit_price = "LOSS", sl; break
+        if outcome == "OPEN": continue
+
+        pnl_pct = ((exit_price - price)/price*100 if direction == "BUY"
+                   else (price - exit_price)/price*100) - CONFIG['FEE_PCT']
+
+        results.append({
+            "time": row["timestamp"].strftime("%m-%d %H:%M") if "timestamp" in row else str(row.name),
+            "direction": direction, "entry": round(price,2), "tp": round(tp,2), "sl": round(sl,2),
+            "outcome": outcome, "pnl_pct": round(pnl_pct,4),
+        })
+
+    if not results:
+        return {"symbol": symbol, "timeframe": entry_timeframe, "total_trades": 0,
+                "win_rate": 0, "message": "No signals in this window"}
+
+    wins   = [r for r in results if r["outcome"] == "WIN"]
+    losses = [r for r in results if r["outcome"] == "LOSS"]
+    total  = len(wins) + len(losses)
+    gross_profit = sum(r["pnl_pct"] for r in wins) if wins else 0.0
+    gross_loss   = abs(sum(r["pnl_pct"] for r in losses)) if losses else 0.0
+    profit_factor = round(gross_profit/gross_loss, 2) if gross_loss > 0 else None
+    avg_win  = round(gross_profit/len(wins), 4) if wins else 0.0
+    avg_loss = round(gross_loss/len(losses), 4) if losses else 0.0
+    win_rate = round(len(wins)/total*100, 1) if total > 0 else 0
+    expectancy = round((win_rate/100*avg_win) - ((1-win_rate/100)*avg_loss), 4)
+    avg_rr = round(avg_win/avg_loss, 2) if avg_loss > 0 else None
+
+    return {
+        "symbol": symbol, "timeframe": entry_timeframe, "candles_tested": limit,
+        "total_trades": total, "wins": len(wins), "losses": len(losses),
+        "win_rate": win_rate, "profit_factor": profit_factor,
+        "expectancy_pct": expectancy, "avg_rr": avg_rr,
+        "recent_trades": results[-10:],
+        "note": "Full multi-timeframe backtest (bias+score aligned). Liquidity sweep & POC terms omitted.",
+    }
