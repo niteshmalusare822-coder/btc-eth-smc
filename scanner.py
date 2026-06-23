@@ -15,6 +15,8 @@ CONFIG = {
     'VOLUME_PROFILE_LOOKBACK': 100,
     'VOLUME_PROFILE_BINS': 24,
     'SCORE_THRESHOLD': 2.0,        # Low threshold — scalping mein zyada signals
+    'SCORE_GAP_MIN': 1.0,
+    'FEE_PCT': 0.04,
     'ATR_COMPRESSION_RATIO': 0.7,
     'ATR_MA_PERIOD': 50,
     'CHOPPINESS_PERIOD': 14,
@@ -319,30 +321,29 @@ def calc_tp_sl(direction, price, atr):
 # ── FAST BACKTEST ───────────────────────────────────────
 def run_backtest(symbol, timeframe="5m"):
     """
-    Fast vectorized backtest on last 300 candles.
-    Returns win rate, total trades, last 10 trades.
+    Vectorized backtest with richer stats:
+    win rate, profit factor, expectancy, avg R:R, last 10 trades.
     """
     df, ex_id = fetch_ohlcv_failover(symbol, timeframe, CONFIG['BACKTEST_CANDLES'])
     if df is None:
         return {"error": "no data"}
-
-    # Pre-calculate all indicators at once (vectorized — fast!)
+ 
     df = add_indicators_vectorized(df)
     df = detect_candle_patterns_vectorized(df)
     df = detect_pro_divergence_vectorized(df)
     df = detect_structure_live_pro(df, CONFIG['SWING_LOOKBACK'])
-
+ 
     closes = df["close"].values
     highs  = df["high"].values
     lows   = df["low"].values
     n      = len(df)
     results = []
     WINDOW  = CONFIG['BACKTEST_OUTCOME_WINDOW']
-
+ 
     for i in range(60, n - WINDOW):
-        rsi = df["rsi"].iloc[i]
-        adx = df["adx"].iloc[i]
-        atr = df["atr"].iloc[i]
+        rsi   = df["rsi"].iloc[i]
+        adx   = df["adx"].iloc[i]
+        atr   = df["atr"].iloc[i]
         ema5  = df["ema5"].iloc[i]
         ema20 = df["ema20"].iloc[i]
         vwap  = df["vwap"].iloc[i]
@@ -350,13 +351,12 @@ def run_backtest(symbol, timeframe="5m"):
         div   = df["divergence"].iloc[i]
         struct = df["structure_event"].iloc[i]
         price = closes[i]
-
+ 
         if pd.isna(adx) or adx < CONFIG['ADX_MIN']: continue
         if pd.isna(rsi): continue
         if rsi > CONFIG['RSI_OVERBOUGHT'] or rsi < CONFIG['RSI_OVERSOLD']: continue
         if pd.isna(atr): continue
-
-        # Quick score calculation
+ 
         buy_score, sell_score = 0.0, 0.0
         if pat == "BUY":   buy_score  += 2
         elif pat == "SELL": sell_score += 2
@@ -371,31 +371,43 @@ def run_backtest(symbol, timeframe="5m"):
         else:             sell_score += 0.5
         if rsi < 35:   buy_score  += 1.0
         elif rsi > 65: sell_score += 1.0
-
+ 
+        # ── NEW: score-gap filter — close scores get skipped (weak conviction) ──
+        gap = abs(buy_score - sell_score)
+        if gap < CONFIG['SCORE_GAP_MIN']:
+            continue
+ 
         direction = None
         if buy_score >= CONFIG['SCORE_THRESHOLD'] and buy_score > sell_score:
             direction = "BUY"
         elif sell_score >= CONFIG['SCORE_THRESHOLD'] and sell_score > buy_score:
             direction = "SELL"
         if direction is None: continue
-
+ 
         tp, sl = calc_tp_sl(direction, price, atr)
         if tp is None: continue
-
-        # Check outcome in next WINDOW candles
+ 
         outcome = "OPEN"
+        exit_price = None
         for j in range(i+1, min(i+WINDOW+1, n)):
             fh = highs[j]
             fl = lows[j]
             if direction == "BUY":
-                if fh >= tp: outcome = "WIN";  break
-                if fl <= sl: outcome = "LOSS"; break
+                if fh >= tp: outcome = "WIN";  exit_price = tp; break
+                if fl <= sl: outcome = "LOSS"; exit_price = sl; break
             else:
-                if fl <= tp: outcome = "WIN";  break
-                if fh >= sl: outcome = "LOSS"; break
-
+                if fl <= tp: outcome = "WIN";  exit_price = tp; break
+                if fh >= sl: outcome = "LOSS"; exit_price = sl; break
+ 
         if outcome == "OPEN": continue
-
+ 
+        # ── NEW: P&L in % terms, fees included ──
+        if direction == "BUY":
+            pnl_pct = (exit_price - price) / price * 100
+        else:
+            pnl_pct = (price - exit_price) / price * 100
+        pnl_pct -= CONFIG['FEE_PCT']  # round-trip fee/slippage deduction
+ 
         results.append({
             "time":      df.index[i].strftime("%m-%d %H:%M"),
             "direction": direction,
@@ -403,28 +415,44 @@ def run_backtest(symbol, timeframe="5m"):
             "tp":        round(tp, 2),
             "sl":        round(sl, 2),
             "outcome":   outcome,
+            "pnl_pct":   round(pnl_pct, 4),
         })
-
+ 
     if not results:
         return {
             "symbol": symbol, "timeframe": timeframe,
             "total_trades": 0, "win_rate": 0,
             "message": "No signals in this window"
         }
-
-    wins   = sum(1 for r in results if r["outcome"] == "WIN")
-    losses = sum(1 for r in results if r["outcome"] == "LOSS")
-    total  = wins + losses
-
+ 
+    wins   = [r for r in results if r["outcome"] == "WIN"]
+    losses = [r for r in results if r["outcome"] == "LOSS"]
+    total  = len(wins) + len(losses)
+ 
+    # ── NEW: Profit Factor, Expectancy, Avg R:R ──
+    gross_profit = sum(r["pnl_pct"] for r in wins) if wins else 0.0
+    gross_loss   = abs(sum(r["pnl_pct"] for r in losses)) if losses else 0.0
+    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
+ 
+    avg_win  = round(gross_profit / len(wins), 4) if wins else 0.0
+    avg_loss = round(gross_loss / len(losses), 4) if losses else 0.0
+    win_rate = round(len(wins) / total * 100, 1) if total > 0 else 0
+ 
+    expectancy = round((win_rate/100 * avg_win) - ((1 - win_rate/100) * avg_loss), 4)
+    avg_rr = round(avg_win / avg_loss, 2) if avg_loss > 0 else None
+ 
     return {
-        "symbol":        symbol,
-        "timeframe":     timeframe,
+        "symbol":         symbol,
+        "timeframe":      timeframe,
         "candles_tested": CONFIG['BACKTEST_CANDLES'],
-        "total_trades":  total,
-        "wins":          wins,
-        "losses":        losses,
-        "win_rate":      round(wins / total * 100, 1) if total > 0 else 0,
-        "recent_trades": results[-10:],
+        "total_trades":   total,
+        "wins":           len(wins),
+        "losses":         len(losses),
+        "win_rate":       win_rate,
+        "profit_factor":  profit_factor,   # >1.5 generally healthy
+        "expectancy_pct": expectancy,      # avg expected return per trade, fees included
+        "avg_rr":         avg_rr,          # avg win size / avg loss size
+        "recent_trades":  results[-10:],
     }
 
 
