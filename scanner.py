@@ -837,3 +837,132 @@ def run_backtest_full(symbol, entry_timeframe="15m"):
         "recent_trades": results[-10:],
         "note": "Full multi-timeframe backtest (bias+score aligned). Liquidity sweep & POC terms omitted.",
     }
+
+# ── FACTOR-ISOLATION BACKTEST ───────────────────────────
+# Tests each signal component SEPARATELY to find which ones
+# actually have edge, and which are just noise.
+
+def run_factor_backtest(symbol, timeframe="15m"):
+    """
+    Tests 5 strategies independently on the SAME data:
+    1. Liquidity Sweep only
+    2. Structure Break (BOS/CHoCH) only
+    3. Divergence only
+    4. Candle Pattern only
+    5. EMA crossover only (simple baseline for comparison)
+    Returns profit factor + win rate for each, so you can see
+    which factor actually has edge.
+    """
+    limit = CONFIG['BACKTEST_CANDLES']
+    df, ex_id = fetch_ohlcv_failover(symbol, timeframe, limit)
+    if df is None:
+        return {"error": "no data"}
+
+    df = add_indicators_vectorized(df)
+    df = detect_candle_patterns_vectorized(df)
+    df = detect_pro_divergence_vectorized(df)
+    df = detect_structure_live_pro(df, CONFIG['SWING_LOOKBACK'])
+
+    closes = df["close"].values
+    highs  = df["high"].values
+    lows   = df["low"].values
+    n      = len(df)
+    WINDOW = CONFIG['BACKTEST_OUTCOME_WINDOW']
+
+    def simulate(direction_fn, label):
+        """direction_fn(i) -> 'BUY' / 'SELL' / None for row i"""
+        results = []
+        for i in range(60, n - WINDOW):
+            atr = df["atr"].iloc[i]
+            if pd.isna(atr): continue
+            direction = direction_fn(i)
+            if direction is None: continue
+
+            price = closes[i]
+            tp, sl = calc_tp_sl(direction, price, atr)
+            if tp is None: continue
+
+            outcome, exit_price = "OPEN", None
+            for j in range(i+1, min(i+WINDOW+1, n)):
+                fh, fl = highs[j], lows[j]
+                if direction == "BUY":
+                    if fh >= tp: outcome, exit_price = "WIN", tp; break
+                    if fl <= sl: outcome, exit_price = "LOSS", sl; break
+                else:
+                    if fl <= tp: outcome, exit_price = "WIN", tp; break
+                    if fh >= sl: outcome, exit_price = "LOSS", sl; break
+            if outcome == "OPEN": continue
+
+            pnl_pct = ((exit_price - price)/price*100 if direction == "BUY"
+                       else (price - exit_price)/price*100) - CONFIG['FEE_PCT']
+            results.append({"outcome": outcome, "pnl_pct": pnl_pct})
+
+        wins   = [r for r in results if r["outcome"] == "WIN"]
+        losses = [r for r in results if r["outcome"] == "LOSS"]
+        total  = len(wins) + len(losses)
+        if total == 0:
+            return {"label": label, "total_trades": 0, "note": "no signals"}
+
+        gross_profit = sum(r["pnl_pct"] for r in wins) if wins else 0.0
+        gross_loss   = abs(sum(r["pnl_pct"] for r in losses)) if losses else 0.0
+        profit_factor = round(gross_profit/gross_loss, 2) if gross_loss > 0 else None
+        win_rate = round(len(wins)/total*100, 1)
+        avg_win  = round(gross_profit/len(wins), 4) if wins else 0.0
+        avg_loss = round(gross_loss/len(losses), 4) if losses else 0.0
+        expectancy = round((win_rate/100*avg_win) - ((1-win_rate/100)*avg_loss), 4)
+
+        return {
+            "label": label, "total_trades": total, "wins": len(wins), "losses": len(losses),
+            "win_rate": win_rate, "profit_factor": profit_factor, "expectancy_pct": expectancy,
+        }
+
+    # ── Factor 1: Liquidity Sweep only ──
+    def f_sweep(i):
+        data = df.iloc[max(0, i-CONFIG['LIQUIDITY_SWEEP_LOOKBACK']):i+1]
+        if len(data) < 5: return None
+        last = data.iloc[-1]
+        p_highs, p_lows = data["high"].iloc[:-1], data["low"].iloc[:-1]
+        if last["high"] > p_highs.max() and last["close"] < p_highs.max(): return "SELL"
+        if last["low"] < p_lows.min() and last["close"] > p_lows.min(): return "BUY"
+        return None
+
+    # ── Factor 2: Structure Break only ──
+    def f_structure(i):
+        ev = df["structure_event"].iloc[i]
+        if ev in ("BOS_BULL", "CHoCH_BULL"): return "BUY"
+        if ev in ("BOS_BEAR", "CHoCH_BEAR"): return "SELL"
+        return None
+
+    # ── Factor 3: Divergence only ──
+    def f_divergence(i):
+        d = df["divergence"].iloc[i]
+        if d == "BULL_DIV": return "BUY"
+        if d == "BEAR_DIV": return "SELL"
+        return None
+
+    # ── Factor 4: Candle Pattern only ──
+    def f_pattern(i):
+        p = df["pat_sig"].iloc[i]
+        if p == "BUY": return "BUY"
+        if p == "SELL": return "SELL"
+        return None
+
+    # ── Factor 5: Simple EMA crossover baseline (for comparison) ──
+    def f_ema_baseline(i):
+        if i < 1: return None
+        cross_up   = df["ema5"].iloc[i-1] <= df["ema20"].iloc[i-1] and df["ema5"].iloc[i] > df["ema20"].iloc[i]
+        cross_down = df["ema5"].iloc[i-1] >= df["ema20"].iloc[i-1] and df["ema5"].iloc[i] < df["ema20"].iloc[i]
+        if cross_up: return "BUY"
+        if cross_down: return "SELL"
+        return None
+
+    return {
+        "symbol": symbol, "timeframe": timeframe, "candles_tested": limit,
+        "factors": [
+            simulate(f_sweep, "1. Liquidity Sweep only"),
+            simulate(f_structure, "2. Structure Break (BOS/CHoCH) only"),
+            simulate(f_divergence, "3. Divergence only"),
+            simulate(f_pattern, "4. Candle Pattern only"),
+            simulate(f_ema_baseline, "5. EMA Crossover (baseline)"),
+        ]
+    }
