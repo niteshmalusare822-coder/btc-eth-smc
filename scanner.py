@@ -1,7 +1,22 @@
 import ccxt
+import requests
 import pandas as pd
 import numpy as np
+import time as _t
 
+# Map our symbol format -> CoinDCX futures pair format    # ← yeh block add karo
+COINDCX_PAIR_MAP = {
+    "BTC/USDT:USDT": "B-BTC_USDT",
+    "ETH/USDT:USDT": "B-ETH_USDT",
+}
+
+# CoinDCX resolution strings per timeframe
+COINDCX_RESOLUTION_MAP = {
+    "1m": "1",
+    "5m": "5",
+    "15m": "15",
+    "1h": "60",
+}
 # ── Config — SCALPER MODE ───────────────────────────────
 CONFIG = {
     'EMA_FAST': 5,
@@ -41,7 +56,78 @@ for ex_id in EXCHANGE_IDS:
         continue
 
 
+def fetch_coindcx_futures(ticker, timeframe, limit):
+    """
+    Fetch OHLCV candles from CoinDCX public futures API.
+    Returns (df, 'coindcx') on success, (None, None) on failure.
+    """
+    pair = COINDCX_PAIR_MAP.get(ticker)
+    resolution = COINDCX_RESOLUTION_MAP.get(timeframe)
+    if pair is None or resolution is None:
+        return None, None
+ 
+    # Each candle's duration in seconds, used to compute "from" time
+    tf_seconds = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600}[timeframe]
+    to_time = int(_t.time())
+    from_time = to_time - (tf_seconds * (limit + 5))  # small buffer
+ 
+    url = "https://public.coindcx.com/market_data/candlesticks"
+    params = {
+        "pair": pair,
+        "from": from_time,
+        "to": to_time,
+        "resolution": resolution,
+        "pcode": "f",  # f = futures
+    }
+ 
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+ 
+        # CoinDCX returns {"s": "ok", "data": [...]} typically
+        candles = data.get("data", data) if isinstance(data, dict) else data
+        if not candles or len(candles) < 50:
+            return None, None
+ 
+        rows = []
+        for c in candles:
+            # Expected keys: time/t, open/o, high/h, low/l, close/c, volume/v
+            ts = c.get("time", c.get("t"))
+            o  = c.get("open",  c.get("o"))
+            h  = c.get("high",  c.get("h"))
+            l  = c.get("low",   c.get("l"))
+            cl = c.get("close", c.get("c"))
+            v  = c.get("volume", c.get("v", 0))
+            if None in (ts, o, h, l, cl):
+                continue
+            rows.append([ts, o, h, l, cl, v])
+ 
+        if len(rows) < 50:
+            return None, None
+ 
+        df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        # Normalize timestamp: CoinDCX may give seconds or ms
+        if df["timestamp"].iloc[0] > 10**12:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        else:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
+        df.set_index("timestamp", inplace=True)
+        df = df.astype(float).sort_index()
+        return df.tail(limit), "coindcx"
+ 
+    except Exception:
+        return None, None
+ 
+ 
+# ── UPDATED fetch_ohlcv_failover — tries CoinDCX first, then ccxt exchanges ──
 def fetch_ohlcv_failover(ticker, timeframe, limit):
+    # 1. Try CoinDCX futures first (this is what you actually trade on)
+    df, src = fetch_coindcx_futures(ticker, timeframe, limit)
+    if df is not None:
+        return df, src
+ 
+    # 2. Fallback to ccxt exchanges (mexc, bybit, okx, gateio)
     for ex_id, ex in _exchanges:
         try:
             ohlcv = ex.fetch_ohlcv(ticker, timeframe, limit=limit)
