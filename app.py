@@ -88,15 +88,14 @@ def backtest_full(symbol, timeframe):
         return jsonify(sanitize(result))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/factor-backtest/<symbol>/<timeframe>")
-   def factor_backtest(symbol, timeframe):
-       try:
-           sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT"}
-           full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
-           result = run_factor_backtest(full_symbol, timeframe)
-           return jsonify(sanitize(result))
-       except Exception as e:
-           return jsonify({"error": str(e)}), 500
+def factor_backtest(symbol, timeframe):
+    try:
+        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT"}
+        full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
+        result = run_factor_backtest(full_symbol, timeframe)
+        return jsonify(sanitize(result))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
