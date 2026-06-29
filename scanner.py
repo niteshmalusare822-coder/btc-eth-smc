@@ -220,10 +220,10 @@ def detect_market_regime(df):
     is_choppy     = current_ci > CONFIG['CHOPPINESS_TREND_MAX'] if not np.isnan(current_ci) else False
     is_trending   = current_adx >= CONFIG['ADX_MIN']            if not np.isnan(current_adx) else False
     if is_compressed:
-        #regime = "COMPRESSION"
-    #elif is_choppy or not is_trending:
-        #regime = "RANGING"
-    #else:
+        regime = "COMPRESSION"
+    elif is_choppy or not is_trending:
+        regime = "RANGING"
+    else:
         regime = "TRENDING"
     return {
         "regime":     regime,
@@ -375,17 +375,27 @@ def get_ltf_scores(snap_1m, snap_5m):
 
 def decide_direction(buy_score, sell_score, htf_bias,
                      entry_adx, regime_1m, regime_5m, entry_rsi=None):
+    # --- ADX filter ---                      
     if pd.isna(entry_adx) or entry_adx < CONFIG['ADX_MIN']:
         return None, f"NO TREND (ADX {entry_adx:.1f} < {CONFIG['ADX_MIN']})"
+    # --- RSI filter ---    
     if entry_rsi is not None and not pd.isna(entry_rsi):
         if entry_rsi > CONFIG['RSI_OVERBOUGHT']:
             return None, f"BLOCKED (RSI overbought {entry_rsi:.1f})"
         if entry_rsi < CONFIG['RSI_OVERSOLD']:
             return None, f"BLOCKED (RSI oversold {entry_rsi:.1f})"
+
+    # --- 👉 YAHAN ADD KARO ---
+    if regime_1m["regime"] != "TRENDING" or regime_5m["regime"] != "TRENDING":
+        return None, "BLOCKED (not trending)"
+
+    # --- Compression / Ranging filters ---                     
     if regime_1m["regime"] == "COMPRESSION" and regime_5m["regime"] != "TRENDING":
         return None, f"BLOCKED (compression, wait breakout)"
     if regime_5m["regime"] == "RANGING":
         return None, f"BLOCKED (5m choppy CI {regime_5m['choppiness']})"
+
+    # --- Signal scoring ---                     
     if buy_score >= CONFIG['SCORE_THRESHOLD'] and buy_score > sell_score:
         if htf_bias in ("BULLISH","NEUTRAL"):
             return "BUY", "BUY ✅"
