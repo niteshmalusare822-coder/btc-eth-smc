@@ -29,16 +29,16 @@ CONFIG = {
     'LIQUIDITY_SWEEP_LOOKBACK': 20,
     'VOLUME_PROFILE_LOOKBACK': 100,
     'VOLUME_PROFILE_BINS': 24,
-    'SCORE_THRESHOLD': 3.5,    # zyada conviction chahiye signal ke liye
-    'SCORE_GAP_MIN': 2.0,      # buy/sell score mein clear gap chahiye
+    'SCORE_THRESHOLD': 4.5,    # zyada conviction chahiye signal ke liye
+    'SCORE_GAP_MIN': 3.0,      # buy/sell score mein clear gap chahiye
     'FEE_PCT': 0.04,
     'ATR_COMPRESSION_RATIO': 0.7,
     'ATR_MA_PERIOD': 50,
     'CHOPPINESS_PERIOD': 14,
     'CHOPPINESS_TREND_MAX': 61.8,
     'LIMIT': 300,                  # 300 candles — fast fetch + backtest
-    'TP_ATR_MULT': 1.5,            # Tight TP for scalping
-    'SL_ATR_MULT': 0.75,           # Tight SL for scalping (2:1 RR)
+    'TP_ATR_MULT': 2.0,            # Tight TP for scalping
+    'SL_ATR_MULT': 1.0,           # Tight SL for scalping (2:1 RR)
     'RSI_OVERBOUGHT': 70,
     'RSI_OVERSOLD': 30,
     'BACKTEST_CANDLES': 1500,      # Backtest window — bada sample size      # Backtest window
@@ -220,10 +220,10 @@ def detect_market_regime(df):
     is_choppy     = current_ci > CONFIG['CHOPPINESS_TREND_MAX'] if not np.isnan(current_ci) else False
     is_trending   = current_adx >= CONFIG['ADX_MIN']            if not np.isnan(current_adx) else False
     if is_compressed:
-        regime = "COMPRESSION"
-    elif is_choppy or not is_trending:
-        regime = "RANGING"
-    else:
+        #regime = "COMPRESSION"
+    #elif is_choppy or not is_trending:
+        #regime = "RANGING"
+    #else:
         regime = "TRENDING"
     return {
         "regime":     regime,
