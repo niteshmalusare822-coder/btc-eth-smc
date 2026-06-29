@@ -976,3 +976,148 @@ def run_factor_backtest(symbol, timeframe="15m"):
             simulate(f_ema_baseline, "5. EMA Crossover (baseline)"),
         ]
     }
+    # ── COMBINED FACTOR BACKTEST (2+ factors must agree) ────
+def run_combined_backtest(symbol, timeframe="15m", min_agree=2, strong_adx=25, use_breakeven=True):
+    """
+    Tests combined signal: trade only when >= min_agree factors
+    agree on direction (BUY or SELL), AND adx >= strong_adx (strong trend only).
+    Also applies breakeven-move logic to cut losses early.
+    """
+    limit = CONFIG['BACKTEST_CANDLES']
+    df, ex_id = fetch_ohlcv_failover(symbol, timeframe, limit)
+    if df is None:
+        return {"error": "no data"}
+
+    df = add_indicators_vectorized(df)
+    df = detect_candle_patterns_vectorized(df)
+    df = detect_pro_divergence_vectorized(df)
+    df = detect_structure_live_pro(df, CONFIG['SWING_LOOKBACK'])
+
+    closes = df["close"].values
+    highs  = df["high"].values
+    lows   = df["low"].values
+    n      = len(df)
+    WINDOW = CONFIG['BACKTEST_OUTCOME_WINDOW']
+    results = []
+
+    def get_factor_votes(i):
+        """Returns list of 'BUY'/'SELL' votes from each factor at row i."""
+        votes = []
+
+        # Liquidity sweep
+        data = df.iloc[max(0, i-CONFIG['LIQUIDITY_SWEEP_LOOKBACK']):i+1]
+        if len(data) >= 5:
+            last = data.iloc[-1]
+            p_highs, p_lows = data["high"].iloc[:-1], data["low"].iloc[:-1]
+            if last["high"] > p_highs.max() and last["close"] < p_highs.max(): votes.append("SELL")
+            elif last["low"] < p_lows.min() and last["close"] > p_lows.min(): votes.append("BUY")
+
+        # Structure break
+        ev = df["structure_event"].iloc[i]
+        if ev in ("BOS_BULL", "CHoCH_BULL"): votes.append("BUY")
+        elif ev in ("BOS_BEAR", "CHoCH_BEAR"): votes.append("SELL")
+
+        # Divergence
+        d = df["divergence"].iloc[i]
+        if d == "BULL_DIV": votes.append("BUY")
+        elif d == "BEAR_DIV": votes.append("SELL")
+
+        # Candle pattern
+        p = df["pat_sig"].iloc[i]
+        if p == "BUY": votes.append("BUY")
+        elif p == "SELL": votes.append("SELL")
+
+        # EMA crossover
+        if i >= 1:
+            cross_up   = df["ema5"].iloc[i-1] <= df["ema20"].iloc[i-1] and df["ema5"].iloc[i] > df["ema20"].iloc[i]
+            cross_down = df["ema5"].iloc[i-1] >= df["ema20"].iloc[i-1] and df["ema5"].iloc[i] < df["ema20"].iloc[i]
+            if cross_up: votes.append("BUY")
+            elif cross_down: votes.append("SELL")
+
+        return votes
+
+    for i in range(60, n - WINDOW):
+        adx = df["adx"].iloc[i]
+        atr = df["atr"].iloc[i]
+        if pd.isna(adx) or pd.isna(atr): continue
+        if adx < strong_adx: continue   # ── strong trend filter ──
+
+        votes = get_factor_votes(i)
+        buy_votes  = votes.count("BUY")
+        sell_votes = votes.count("SELL")
+
+        direction = None
+        if buy_votes >= min_agree and buy_votes > sell_votes:
+            direction = "BUY"
+        elif sell_votes >= min_agree and sell_votes > buy_votes:
+            direction = "SELL"
+        if direction is None: continue
+
+        price = closes[i]
+        tp, sl = calc_tp_sl(direction, price, atr)
+        if tp is None: continue
+
+        # ── breakeven logic ──
+        breakeven_dist = atr * 0.5  # move SL to entry after price moves 0.5*ATR in favor
+        sl_moved = False
+        current_sl = sl
+
+        outcome, exit_price = "OPEN", None
+        for j in range(i+1, min(i+WINDOW+1, n)):
+            fh, fl = highs[j], lows[j]
+
+            if use_breakeven and not sl_moved:
+                if direction == "BUY" and fh >= price + breakeven_dist:
+                    current_sl = price
+                    sl_moved = True
+                elif direction == "SELL" and fl <= price - breakeven_dist:
+                    current_sl = price
+                    sl_moved = True
+
+            if direction == "BUY":
+                if fh >= tp: outcome, exit_price = "WIN", tp; break
+                if fl <= current_sl:
+                    outcome = "BREAKEVEN" if sl_moved else "LOSS"
+                    exit_price = current_sl
+                    break
+            else:
+                if fl <= tp: outcome, exit_price = "WIN", tp; break
+                if fh >= current_sl:
+                    outcome = "BREAKEVEN" if sl_moved else "LOSS"
+                    exit_price = current_sl
+                    break
+
+        if outcome == "OPEN": continue
+
+        pnl_pct = ((exit_price - price)/price*100 if direction == "BUY"
+                   else (price - exit_price)/price*100) - CONFIG['FEE_PCT']
+
+        results.append({
+            "time": df.index[i].strftime("%m-%d %H:%M"),
+            "direction": direction, "entry": round(price,2), "tp": round(tp,2), "sl": round(sl,2),
+            "outcome": outcome, "pnl_pct": round(pnl_pct,4), "votes": votes,
+        })
+
+    if not results:
+        return {"symbol": symbol, "timeframe": timeframe, "total_trades": 0,
+                "win_rate": 0, "message": "No signals — try lowering min_agree or strong_adx"}
+
+    wins   = [r for r in results if r["outcome"] in ("WIN", "BREAKEVEN") and r["pnl_pct"] > 0]
+    losses = [r for r in results if r["pnl_pct"] <= 0]
+    total  = len(results)
+    gross_profit = sum(r["pnl_pct"] for r in wins) if wins else 0.0
+    gross_loss   = abs(sum(r["pnl_pct"] for r in losses)) if losses else 0.0
+    profit_factor = round(gross_profit/gross_loss, 2) if gross_loss > 0 else None
+    win_rate = round(len(wins)/total*100, 1) if total > 0 else 0
+    avg_win  = round(gross_profit/len(wins), 4) if wins else 0.0
+    avg_loss = round(gross_loss/len(losses), 4) if losses else 0.0
+    expectancy = round((win_rate/100*avg_win) - ((1-win_rate/100)*avg_loss), 4)
+
+    return {
+        "symbol": symbol, "timeframe": timeframe, "candles_tested": limit,
+        "min_agree": min_agree, "strong_adx": strong_adx, "use_breakeven": use_breakeven,
+        "total_trades": total, "wins": len(wins), "losses": len(losses),
+        "win_rate": win_rate, "profit_factor": profit_factor,
+        "expectancy_pct": expectancy,
+        "recent_trades": results[-10:],
+    }
