@@ -1,6 +1,6 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from scanner import analyze, run_backtest, run_backtest_full, run_factor_backtest, run_combined_backtest
+from scanner import analyze, run_backtest, run_backtest_full, run_factor_backtest, run_combined_backtest, run_funding_rate_backtest
 import math
 
 app = Flask(__name__)
@@ -37,7 +37,6 @@ def home():
 def health():
     return jsonify({"status": "ok"})
 
-# Main scalper dashboard
 @app.route("/api/dashboard")
 def dashboard():
     try:
@@ -58,7 +57,6 @@ def dashboard():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Simplified single-timeframe backtest
 @app.route("/api/backtest/<symbol>/<timeframe>")
 def backtest(symbol, timeframe):
     try:
@@ -69,7 +67,6 @@ def backtest(symbol, timeframe):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Full multi-timeframe backtest (mirrors live strategy)
 @app.route("/api/backtest-full/<symbol>/<timeframe>")
 def backtest_full(symbol, timeframe):
     try:
@@ -90,7 +87,6 @@ def factor_backtest(symbol, timeframe):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Combined factor backtest (2+ factors must agree, strong trend filter, breakeven logic)
 @app.route("/api/combined-backtest/<symbol>/<timeframe>")
 def combined_backtest(symbol, timeframe):
     try:
@@ -99,6 +95,18 @@ def combined_backtest(symbol, timeframe):
         min_agree = int(request.args.get("min_agree", 2))
         strong_adx = float(request.args.get("strong_adx", 25))
         result = run_combined_backtest(full_symbol, timeframe, min_agree, strong_adx)
+        return jsonify(sanitize(result))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/funding-backtest/<symbol>/<timeframe>")
+def funding_backtest(symbol, timeframe):
+    try:
+        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT"}
+        funding_sym_map = {"BTC": "BTC/USDT", "ETH": "ETH/USDT"}
+        full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
+        funding_symbol = funding_sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT")
+        result = run_funding_rate_backtest(full_symbol, timeframe, funding_symbol)
         return jsonify(sanitize(result))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
