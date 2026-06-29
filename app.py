@@ -1,18 +1,16 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
-from scanner import analyze, run_backtest, run_backtest_full, run_factor_backtest
+from scanner import analyze, run_backtest, run_backtest_full, run_factor_backtest, run_combined_backtest
 import math
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "https://niteshmalusare822-coder.github.io"}})
-
 
 @app.after_request
 def add_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Cache-Control"] = "no-store"
     return response
-
 
 def safe_value(val):
     if val is None:
@@ -21,10 +19,8 @@ def safe_value(val):
         return None
     return val
 
-
 def sanitize(data: dict):
     return {k: safe_value(v) for k, v in data.items()}
-
 
 def safe_analyze(symbol, timeframe):
     try:
@@ -33,16 +29,13 @@ def safe_analyze(symbol, timeframe):
     except Exception as e:
         return {"symbol": symbol, "timeframe": timeframe, "error": str(e)}
 
-
 @app.route("/")
 def home():
     return jsonify({"status": "running"})
 
-
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
-
 
 # Main scalper dashboard
 @app.route("/api/dashboard")
@@ -65,7 +58,6 @@ def dashboard():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 # Simplified single-timeframe backtest
 @app.route("/api/backtest/<symbol>/<timeframe>")
 def backtest(symbol, timeframe):
@@ -77,7 +69,6 @@ def backtest(symbol, timeframe):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 # Full multi-timeframe backtest (mirrors live strategy)
 @app.route("/api/backtest-full/<symbol>/<timeframe>")
 def backtest_full(symbol, timeframe):
@@ -88,6 +79,7 @@ def backtest_full(symbol, timeframe):
         return jsonify(sanitize(result))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 @app.route("/api/factor-backtest/<symbol>/<timeframe>")
 def factor_backtest(symbol, timeframe):
     try:
@@ -97,5 +89,19 @@ def factor_backtest(symbol, timeframe):
         return jsonify(sanitize(result))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# Combined factor backtest (2+ factors must agree, strong trend filter, breakeven logic)
+@app.route("/api/combined-backtest/<symbol>/<timeframe>")
+def combined_backtest(symbol, timeframe):
+    try:
+        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT"}
+        full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
+        min_agree = int(request.args.get("min_agree", 2))
+        strong_adx = float(request.args.get("strong_adx", 25))
+        result = run_combined_backtest(full_symbol, timeframe, min_agree, strong_adx)
+        return jsonify(sanitize(result))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
