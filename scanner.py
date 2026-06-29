@@ -1121,3 +1121,148 @@ def run_combined_backtest(symbol, timeframe="15m", min_agree=2, strong_adx=25, u
         "expectancy_pct": expectancy,
         "recent_trades": results[-10:],
     }
+# ── FUNDING RATE FACTOR ──────────────────────────────────
+import ccxt as _ccxt_funding
+
+_funding_exchange = None
+try:
+    _funding_exchange = _ccxt_funding.binance({'enableRateLimit': True, 'timeout': 15000, 'options': {'defaultType': 'future'}})
+except Exception:
+    _funding_exchange = None
+
+def fetch_funding_rate_history(symbol="BTC/USDT", limit=500):
+    """
+    Fetch historical funding rate from Binance futures (8-hour intervals).
+    Returns DataFrame with columns: timestamp, funding_rate
+    """
+    if _funding_exchange is None:
+        return None
+    try:
+        # ccxt symbol format for Binance futures funding rate
+        raw = _funding_exchange.fetch_funding_rate_history(symbol, limit=limit)
+        if not raw or len(raw) < 20:
+            return None
+        rows = []
+        for r in raw:
+            ts = r.get("timestamp")
+            fr = r.get("fundingRate")
+            if ts is None or fr is None:
+                continue
+            rows.append([ts, fr])
+        if len(rows) < 20:
+            return None
+        df = pd.DataFrame(rows, columns=["timestamp", "funding_rate"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df.set_index("timestamp", inplace=True)
+        df = df.sort_index()
+        return df
+    except Exception:
+        return None
+
+
+def run_funding_rate_backtest(symbol="BTC/USDT:USDT", price_timeframe="15m", funding_symbol="BTC/USDT"):
+    """
+    Isolated test: does extreme funding rate predict mean-reversion?
+    Strategy: when funding rate is extremely positive (crowded longs) -> SELL
+              when extremely negative (crowded shorts) -> BUY
+    Uses percentile-based thresholds (top/bottom 15% of funding rate distribution).
+    """
+    limit = CONFIG['BACKTEST_CANDLES']
+    price_df, ex_id = fetch_ohlcv_failover(symbol, price_timeframe, limit)
+    if price_df is None:
+        return {"error": "no price data"}
+
+    funding_df = fetch_funding_rate_history(funding_symbol, limit=1000)
+    if funding_df is None:
+        return {"error": "no funding rate data — binance fetch failed"}
+
+    price_df = add_indicators_vectorized(price_df)  # for ATR
+
+    # Align funding rate onto price timeframe via merge_asof (backward = no lookahead)
+    price_times = pd.DataFrame({"time": price_df.index})
+    funding_reset = funding_df.reset_index().rename(columns={"timestamp": "time"})
+    merged = pd.merge_asof(price_times.sort_values("time"), funding_reset.sort_values("time"),
+                            on="time", direction="backward")
+    merged = merged.set_index("time")
+
+    price_df = price_df.copy()
+    price_df["funding_rate"] = merged["funding_rate"]
+
+    # Percentile thresholds for "extreme" funding
+    valid_fr = price_df["funding_rate"].dropna()
+    if len(valid_fr) < 50:
+        return {"error": "insufficient overlapping funding rate data"}
+
+    high_thresh = valid_fr.quantile(0.85)
+    low_thresh  = valid_fr.quantile(0.15)
+
+    closes = price_df["close"].values
+    highs  = price_df["high"].values
+    lows   = price_df["low"].values
+    atrs   = price_df["atr"].values
+    funding_vals = price_df["funding_rate"].values
+    n = len(price_df)
+    WINDOW = CONFIG['BACKTEST_OUTCOME_WINDOW']
+    results = []
+
+    for i in range(60, n - WINDOW):
+        fr = funding_vals[i]
+        atr = atrs[i]
+        if pd.isna(fr) or pd.isna(atr): continue
+
+        direction = None
+        if fr >= high_thresh:
+            direction = "SELL"   # crowded longs -> expect reversion down
+        elif fr <= low_thresh:
+            direction = "BUY"    # crowded shorts -> expect reversion up
+        if direction is None: continue
+
+        price = closes[i]
+        tp, sl = calc_tp_sl(direction, price, atr)
+        if tp is None: continue
+
+        outcome, exit_price = "OPEN", None
+        for j in range(i+1, min(i+WINDOW+1, n)):
+            fh, fl = highs[j], lows[j]
+            if direction == "BUY":
+                if fh >= tp: outcome, exit_price = "WIN", tp; break
+                if fl <= sl: outcome, exit_price = "LOSS", sl; break
+            else:
+                if fl <= tp: outcome, exit_price = "WIN", tp; break
+                if fh >= sl: outcome, exit_price = "LOSS", sl; break
+        if outcome == "OPEN": continue
+
+        pnl_pct = ((exit_price - price)/price*100 if direction == "BUY"
+                   else (price - exit_price)/price*100) - CONFIG['FEE_PCT']
+
+        results.append({
+            "time": price_df.index[i].strftime("%m-%d %H:%M"),
+            "direction": direction, "entry": round(price,2),
+            "funding_rate": round(float(fr), 6),
+            "outcome": outcome, "pnl_pct": round(pnl_pct,4),
+        })
+
+    if not results:
+        return {"symbol": symbol, "total_trades": 0, "message": "No extreme funding signals found"}
+
+    wins   = [r for r in results if r["outcome"] == "WIN"]
+    losses = [r for r in results if r["outcome"] == "LOSS"]
+    total  = len(wins) + len(losses)
+    gross_profit = sum(r["pnl_pct"] for r in wins) if wins else 0.0
+    gross_loss   = abs(sum(r["pnl_pct"] for r in losses)) if losses else 0.0
+    profit_factor = round(gross_profit/gross_loss, 2) if gross_loss > 0 else None
+    win_rate = round(len(wins)/total*100, 1) if total > 0 else 0
+    avg_win  = round(gross_profit/len(wins), 4) if wins else 0.0
+    avg_loss = round(gross_loss/len(losses), 4) if losses else 0.0
+    expectancy = round((win_rate/100*avg_win) - ((1-win_rate/100)*avg_loss), 4)
+
+    return {
+        "symbol": symbol, "timeframe": price_timeframe, "candles_tested": limit,
+        "high_funding_threshold": round(float(high_thresh), 6),
+        "low_funding_threshold": round(float(low_thresh), 6),
+        "total_trades": total, "wins": len(wins), "losses": len(losses),
+        "win_rate": win_rate, "profit_factor": profit_factor,
+        "expectancy_pct": expectancy,
+        "recent_trades": results[-10:],
+        "note": "Tests funding-rate mean-reversion in isolation (Binance funding data, CoinDCX/failover price data).",
+    }
