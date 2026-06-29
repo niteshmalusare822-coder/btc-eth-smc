@@ -103,7 +103,7 @@ def combined_backtest(symbol, timeframe):
 def funding_backtest(symbol, timeframe):
     try:
         sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT"}
-        funding_sym_map = {"BTC": "BTC/USDT", "ETH": "ETH/USDT"}
+        funding_sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT"}
         full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
         funding_symbol = funding_sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT")
         result = run_funding_rate_backtest(full_symbol, timeframe, funding_symbol)
