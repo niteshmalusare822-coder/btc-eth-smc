@@ -1121,7 +1121,7 @@ def run_combined_backtest(symbol, timeframe="15m", min_agree=2, strong_adx=25, u
         "expectancy_pct": expectancy,
         "recent_trades": results[-10:],
     }
-# ── FUNDING RATE FACTOR (using Bybit — already working in this setup) ──
+# ── FUNDING RATE FACTOR (using okx — already working in this setup) ──
 import ccxt as _ccxt_funding
 
 _funding_exchange = None
