@@ -1126,7 +1126,7 @@ import ccxt as _ccxt_funding
 
 _funding_exchange = None
 try:
-    _funding_exchange = _ccxt_funding.bybit({'enableRateLimit': True, 'timeout': 15000})
+    _funding_exchange = _ccxt_funding.okx({'enableRateLimit': True, 'timeout': 15000})
 except Exception:
     _funding_exchange = None
 
