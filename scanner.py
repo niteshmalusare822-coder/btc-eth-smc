@@ -1121,27 +1121,26 @@ def run_combined_backtest(symbol, timeframe="15m", min_agree=2, strong_adx=25, u
         "expectancy_pct": expectancy,
         "recent_trades": results[-10:],
     }
-# ── FUNDING RATE FACTOR ──────────────────────────────────
+# ── FUNDING RATE FACTOR (using Bybit — already working in this setup) ──
 import ccxt as _ccxt_funding
 
 _funding_exchange = None
 try:
-    _funding_exchange = _ccxt_funding.binance({'enableRateLimit': True, 'timeout': 15000, 'options': {'defaultType': 'future'}})
+    _funding_exchange = _ccxt_funding.bybit({'enableRateLimit': True, 'timeout': 15000})
 except Exception:
     _funding_exchange = None
 
-def fetch_funding_rate_history(symbol="BTC/USDT", limit=500):
+def fetch_funding_rate_history(symbol="BTC/USDT:USDT", limit=500):
     """
-    Fetch historical funding rate from Binance futures (8-hour intervals).
-    Returns DataFrame with columns: timestamp, funding_rate
+    Fetch historical funding rate from Bybit futures.
+    Returns (DataFrame, error_message)
     """
     if _funding_exchange is None:
-        return None
+        return None, "exchange not initialized"
     try:
-        # ccxt symbol format for Binance futures funding rate
         raw = _funding_exchange.fetch_funding_rate_history(symbol, limit=limit)
         if not raw or len(raw) < 20:
-            return None
+            return None, f"got {len(raw) if raw else 0} entries, need 20+"
         rows = []
         for r in raw:
             ts = r.get("timestamp")
@@ -1150,17 +1149,16 @@ def fetch_funding_rate_history(symbol="BTC/USDT", limit=500):
                 continue
             rows.append([ts, fr])
         if len(rows) < 20:
-            return None
+            return None, "not enough valid rows after parsing"
         df = pd.DataFrame(rows, columns=["timestamp", "funding_rate"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         df.set_index("timestamp", inplace=True)
         df = df.sort_index()
-        return df
-    except Exception:
-        return None
+        return df, None
+    except Exception as e:
+        return None, str(e)
 
-
-def run_funding_rate_backtest(symbol="BTC/USDT:USDT", price_timeframe="15m", funding_symbol="BTC/USDT"):
+def run_funding_rate_backtest(symbol="BTC/USDT:USDT", price_timeframe="15m", funding_symbol="BTC/USDT:USDT"):
     """
     Isolated test: does extreme funding rate predict mean-reversion?
     Strategy: when funding rate is extremely positive (crowded longs) -> SELL
@@ -1172,9 +1170,9 @@ def run_funding_rate_backtest(symbol="BTC/USDT:USDT", price_timeframe="15m", fun
     if price_df is None:
         return {"error": "no price data"}
 
-    funding_df = fetch_funding_rate_history(funding_symbol, limit=1000)
+    funding_df, fund_err = fetch_funding_rate_history(funding_symbol, limit=1000)
     if funding_df is None:
-        return {"error": "no funding rate data — binance fetch failed"}
+        return {"error": f"no funding rate data — {fund_err}"}
 
     price_df = add_indicators_vectorized(price_df)  # for ATR
 
@@ -1212,9 +1210,9 @@ def run_funding_rate_backtest(symbol="BTC/USDT:USDT", price_timeframe="15m", fun
 
         direction = None
         if fr >= high_thresh:
-            direction = "SELL"   # crowded longs -> expect reversion down
+            direction = "SELL"
         elif fr <= low_thresh:
-            direction = "BUY"    # crowded shorts -> expect reversion up
+            direction = "BUY"
         if direction is None: continue
 
         price = closes[i]
@@ -1264,5 +1262,5 @@ def run_funding_rate_backtest(symbol="BTC/USDT:USDT", price_timeframe="15m", fun
         "win_rate": win_rate, "profit_factor": profit_factor,
         "expectancy_pct": expectancy,
         "recent_trades": results[-10:],
-        "note": "Tests funding-rate mean-reversion in isolation (Binance funding data, CoinDCX/failover price data).",
+        "note": "Tests funding-rate mean-reversion in isolation (Bybit funding data, CoinDCX/failover price data).",
     }
