@@ -24,13 +24,13 @@ CONFIG = {
     'RSI_PERIOD': 7,               # Fast RSI — scalping ke liye
     'ATR_PERIOD': 14,
     'ADX_PERIOD': 14,
-    'ADX_MIN': 10,                 # Lower — scalping mein trend fast hota hai
+    'ADX_MIN': 18,             # weak/no-trend trades avoid karo
     'SWING_LOOKBACK': 3,
     'LIQUIDITY_SWEEP_LOOKBACK': 20,
     'VOLUME_PROFILE_LOOKBACK': 100,
     'VOLUME_PROFILE_BINS': 24,
-    'SCORE_THRESHOLD': 2.0,        # Low threshold — scalping mein zyada signals
-    'SCORE_GAP_MIN': 1.0,
+    'SCORE_THRESHOLD': 3.5,    # zyada conviction chahiye signal ke liye
+    'SCORE_GAP_MIN': 2.0,      # buy/sell score mein clear gap chahiye
     'FEE_PCT': 0.04,
     'ATR_COMPRESSION_RATIO': 0.7,
     'ATR_MA_PERIOD': 50,
@@ -39,8 +39,8 @@ CONFIG = {
     'LIMIT': 300,                  # 300 candles — fast fetch + backtest
     'TP_ATR_MULT': 1.5,            # Tight TP for scalping
     'SL_ATR_MULT': 0.75,           # Tight SL for scalping (2:1 RR)
-    'RSI_OVERBOUGHT': 75,
-    'RSI_OVERSOLD': 25,
+    'RSI_OVERBOUGHT': 70,
+    'RSI_OVERSOLD': 30,
     'BACKTEST_CANDLES': 1500,      # Backtest window — bada sample size      # Backtest window
     'BACKTEST_OUTCOME_WINDOW': 20, # Kitne candles aage dekhe TP/SL ke liye
 }
