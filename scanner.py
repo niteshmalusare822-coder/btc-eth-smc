@@ -372,18 +372,30 @@ def get_ltf_scores(snap_1m, snap_5m):
             if snap["rsi"] < 35:   buy_score  += 1.0*w
             elif snap["rsi"] > 65: sell_score += 1.0*w
     return round(buy_score, 2), round(sell_score, 2)
-
+    
 def decide_direction(buy_score, sell_score, htf_bias,
-                     entry_adx, regime_1m, regime_5m, entry_rsi=None):
-    # --- ADX filter ---                      
+                      entry_adx, regime_1m, regime_5m, entry_rsi=None):
+    # --- ADX filter ---
     if pd.isna(entry_adx) or entry_adx < CONFIG['ADX_MIN']:
         return None, f"NO TREND (ADX {entry_adx:.1f} < {CONFIG['ADX_MIN']})"
-    # --- RSI filter ---    
+
+    # --- RSI filter ---
     if entry_rsi is not None and not pd.isna(entry_rsi):
         if entry_rsi > CONFIG['RSI_OVERBOUGHT']:
             return None, f"BLOCKED (RSI overbought {entry_rsi:.1f})"
         if entry_rsi < CONFIG['RSI_OVERSOLD']:
             return None, f"BLOCKED (RSI oversold {entry_rsi:.1f})"
+
+    # --- Regime filters (compression / ranging / not-trending) ---
+    if regime_1m["regime"] == "COMPRESSION" or regime_5m["regime"] == "COMPRESSION":
+        return None, "BLOCKED (compression, wait breakout)"
+
+    if regime_1m["regime"] == "RANGING" or regime_5m["regime"] == "RANGING":
+        return None, f"BLOCKED (choppy CI 1m={regime_1m['choppiness']}, 5m={regime_5m['choppiness']})"
+
+    if regime_1m["regime"] != "TRENDING" or regime_5m["regime"] != "TRENDING":
+        return None, "BLOCKED (not trending)"
+
 
     # --- 👉 YAHAN ADD KARO ---
     if regime_1m["regime"] != "TRENDING" or regime_5m["regime"] != "TRENDING":
