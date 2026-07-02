@@ -4,3 +4,4 @@ ccxt
 pandas
 numpy
 gunicorn
+requests
