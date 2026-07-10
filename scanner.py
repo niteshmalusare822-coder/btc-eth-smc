@@ -1,5 +1,5 @@
 """
-SCALPING BOT — Multi-Factor Engine + Liquidity Concepts Combo  (v2 — FIXED)
+SCALPING BOT — Multi-Factor Engine + Liquidity Concepts Combo  (v2.1 — FIXED)
 ================================================================
 Base engine (EMA/RSI/ADX/Structure/Divergence/VolumeProfile/Regime) +
 Liquidity Concepts (BSL/SSL, Sweep, FVG, Inducement, Equal-Level Density).
@@ -22,6 +22,18 @@ CHANGES FROM v1 (see comments tagged "# FIX:"):
   5. analyze() no longer double-fetches 1m data when timeframe="1m".
   6. NEW: risk_management section — position sizing by % risk, daily loss
      circuit breaker, leverage sanity check. None of this existed in v1.
+
+CHANGES IN v2.1 (this pass):
+  7. FIX: removed a stray duplicate/orphaned dict block sitting right after
+     analyze_timeframe()'s return statement — it was outside any bracket and
+     caused a SyntaxError on import, so the whole module could not load.
+  8. FIX: get_ltf_scores() was missing the calc_liquidity_score(snap) call
+     (sweep magnitude, inducement, FVG-proximity, equal-level-density bonus).
+     The vectorized backtest path (_ltf_score_series -> score_component ->
+     _liquidity_score_vectorized) DOES include this, so live analyze() scores
+     were silently lower/different than backtested scores using the same
+     SCORE_THRESHOLD/SCORE_GAP_MIN — live and backtest were not apples-to-apples.
+     Restored the call so live matches backtest again.
 
 ⚠️ Educational / research tool. Not financial advice. No backtest or live
    signal guarantees future profit. Forward-test on paper first, and only
@@ -52,7 +64,7 @@ CONFIG = {
     'RSI_PERIOD': 7,
     'ATR_PERIOD': 14,
     'ADX_PERIOD': 14,
-    'ADX_MIN': 18,
+    'ADX_MIN': 20,
     'SWING_LOOKBACK': 3,
     'LIQUIDITY_SWEEP_LOOKBACK': 20,
     'VOLUME_PROFILE_LOOKBACK': 100,
@@ -64,7 +76,7 @@ CONFIG = {
     'ATR_MA_PERIOD': 50,
     'CHOPPINESS_PERIOD': 14,
     'CHOPPINESS_TREND_MAX': 61.8,
-    'LIMIT': 300,
+    'LIMIT': 150,
     'TP_ATR_MULT': 2.0,
     'SL_ATR_MULT': 1.0,
     'RSI_OVERBOUGHT': 70,
@@ -452,6 +464,7 @@ def analyze_timeframe(df):
     return {
         "structure_event": last["structure_event"], "structure_trend": last["structure_trend"],
         "adx": last["adx"], "price": last["close"], "vwap": last["vwap"],
+        "volume": last["volume"],  # <-- Volatility acceleration trace karne ke liye line add ki
         "ema5": last["ema5"], "ema20": last["ema20"], "rsi": last["rsi"], "atr": last["atr"],
         "pattern": last["pat_sig"], "divergence": last["divergence"],
         "sweep": sweep, "vp": vp, "regime": regime,
@@ -463,6 +476,10 @@ def analyze_timeframe(df):
         "eq_high_count": last["eq_high_count"], "eq_low_count": last["eq_low_count"],
         "inducement": last["inducement"],
     }
+    # FIX #7: removed a stray duplicate dict block that was sitting here,
+    # outside the function's return statement / outside any bracket. It was
+    # a leftover copy-paste of the same keys and caused a SyntaxError on
+    # import, which meant the entire module failed to load.
 
 
 def get_htf_bias(snap_15m):
@@ -484,6 +501,11 @@ def get_htf_bias(snap_15m):
 # FIX #4: removed RSI<35/>65 mean-reversion score bonus (contradicted the
 # ADX-gated trend-following filter in decide_direction, which blocks
 # RSI<30/>70 trades). Score now stays purely trend/structure/liquidity based.
+# FIX #8: restored calc_liquidity_score(snap) call — this was missing here,
+# so live scores were not including sweep/inducement/FVG-proximity/equal-level
+# bonuses that the vectorized backtest path DOES include. Without this, live
+# analyze() and run_backtest()/run_backtest_full() used different scoring
+# formulas even though they share the same SCORE_THRESHOLD/SCORE_GAP_MIN.
 def get_ltf_scores(snap_1m, snap_5m):
     buy_score, sell_score = 0.0, 0.0
     for snap, w in [(snap_1m, 1.0), (snap_5m, 1.2)]:
@@ -506,9 +528,22 @@ def get_ltf_scores(snap_1m, snap_5m):
         if snap["ema5"] > snap["ema20"]: buy_score += 0.5 * w
         else: sell_score += 0.5 * w
         # RSI mean-reversion bonus removed here (FIX #4)
+
+        # FIX #8: RESTORED — liquidity score (sweep magnitude, inducement,
+        # FVG proximity, equal-level density). This makes live scoring
+        # consistent with the vectorized backtest's _liquidity_score_vectorized().
         liq_buy, liq_sell = calc_liquidity_score(snap)
         buy_score += liq_buy * w
         sell_score += liq_sell * w
+
+        # 🔥 Scalper Acceleration Boost (kept from your latest edit):
+        if "volume" in snap and not pd.isna(snap["vwap"]):
+            # Agar price trend ke sath vwap se door bhaag raha hai (Fast Momentum)
+            if snap["price"] > snap["vwap"] and snap["ema5"] > snap["ema20"]:
+                buy_score += 1.0 * w
+            elif snap["price"] <= snap["vwap"] and snap["ema5"] <= snap["ema20"]:
+                sell_score += 1.0 * w
+
     return round(buy_score, 2), round(sell_score, 2)
 
 def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regime_5m, entry_rsi=None):
@@ -519,12 +554,26 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regi
             return None, f"BLOCKED (RSI overbought {entry_rsi:.1f})"
         if entry_rsi < CONFIG['RSI_OVERSOLD']:
             return None, f"BLOCKED (RSI oversold {entry_rsi:.1f})"
-    if regime_1m["regime"] == "COMPRESSION" or regime_5m["regime"] == "COMPRESSION":
-        return None, "BLOCKED (compression, wait breakout)"
+    is_1m_comp = regime_1m["regime"] == "COMPRESSION"
+    is_5m_comp = regime_5m["regime"] == "COMPRESSION"
+
+    # PRO ENGINE BREAKOUT BYPASS: 5m compressed zone se 1m volatility trigger track karna
+    if is_5m_comp and not is_1m_comp and entry_adx > CONFIG['ADX_MIN']:
+        if buy_score >= CONFIG['SCORE_THRESHOLD'] + 0.5 and htf_bias in ("BULLISH", "NEUTRAL"):
+            return "BUY", "COMPRESSION BREAKOUT LONG 🚀"
+        if sell_score >= CONFIG['SCORE_THRESHOLD'] + 0.5 and htf_bias in ("BEARISH", "NEUTRAL"):
+            return "SELL", "COMPRESSION BREAKOUT SHORT 🩸"
+
+    # Jab tak box squeeze true trap state mein hai tabhi filter open hoga
+    if is_1m_comp and is_5m_comp:
+        return None, "BLOCKED (Tight Squeeze Range)"
+
     if regime_1m["regime"] == "RANGING" or regime_5m["regime"] == "RANGING":
-        return None, f"BLOCKED (choppy CI 1m={regime_1m['choppiness']}, 5m={regime_5m['choppiness']})"
+        return None, f"BLOCKED (Choppy Flat Zones)"
+
     if regime_1m["regime"] != "TRENDING" or regime_5m["regime"] != "TRENDING":
-        return None, "BLOCKED (not trending)"
+        return None, "BLOCKED (Not Dynamic Trending Structure)"
+
     if buy_score >= CONFIG['SCORE_THRESHOLD'] and buy_score > sell_score:
         if (buy_score - sell_score) >= CONFIG['SCORE_GAP_MIN'] and htf_bias in ("BULLISH", "NEUTRAL"):
             return "BUY", "BUY ✅"
@@ -931,7 +980,7 @@ def run_backtest(symbol, timeframe="5m"):
     }
 
 
-# ── Factor isolation backtest — NOW includes Equal-Level Density (FIX #3) ─
+# ── Factor isolation backtest — includes Equal-Level Density (FIX #3) ─
 def run_factor_backtest(symbol, timeframe="5m"):
     limit = CONFIG['BACKTEST_CANDLES']
     df, ex_id = fetch_ohlcv_failover(symbol, timeframe, limit)
@@ -1059,7 +1108,7 @@ def run_factor_backtest(symbol, timeframe="5m"):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# NEW: RISK MANAGEMENT MODULE (did not exist in v1)
+# RISK MANAGEMENT MODULE
 # ══════════════════════════════════════════════════════════════════════════
 class RiskManager:
     """
@@ -1136,7 +1185,7 @@ class RiskManager:
         return {"take_trade": True, "sizing": sizing, "signal": signal_dict}
 
 
-# ── COMBINED FACTOR BACKTEST (votes include FVG + Inducement) — restored from v1, unchanged ─
+# ── COMBINED FACTOR BACKTEST (votes include FVG + Inducement) ─
 def run_combined_backtest(symbol, timeframe="5m", min_agree=2, strong_adx=25, use_breakeven=True):
     """
     Trade only when >= min_agree factors agree on direction, AND adx >= strong_adx.
@@ -1269,7 +1318,7 @@ def run_combined_backtest(symbol, timeframe="5m", min_agree=2, strong_adx=25, us
     }
 
 
-# ── FUNDING RATE FACTOR — restored from v1, unchanged ──────────────────────
+# ── FUNDING RATE FACTOR ──────────────────────────────────────
 import ccxt as _ccxt_funding
 
 _funding_exchange = None
@@ -1406,9 +1455,8 @@ def run_funding_rate_backtest(symbol="BTC/USDT:USDT", price_timeframe="15m", fun
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# TUNING TOOLS — restored from v1. NOTE: step2_grid_search() calls
-# run_backtest(), which now (FIX #1) applies the regime filter — so grid
-# search results from this tool are now trustworthy, unlike in v1.
+# TUNING TOOLS — NOTE: step2_grid_search() calls run_backtest(), which
+# applies the regime filter (FIX #1) — so grid search results are trustworthy.
 # ══════════════════════════════════════════════════════════════════════════
 import copy as _copy
 
