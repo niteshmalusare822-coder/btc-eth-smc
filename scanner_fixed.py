@@ -173,19 +173,16 @@ def improved_run_backtest(symbol, timeframe='5m', limit=None,
             time_in_bars = j - entry_idx
             fh = highs[j]; fl = lows[j]
             if direction == 'BUY':
-                eff_tp = tp * (1 - slippage)
-                eff_sl = sl * (1 + slippage)
-                if fh >= eff_tp:
-                    outcome, exit_price = 'WIN', eff_tp; break
-                if fl <= eff_sl:
-                    outcome, exit_price = 'LOSS', eff_sl; break
+                # detect against raw TP/SL; executed exit price includes adverse slippage
+                if fh >= tp:
+                    outcome, exit_price = 'WIN', tp * (1 - slippage); break
+                if fl <= sl:
+                    outcome, exit_price = 'LOSS', sl * (1 - slippage); break
             else:
-                eff_tp = tp * (1 + slippage)
-                eff_sl = sl * (1 - slippage)
-                if fl <= eff_tp:
-                    outcome, exit_price = 'WIN', eff_tp; break
-                if fh >= eff_sl:
-                    outcome, exit_price = 'LOSS', eff_sl; break
+                if fl <= tp:
+                    outcome, exit_price = 'WIN', tp * (1 + slippage); break
+                if fh >= sl:
+                    outcome, exit_price = 'LOSS', sl * (1 + slippage); break
         if outcome == 'OPEN':
             continue
 
@@ -204,6 +201,15 @@ def improved_run_backtest(symbol, timeframe='5m', limit=None,
 
         pnl_after_costs = pnl_usdt - fee_usdt - funding_usdt
         pnl_pct_of_account = (pnl_after_costs / capital_usdt) * 100.0
+
+        # Debug logging to help trace edge cases (can be removed or toggled later)
+        try:
+            print(f"[DEBUG TRADE] time={df.index[i]} dir={direction} entry={entry_price} tp={tp} sl={sl} "
+                  f"exit={exit_price} fh={fh} fl={fl} outcome={outcome} qty={qty} notional={notional} "
+                  f"fee={fee_usdt:.6f} funding={funding_usdt:.6f} pnl_before={round(pnl_usdt,4)} "
+                  f"pnl_after={round(pnl_after_costs,4)} pnl_pct={round(pnl_pct_of_account,4)}")
+        except Exception:
+            pass
 
         trades.append({
             'time': str(df.index[i]),
