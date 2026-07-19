@@ -96,6 +96,33 @@ CONFIG = {
     'MAX_DAILY_LOSS_PCT': 3.0,      # circuit breaker: stop trading for the day
     'MAX_LEVERAGE': 5,              # sanity cap regardless of exchange max
     'MAX_CONCURRENT_POSITIONS': 2,  # BTC + ETH at most, don't stack more
+
+    # ── NEW: Fabio Valentino order-flow-STYLE proxy settings ──────────────
+    # ⚠️ IMPORTANT: fetch_ohlcv() only returns O/H/L/C/Volume candles — it does
+    # NOT include real bid/ask tape, delta, or aggression "bubbles" the way a
+    # footprint/order-flow platform (Bookmap, ATAS, etc.) does. Everything below
+    # is an OHLCV-based APPROXIMATION of order-flow concepts, not the real thing.
+    # It's a reasonable proxy for research, but treat it as such.
+    'OF_DELTA_LOOKBACK': 20,          # candles used for rolling CVD-proxy slope
+    'OF_ABSORPTION_VOL_MULT': 1.8,    # vol > rolling_avg_vol * this = "big order" candle
+    'OF_ABSORPTION_BODY_MAX_PCT': 35, # body must be <= this % of candle range to count as absorption
+    'OF_VP_LOOKBACK': 100,            # volume profile window for HVN/LVN mapping
+    'OF_VP_BINS': 30,
+    'OF_LVN_PCTL': 25,                # bins below this volume percentile = Low Volume Node
+    'OF_HVN_PCTL': 75,                # bins above this volume percentile = High Volume Node
+    'OF_RETEST_TOL_PCT': 0.15,        # % distance to an LVN level counted as "retest"
+    'OF_BREAKOUT_LOOKBACK': 20,       # bars used to define the balance range for breakout
+    'OF_SECOND_DRIVE_MAX_BARS': 12,   # max bars allowed between breakout and retest
+    'OF_SQUEEZE_ATR_MULT': 1.5,       # candle range vs ATR to qualify as a "squeeze" acceleration bar
+    'OF_SQUEEZE_VOL_MULT': 1.5,       # volume vs rolling avg to qualify as squeeze
+    'OF_BREAKEVEN_TRIGGER_ATR_MULT': 0.5,  # move SL to break-even after price moves this many ATR in favor
+    'OF_SL_BUFFER_TICKS_PCT': 0.03,   # extra % buffer beyond swing high/low, proxy for "1-2 ticks" buffer
+    'OF_RISK_BASE_PCT': 0.25,         # base risk % of equity per trade (Fabio: 0.25-0.5%)
+    'OF_RISK_HOUSE_MONEY_PCT': 0.50,  # risk % once trading with today's banked profit ("house money")
+    'OF_SESSION_NY_START_UTC': 13,    # New York session ~ 13:30-20:00 UTC (rounded to hour here)
+    'OF_SESSION_NY_END_UTC': 20,
+    'OF_SESSION_LDN_START_UTC': 7,    # London session ~ 07:00-16:00 UTC
+    'OF_SESSION_LDN_END_UTC': 16,
 }
 
 EXCHANGE_IDS = ['mexc', 'bybit', 'okx', 'gateio']
@@ -1185,6 +1212,478 @@ class RiskManager:
         return {"take_trade": True, "sizing": sizing, "signal": signal_dict}
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# ORDER FLOW PROXY MODULE — Fabio Valentino style (approximated from OHLCV)
+# ══════════════════════════════════════════════════════════════════════════
+# ⚠️ See CONFIG note above: this is an OHLCV-based approximation of order
+# flow concepts (CVD, absorption/aggression, LVN retest, squeeze), built
+# because fetch_ohlcv() has no real bid/ask tape or footprint data. Use it
+# as a research proxy, not a substitute for an actual order-flow platform.
+
+def calc_candle_delta_proxy(df):
+    """
+    Proxy for per-candle buy/sell aggression ('delta') using the classic
+    Chaikin Money-Flow-Multiplier idea:
+        mfm = ((close - low) - (high - close)) / (high - low)
+        delta_proxy = mfm * volume
+    mfm is +1 when the candle closes at its high (all buy aggression),
+    -1 when it closes at its low (all sell aggression), 0 if it closes
+    mid-range. This is NOT real tape delta, just a shape-based estimate.
+    """
+    df = df.copy()
+    rng = (df["high"] - df["low"]).replace(0, np.nan)
+    mfm = ((df["close"] - df["low"]) - (df["high"] - df["close"])) / rng
+    mfm = mfm.fillna(0.0)
+    df["delta_proxy"] = mfm * df["volume"]
+    return df
+
+def calc_cvd_proxy(df):
+    """Session-reset cumulative delta proxy (like session VWAP, but for delta)."""
+    df = calc_candle_delta_proxy(df)
+    day = df.index.date
+    df["cvd_proxy"] = pd.Series(df["delta_proxy"].values, index=df.index).groupby(day).cumsum()
+    return df
+
+def detect_absorption_proxy(df, vol_mult=None, body_max_pct=None):
+    """
+    Absorption proxy: unusually large volume but a small real body relative
+    to the candle's range = "punching a wall" (aggression got absorbed by
+    resting limit orders instead of pushing price further).
+    Returns a Series of '' / 'BULL_ABSORPTION' / 'BEAR_ABSORPTION'.
+    BULL_ABSORPTION: heavy volume, small body, closes in upper half -> sellers
+      tried to push down and got absorbed (potential bullish reversal/hold).
+    BEAR_ABSORPTION: heavy volume, small body, closes in lower half -> buyers
+      tried to push up and got absorbed.
+    """
+    vol_mult = vol_mult or CONFIG['OF_ABSORPTION_VOL_MULT']
+    body_max_pct = body_max_pct or CONFIG['OF_ABSORPTION_BODY_MAX_PCT']
+    df = df.copy()
+    avg_vol = df["volume"].rolling(20).mean()
+    rng = (df["high"] - df["low"]).replace(0, np.nan)
+    body_pct = (df["close"] - df["open"]).abs() / rng * 100
+    is_big_vol = df["volume"] > (avg_vol * vol_mult)
+    is_small_body = body_pct <= body_max_pct
+    closes_upper = (df["close"] - df["low"]) / rng > 0.5
+    closes_lower = ~closes_upper
+    sig = pd.Series('', index=df.index)
+    sig[is_big_vol & is_small_body & closes_upper] = 'BULL_ABSORPTION'
+    sig[is_big_vol & is_small_body & closes_lower] = 'BEAR_ABSORPTION'
+    return sig
+
+def build_volume_profile_nodes(df, lookback=None, bins=None, lvn_pctl=None, hvn_pctl=None):
+    """
+    Builds a volume profile over the lookback window and classifies bins as
+    POC / HVN (High Volume Node) / LVN (Low Volume Node) based on percentile
+    thresholds of volume-per-bin. Returns dict with poc, hvn_levels, lvn_levels
+    (each level = midpoint price of that bin).
+    """
+    lookback = lookback or CONFIG['OF_VP_LOOKBACK']
+    bins = bins or CONFIG['OF_VP_BINS']
+    lvn_pctl = lvn_pctl if lvn_pctl is not None else CONFIG['OF_LVN_PCTL']
+    hvn_pctl = hvn_pctl if hvn_pctl is not None else CONFIG['OF_HVN_PCTL']
+
+    data = df.tail(lookback)
+    if len(data) < 10:
+        return {"poc": None, "hvn_levels": [], "lvn_levels": []}
+
+    price_min, price_max = data["low"].min(), data["high"].max()
+    if price_max <= price_min:
+        return {"poc": None, "hvn_levels": [], "lvn_levels": []}
+
+    bin_edges = np.linspace(price_min, price_max, bins + 1)
+    vol_per_bin = np.zeros(bins)
+    tp = (data["high"] + data["low"] + data["close"]) / 3
+    bin_idx = np.clip(np.searchsorted(bin_edges, tp.values) - 1, 0, bins - 1)
+    for idx, vol in zip(bin_idx, data["volume"].values):
+        vol_per_bin[idx] += vol
+
+    bin_mid = (bin_edges[:-1] + bin_edges[1:]) / 2
+    nonzero_mask = vol_per_bin > 0
+    if not nonzero_mask.any():
+        return {"poc": None, "hvn_levels": [], "lvn_levels": []}
+
+    poc_idx = int(np.argmax(vol_per_bin))
+    poc_price = round(float(bin_mid[poc_idx]), 4)
+
+    vols_nonzero = vol_per_bin[nonzero_mask]
+    lvn_thresh = np.percentile(vols_nonzero, lvn_pctl)
+    hvn_thresh = np.percentile(vols_nonzero, hvn_pctl)
+
+    lvn_levels = sorted(round(float(p), 4) for p, v in zip(bin_mid, vol_per_bin)
+                         if 0 < v <= lvn_thresh)
+    hvn_levels = sorted(round(float(p), 4) for p, v in zip(bin_mid, vol_per_bin)
+                         if v >= hvn_thresh)
+
+    return {"poc": poc_price, "hvn_levels": hvn_levels, "lvn_levels": lvn_levels}
+
+def in_session(ts):
+    """
+    Fabio trades New York + London high-volatility sessions only.
+    ts: pandas Timestamp (assumed UTC-naive from exchange data, treated as UTC).
+    """
+    hour = ts.hour
+    ny = CONFIG['OF_SESSION_NY_START_UTC'] <= hour < CONFIG['OF_SESSION_NY_END_UTC']
+    ldn = CONFIG['OF_SESSION_LDN_START_UTC'] <= hour < CONFIG['OF_SESSION_LDN_END_UTC']
+    return ny or ldn, ("NY" if ny else ("LDN" if ldn else None))
+
+def _nearest_level(price, levels, tol_pct):
+    """Return nearest level within tol_pct of price, else None."""
+    if not levels:
+        return None
+    for lvl in levels:
+        if lvl == 0:
+            continue
+        if abs(price - lvl) / lvl * 100 <= tol_pct:
+            return lvl
+    return None
+
+def detect_second_drive_setup(df, vp_nodes, breakout_lookback=None, max_bars=None, tol_pct=None):
+    """
+    Fabio's 'wait for breakout, don't chase first drive, enter on retest of
+    LVN with fresh aggression' pattern, approximated on OHLCV:
+      1. Detect a breakout of the recent balance range (prior N-bar high/low).
+      2. Within max_bars afterwards, look for the price coming back to
+         retest a nearby LVN level (support/resistance handoff zone).
+      3. Confirm with delta_proxy aggression in the breakout direction AND
+         rising volume on the retest bar (bubbles-like confirmation).
+    Returns (direction, reason) or (None, reason).
+    """
+    breakout_lookback = breakout_lookback or CONFIG['OF_BREAKOUT_LOOKBACK']
+    max_bars = max_bars or CONFIG['OF_SECOND_DRIVE_MAX_BARS']
+    tol_pct = tol_pct or CONFIG['OF_RETEST_TOL_PCT']
+
+    if len(df) < breakout_lookback + max_bars + 5:
+        return None, "Not enough data for second-drive scan"
+
+    window = df.tail(breakout_lookback + max_bars + 1).copy()
+    range_part = window.iloc[:breakout_lookback]
+    later_part = window.iloc[breakout_lookback:]
+
+    range_high = range_part["high"].max()
+    range_low = range_part["low"].min()
+
+    breakout_dir = None
+    breakout_idx = None
+    for i, (idx, row) in enumerate(later_part.iterrows()):
+        if row["close"] > range_high:
+            breakout_dir = "BUY"; breakout_idx = i; break
+        if row["close"] < range_low:
+            breakout_dir = "SELL"; breakout_idx = i; break
+
+    if breakout_dir is None:
+        return None, "No breakout of balance range yet"
+
+    after_breakout = later_part.iloc[breakout_idx:]
+    if len(after_breakout) < 2:
+        return None, "Breakout too recent, waiting for retest"
+
+    lvn_levels = vp_nodes.get("lvn_levels", [])
+    last_row = after_breakout.iloc[-1]
+    nearest_lvn = _nearest_level(last_row["close"], lvn_levels, tol_pct)
+    if nearest_lvn is None:
+        return None, "Waiting for LVN retest (no fake-out entry on first drive)"
+
+    avg_vol = df["volume"].tail(20).mean()
+    aggression_ok = last_row["volume"] > avg_vol
+    delta_ok = True
+    if "delta_proxy" in df.columns:
+        last_delta = df["delta_proxy"].iloc[-1]
+        delta_ok = (last_delta > 0) if breakout_dir == "BUY" else (last_delta < 0)
+
+    if aggression_ok and delta_ok:
+        return breakout_dir, f"SECOND DRIVE {breakout_dir} @ LVN retest {nearest_lvn}"
+    return None, "Retest found but aggression/delta not confirming yet"
+
+def detect_squeeze_proxy(df, atr_series):
+    """
+    Squeeze model proxy: trapped side gets forced out -> a sudden
+    range-expansion candle (range >> ATR) with volume spike, in the
+    direction that breaks a recent swing level. Approximates the
+    "acceleration" Fabio describes when stops from the losing side cluster.
+    """
+    if len(df) < 25 or atr_series is None or len(atr_series) < 25:
+        return None, "Not enough data for squeeze scan"
+
+    last = df.iloc[-1]
+    last_atr = atr_series.iloc[-1]
+    if pd.isna(last_atr) or last_atr <= 0:
+        return None, "ATR unavailable"
+
+    candle_range = last["high"] - last["low"]
+    avg_vol = df["volume"].tail(20).mean()
+
+    is_expansion = candle_range >= (last_atr * CONFIG['OF_SQUEEZE_ATR_MULT'])
+    is_vol_spike = last["volume"] >= (avg_vol * CONFIG['OF_SQUEEZE_VOL_MULT'])
+
+    if not (is_expansion and is_vol_spike):
+        return None, "No squeeze/acceleration bar detected"
+
+    prior_high = df["high"].iloc[-21:-1].max()
+    prior_low = df["low"].iloc[-21:-1].min()
+
+    if last["close"] > prior_high:
+        return "BUY", f"SQUEEZE LONG — range {candle_range:.4f} >= {CONFIG['OF_SQUEEZE_ATR_MULT']}x ATR, vol spike"
+    if last["close"] < prior_low:
+        return "SELL", f"SQUEEZE SHORT — range {candle_range:.4f} >= {CONFIG['OF_SQUEEZE_ATR_MULT']}x ATR, vol spike"
+    return None, "Expansion bar but no clean break of prior swing level"
+
+def calc_orderflow_sl(direction, df, atr):
+    """
+    SL placed just beyond the recent swing high/low (proxy for 'aggression
+    bubble + 1-2 ticks'), buffered by OF_SL_BUFFER_TICKS_PCT to avoid getting
+    clipped by slippage on the acceleration move.
+    """
+    lookback = df.tail(10)
+    buffer_pct = CONFIG['OF_SL_BUFFER_TICKS_PCT'] / 100
+    if direction == "BUY":
+        swing_low = lookback["low"].min()
+        return round(swing_low * (1 - buffer_pct), 4)
+    if direction == "SELL":
+        swing_high = lookback["high"].max()
+        return round(swing_high * (1 + buffer_pct), 4)
+    return None
+
+def apply_breakeven_trigger(direction, entry_price, current_high, current_low, atr, sl):
+    """
+    Once price has moved OF_BREAKEVEN_TRIGGER_ATR_MULT * ATR in favor,
+    move SL to break-even (entry_price). Returns the (possibly) updated SL.
+    """
+    trigger_dist = atr * CONFIG['OF_BREAKEVEN_TRIGGER_ATR_MULT']
+    if direction == "BUY" and current_high >= entry_price + trigger_dist:
+        return max(sl, entry_price)
+    if direction == "SELL" and current_low <= entry_price - trigger_dist:
+        return min(sl, entry_price)
+    return sl
+
+
+class OrderFlowRiskManager(RiskManager):
+    """
+    Extends RiskManager with Fabio's "risk the house money, not the original
+    equity" idea: base risk stays small (0.25%) on the account's core capital;
+    once the day is in profit, size the NEXT trade's risk off the larger
+    house-money percentage instead, while the core capital risk stays capped.
+    """
+    def __init__(self, account_capital_usdt):
+        super().__init__(account_capital_usdt)
+
+    def current_risk_pct(self):
+        if self.daily_pnl_pct > 0:
+            return CONFIG['OF_RISK_HOUSE_MONEY_PCT']
+        return CONFIG['OF_RISK_BASE_PCT']
+
+    def position_size_orderflow(self, entry_price, sl_price, leverage=1):
+        leverage = min(leverage, CONFIG['MAX_LEVERAGE'])
+        risk_pct = self.current_risk_pct()
+        risk_amount_usdt = self.capital * (risk_pct / 100)
+        sl_distance = abs(entry_price - sl_price)
+        if sl_distance <= 0:
+            return {"error": "invalid SL distance"}
+        qty = risk_amount_usdt / sl_distance
+        notional = qty * entry_price
+        margin_required = notional / leverage
+        return {
+            "qty": round(qty, 6),
+            "notional_usdt": round(notional, 2),
+            "margin_required_usdt": round(margin_required, 2),
+            "leverage_used": leverage,
+            "risk_amount_usdt": round(risk_amount_usdt, 2),
+            "risk_pct_used": risk_pct,
+            "mode": "house_money" if risk_pct == CONFIG['OF_RISK_HOUSE_MONEY_PCT'] else "base",
+        }
+
+
+def analyze_orderflow(symbol, entry_timeframe="1m", structure_timeframe="5m"):
+    """
+    Main live entry point for the Fabio-style order-flow-proxy strategy.
+    Combines: session filter -> balance/consolidation via volume profile ->
+    second-drive retest OR squeeze trigger -> delta/absorption confirmation
+    -> SL beyond swing level -> TP at POC / prior balance area.
+    """
+    df_entry, ex_id = fetch_ohlcv_failover(symbol, entry_timeframe, CONFIG['LIMIT'])
+    df_5m, _ = fetch_ohlcv_failover(symbol, structure_timeframe, CONFIG['LIMIT'])
+    if df_entry is None or df_5m is None:
+        return {"symbol": symbol, "error": "no data"}
+
+    now_ts = df_entry.index[-1]
+    session_ok, session_name = in_session(now_ts)
+
+    df_entry = add_indicators_vectorized(df_entry)
+    df_entry = calc_cvd_proxy(df_entry)
+    df_entry["absorption"] = detect_absorption_proxy(df_entry)
+
+    vp_nodes = build_volume_profile_nodes(df_5m)
+    atr_series = calc_atr(df_entry, CONFIG['ATR_PERIOD'])
+
+    if not session_ok:
+        return {
+            "symbol": symbol, "timeframe": entry_timeframe, "signal": "WAIT",
+            "reason": "Outside NY/London high-volatility session — Fabio skips this",
+            "session": session_name, "price": round(float(df_entry["close"].iloc[-1]), 4),
+        }
+
+    price = float(df_entry["close"].iloc[-1])
+    atr_now = float(atr_series.iloc[-1]) if not pd.isna(atr_series.iloc[-1]) else None
+
+    direction, reason = detect_second_drive_setup(df_entry, vp_nodes)
+    setup_type = "SECOND_DRIVE"
+    if direction is None:
+        direction, sq_reason = detect_squeeze_proxy(df_entry, atr_series)
+        setup_type = "SQUEEZE"
+        reason = sq_reason if direction else f"{reason} | {sq_reason}"
+
+    if direction is None or atr_now is None:
+        return {
+            "symbol": symbol, "timeframe": entry_timeframe, "signal": "WAIT",
+            "reason": reason, "session": session_name, "price": round(price, 4),
+            "vp_nodes": vp_nodes,
+        }
+
+    sl = calc_orderflow_sl(direction, df_entry, atr_now)
+    poc = vp_nodes.get("poc")
+    if poc is not None:
+        tp = poc
+    else:
+        tp, _ = calc_tp_sl(direction, price, atr_now)
+
+    return {
+        "symbol": symbol, "timeframe": entry_timeframe, "signal": direction,
+        "setup_type": setup_type, "reason": reason, "session": session_name,
+        "price": round(price, 4), "entry": round(price, 4),
+        "sl": sl, "tp": round(tp, 4) if tp is not None else None,
+        "atr": round(atr_now, 4),
+        "cvd_proxy": round(float(df_entry["cvd_proxy"].iloc[-1]), 2),
+        "absorption": df_entry["absorption"].iloc[-1] or None,
+        "vp_nodes": vp_nodes,
+        "exchange": ex_id,
+        "note": "OHLCV-based order-flow PROXY — not real tape/footprint data. Forward-test on paper first.",
+    }
+
+
+def run_orderflow_backtest(symbol, entry_timeframe="1m", structure_timeframe="5m"):
+    """
+    Backtests the order-flow proxy strategy (second-drive + squeeze),
+    with session filtering and break-even management, mirroring
+    analyze_orderflow()'s logic bar-by-bar.
+    """
+    limit = CONFIG['BACKTEST_CANDLES']
+    df_entry, ex_id = fetch_ohlcv_failover(symbol, entry_timeframe, limit)
+    df_5m, _ = fetch_ohlcv_failover(symbol, structure_timeframe, limit)
+    if df_entry is None or df_5m is None:
+        return {"error": "no data"}
+
+    df_entry = add_indicators_vectorized(df_entry)
+    df_entry = calc_cvd_proxy(df_entry)
+    atr_series = calc_atr(df_entry, CONFIG['ATR_PERIOD'])
+
+    closes = df_entry["close"].values
+    highs = df_entry["high"].values
+    lows = df_entry["low"].values
+    n = len(df_entry)
+    WINDOW = CONFIG['BACKTEST_OUTCOME_WINDOW']
+    min_lookback = CONFIG['OF_BREAKOUT_LOOKBACK'] + CONFIG['OF_SECOND_DRIVE_MAX_BARS'] + 25
+    results = []
+
+    for i in range(min_lookback, n - WINDOW):
+        ts = df_entry.index[i]
+        session_ok, session_name = in_session(ts)
+        if not session_ok:
+            continue
+
+        sub_df = df_entry.iloc[:i + 1]
+        vp_source = df_5m[df_5m.index <= ts]
+        if len(vp_source) < 10:
+            continue
+        vp_nodes = build_volume_profile_nodes(vp_source)
+
+        direction, _ = detect_second_drive_setup(sub_df, vp_nodes)
+        setup_type = "SECOND_DRIVE"
+        if direction is None:
+            direction, _ = detect_squeeze_proxy(sub_df, atr_series.iloc[:i + 1])
+            setup_type = "SQUEEZE"
+        if direction is None:
+            continue
+
+        atr_now = atr_series.iloc[i]
+        if pd.isna(atr_now) or atr_now <= 0:
+            continue
+
+        price = closes[i]
+        sl = calc_orderflow_sl(direction, sub_df, atr_now)
+        poc = vp_nodes.get("poc")
+        tp = poc if poc is not None else (price + atr_now * CONFIG['TP_ATR_MULT'] if direction == "BUY"
+                                           else price - atr_now * CONFIG['TP_ATR_MULT'])
+        if sl is None or tp is None:
+            continue
+        # Sanity: TP must be on the correct side of entry
+        if direction == "BUY" and tp <= price:
+            continue
+        if direction == "SELL" and tp >= price:
+            continue
+
+        current_sl = sl
+        outcome, exit_price = "OPEN", None
+        for j in range(i + 1, min(i + WINDOW + 1, n)):
+            fh, fl = highs[j], lows[j]
+            current_sl = apply_breakeven_trigger(direction, price, fh, fl, atr_now, current_sl)
+            if direction == "BUY":
+                if fh >= tp: outcome, exit_price = "WIN", tp; break
+                if fl <= current_sl:
+                    outcome = "BREAKEVEN" if current_sl >= price else "LOSS"
+                    exit_price = current_sl; break
+            else:
+                if fl <= tp: outcome, exit_price = "WIN", tp; break
+                if fh >= current_sl:
+                    outcome = "BREAKEVEN" if current_sl <= price else "LOSS"
+                    exit_price = current_sl; break
+        if outcome == "OPEN":
+            continue
+
+        pnl_pct = ((exit_price - price) / price * 100 if direction == "BUY"
+                   else (price - exit_price) / price * 100) - CONFIG['FEE_PCT']
+        results.append({
+            "time": df_entry.index[i].strftime("%m-%d %H:%M"), "session": session_name,
+            "setup": setup_type, "direction": direction,
+            "entry": round(price, 2), "tp": round(tp, 2), "sl": round(sl, 2),
+            "outcome": outcome, "pnl_pct": round(pnl_pct, 4),
+        })
+
+    if not results:
+        return {"symbol": symbol, "timeframe": entry_timeframe, "total_trades": 0,
+                "win_rate": 0, "message": "No order-flow-proxy signals in this window"}
+
+    wins = [r for r in results if r["outcome"] in ("WIN", "BREAKEVEN") and r["pnl_pct"] > 0]
+    losses = [r for r in results if r["pnl_pct"] <= 0]
+    total = len(results)
+    gross_profit = sum(r["pnl_pct"] for r in wins) if wins else 0.0
+    gross_loss = abs(sum(r["pnl_pct"] for r in losses)) if losses else 0.0
+    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
+    win_rate = round(len(wins) / total * 100, 1) if total > 0 else 0
+    avg_win = round(gross_profit / len(wins), 4) if wins else 0.0
+    avg_loss = round(gross_loss / len(losses), 4) if losses else 0.0
+    expectancy = round((win_rate / 100 * avg_win) - ((1 - win_rate / 100) * avg_loss), 4)
+
+    by_setup = {}
+    for r in results:
+        by_setup.setdefault(r["setup"], []).append(r)
+    setup_breakdown = {}
+    for k, rs in by_setup.items():
+        w = [r for r in rs if r["pnl_pct"] > 0]
+        setup_breakdown[k] = {
+            "trades": len(rs),
+            "win_rate": round(len(w) / len(rs) * 100, 1) if rs else 0,
+        }
+
+    return {
+        "symbol": symbol, "timeframe": entry_timeframe, "candles_tested": limit,
+        "total_trades": total, "wins": len(wins), "losses": len(losses),
+        "win_rate": win_rate, "profit_factor": profit_factor,
+        "expectancy_pct": expectancy, "setup_breakdown": setup_breakdown,
+        "recent_trades": results[-10:],
+        "note": "OHLCV-based order-flow PROXY backtest — no real tape/footprint data was used. "
+                "Treat results as directional research, not a guarantee.",
+    }
+
+
 # ── COMBINED FACTOR BACKTEST (votes include FVG + Inducement) ─
 def run_combined_backtest(symbol, timeframe="5m", min_agree=2, strong_adx=25, use_breakeven=True):
     """
@@ -1602,6 +2101,19 @@ if __name__ == "__main__":
         print(run_backtest(SYMBOL, timeframe="5m"))
     elif len(sys.argv) > 1 and sys.argv[1] == "factors":
         step1_factor_report()
+    elif len(sys.argv) > 1 and sys.argv[1] == "orderflow":
+        SYMBOL = "BTC/USDT:USDT"
+        print(f"Order-flow-proxy live signal for {SYMBOL}:")
+        sig = analyze_orderflow(SYMBOL, entry_timeframe="1m", structure_timeframe="5m")
+        print(sig)
+        print("\nHouse-money risk sizing example (10,000 USDT capital, 3x leverage):")
+        ofrm = OrderFlowRiskManager(account_capital_usdt=10000)
+        if sig.get("signal") in ("BUY", "SELL") and sig.get("sl") is not None:
+            print(ofrm.position_size_orderflow(sig["entry"], sig["sl"], leverage=3))
+        else:
+            print("No active signal to size.")
+        print("\nOrder-flow-proxy backtest (1m entry / 5m structure):")
+        print(run_orderflow_backtest(SYMBOL, entry_timeframe="1m", structure_timeframe="5m"))
     else:
         factor_result = step1_factor_report()
         grid_results = step2_grid_search()
