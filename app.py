@@ -1,6 +1,8 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from scanner import analyze, run_backtest, run_backtest_full, run_factor_backtest, run_combined_backtest, run_funding_rate_backtest
+# new realistic backtest import
+from scanner_fixed import improved_run_backtest
 import math
 
 app = Flask(__name__)
@@ -63,6 +65,23 @@ def backtest(symbol, timeframe):
         sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT"}
         full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
         result = run_backtest(full_symbol, timeframe)
+        return jsonify(sanitize(result))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# New realistic backtest endpoint
+@app.route("/api/backtest-realistic/<symbol>/<timeframe>")
+def backtest_realistic(symbol, timeframe):
+    try:
+        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT"}
+        full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
+        # optional query params
+        capital = float(request.args.get('capital', 10000))
+        fee = float(request.args.get('fee', 0.0004))
+        slippage = float(request.args.get('slippage', 0.0003))
+        leverage = request.args.get('leverage', None)
+        leverage = int(leverage) if leverage is not None else None
+        result = improved_run_backtest(full_symbol, timeframe, capital_usdt=capital, fee_taker=fee, slippage=slippage, leverage=leverage)
         return jsonify(sanitize(result))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
