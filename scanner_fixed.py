@@ -116,11 +116,10 @@ def improved_run_backtest(symbol, timeframe='5m', limit=None,
         elif div == 'BEAR_DIV': sell_score += 3
         if struct in ('BOS_BULL', 'CHoCH_BULL'): buy_score += 2
         elif struct in ('BOS_BEAR', 'CHoCH_BEAR'): sell_score += 2
-        if 'vp_poc' in df.columns:
-            poc = df['vp_poc'].iloc[i]
-        if not pd.isna(poc):
-            buy_score += 0.5 if price_at_signal > poc else 0
-            sell_score += 0.5 if price_at_signal <= poc else 0
+        # NEW (fixed):
+        # POC column was never populated in this file, so this check is removed.
+        # (If you want POC scoring back, call base.calc_volume_profile() per-row 
+        # or use a rolling volume profile before this loop.)
         if not pd.isna(df['vwap'].iloc[i]):
             buy_score += 0.5 if price_at_signal > df['vwap'].iloc[i] else 0
             sell_score += 0.5 if price_at_signal <= df['vwap'].iloc[i] else 0
