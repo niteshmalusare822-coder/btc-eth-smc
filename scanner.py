@@ -77,12 +77,12 @@ CONFIG = {
     'CHOPPINESS_PERIOD': 14,
     'CHOPPINESS_TREND_MAX': 61.8,
     'LIMIT': 150,
-    'TP_ATR_MULT': 2.0,
-    'SL_ATR_MULT': 1.0,
+    'TP_ATR_MULT': 1.5,   # IMPROVEMENT #6: was 2.0 — take quicker scalp wins
+    'SL_ATR_MULT': 0.8,   # IMPROVEMENT #6: was 1.0 — tighter stops for scalping
     'RSI_OVERBOUGHT': 70,
     'RSI_OVERSOLD': 30,
     'BACKTEST_CANDLES': 6000,
-    'BACKTEST_OUTCOME_WINDOW': 20,
+    'BACKTEST_OUTCOME_WINDOW': 10,  # IMPROVEMENT #6: was 20 — tighter realistic scalp window
 
     'FVG_MIN_GAP_PCT': 0.02,
     'BSL_SSL_LOOKBACK': 20,
@@ -96,6 +96,38 @@ CONFIG = {
     'MAX_DAILY_LOSS_PCT': 3.0,      # circuit breaker: stop trading for the day
     'MAX_LEVERAGE': 5,              # sanity cap regardless of exchange max
     'MAX_CONCURRENT_POSITIONS': 2,  # BTC + ETH at most, don't stack more
+
+    # ── NEW: 10 scalping improvements ──────────────────────────────────
+    # #1 Slippage-aware backtesting
+    'SLIPPAGE_BPS': 2,               # 2 basis points slippage assumption
+    'REALISTIC_BACKTEST': True,      # if True, backtests apply slippage to fills
+
+    # #2 Volatility-adaptive position sizing
+    'ADAPTIVE_SIZE_HIGH_VOL_RATIO': 1.5,   # atr/recent_atr_avg above this = high-vol
+    'ADAPTIVE_SIZE_LOW_VOL_RATIO': 0.7,    # below this = low-vol
+    'ADAPTIVE_SIZE_HIGH_VOL_MULT': 0.6,    # shrink size 40% in high vol
+    'ADAPTIVE_SIZE_LOW_VOL_MULT': 1.2,     # grow size 20% in low vol
+
+    # #3 Entry confluence filter
+    'MIN_CONFLUENCE_SCORE': 5.0,     # minimum weighted confluence to allow entry
+
+    # #7 Prime trading hours (separate from OF_SESSION_* used by order-flow module)
+    'PRIME_HOURS_ASIAN_DEAD_START': 0,
+    'PRIME_HOURS_ASIAN_DEAD_END': 8,
+    'PRIME_HOURS_OVERLAP_START': 8,
+    'PRIME_HOURS_OVERLAP_END': 17,
+    'PRIME_HOURS_NY_CLOSE_START': 17,
+    'PRIME_HOURS_NY_CLOSE_END': 20,
+
+    # #8 Grid-search tuning
+    'GRID_MIN_WIN_RATE': 50.0,       # skip tuning configs below this win rate
+
+    # #9 Volume spike / momentum filter
+    'VOLUME_SPIKE_LOOKBACK': 20,
+    'VOLUME_SPIKE_MULT': 1.5,        # require volume >= 1.5x rolling average
+
+    # #10 Consecutive-loss tilt prevention
+    'MAX_CONSECUTIVE_LOSSES': 3,     # pause new trades after this many losses in a row
 
     # ── NEW: Fabio Valentino order-flow-STYLE proxy settings ──────────────
     # ⚠️ IMPORTANT: fetch_ohlcv() only returns O/H/L/C/Volume candles — it does
@@ -573,7 +605,37 @@ def get_ltf_scores(snap_1m, snap_5m):
 
     return round(buy_score, 2), round(sell_score, 2)
 
-def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regime_5m, entry_rsi=None):
+# IMPROVEMENT #3: Entry confluence filter — the base score system uses many
+# lightweight 0.5-weight factors that can add up without any single strong
+# signal. This counts only the STRONG factors (structure break, divergence,
+# sweep+density combo, pattern, EMA alignment across both timeframes) and
+# requires a minimum weighted confluence before an entry is allowed.
+def calc_confluence_score(snap_1m, snap_5m):
+    confluence = 0.0
+
+    if snap_1m["pattern"] == "BUY" or snap_1m["pattern"] == "SELL":
+        confluence += 2
+
+    if snap_1m["structure_event"] in ("CHoCH_BULL", "BOS_BULL", "CHoCH_BEAR", "BOS_BEAR"):
+        confluence += 3
+
+    if snap_1m["divergence"] in ("BULL_DIV", "BEAR_DIV"):
+        confluence += 2.5
+
+    if (snap_1m["sweep"] == "EQUAL_LOW_SWEEP" and (snap_1m.get("eq_low_count") or 0) >= 3) or \
+       (snap_1m["sweep"] == "EQUAL_HIGH_SWEEP" and (snap_1m.get("eq_high_count") or 0) >= 3):
+        confluence += 3
+
+    ema_1m_up = snap_1m["ema5"] > snap_1m["ema20"]
+    ema_5m_up = snap_5m["ema5"] > snap_5m["ema20"]
+    if ema_1m_up == ema_5m_up:
+        confluence += 1.5
+
+    return round(confluence, 2)
+
+
+def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regime_5m,
+                      entry_rsi=None, snap_1m=None, snap_5m=None):
     if pd.isna(entry_adx) or entry_adx < CONFIG['ADX_MIN']:
         return None, f"NO TREND (ADX {entry_adx:.1f} < {CONFIG['ADX_MIN']})"
     if entry_rsi is not None and not pd.isna(entry_rsi):
@@ -601,13 +663,59 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regi
     if regime_1m["regime"] != "TRENDING" or regime_5m["regime"] != "TRENDING":
         return None, "BLOCKED (Not Dynamic Trending Structure)"
 
+    # IMPROVEMENT #3: confluence gate (only enforced when snaps are provided,
+    # so existing callers that don't pass snaps keep their old behavior).
+    confluence_score = None
+    if snap_1m is not None and snap_5m is not None:
+        confluence_score = calc_confluence_score(snap_1m, snap_5m)
+        if confluence_score < CONFIG['MIN_CONFLUENCE_SCORE']:
+            return None, f"BLOCKED (Low confluence {confluence_score:.1f} < {CONFIG['MIN_CONFLUENCE_SCORE']})"
+
     if buy_score >= CONFIG['SCORE_THRESHOLD'] and buy_score > sell_score:
         if (buy_score - sell_score) >= CONFIG['SCORE_GAP_MIN'] and htf_bias in ("BULLISH", "NEUTRAL"):
-            return "BUY", "BUY ✅"
+            return "BUY", "BUY ✅" + (f" (confluence {confluence_score:.1f})" if confluence_score is not None else "")
     if sell_score >= CONFIG['SCORE_THRESHOLD'] and sell_score > buy_score:
         if (sell_score - buy_score) >= CONFIG['SCORE_GAP_MIN'] and htf_bias in ("BEARISH", "NEUTRAL"):
-            return "SELL", "SELL ✅"
+            return "SELL", "SELL ✅" + (f" (confluence {confluence_score:.1f})" if confluence_score is not None else "")
     return None, "WAIT (score/bias aligned nahi)"
+
+
+# IMPROVEMENT #5: Intra-trade early exit — don't blindly hold to SL if the
+# setup that justified the trade has broken down. Call this periodically
+# while a position is open, passing the CURRENT snap and the snap captured
+# AT ENTRY (analyze_timeframe() output for both).
+def should_exit_early(snap_current, snap_entry, direction):
+    if direction == "BUY" and snap_current["ema5"] <= snap_current["ema20"]:
+        if snap_entry["ema5"] > snap_entry["ema20"]:
+            return True, "EMA structure reversed"
+    if direction == "SELL" and snap_current["ema5"] >= snap_current["ema20"]:
+        if snap_entry["ema5"] < snap_entry["ema20"]:
+            return True, "EMA structure reversed"
+
+    if snap_current["regime"]["regime"] == "RANGING":
+        return True, "Regime changed to RANGING"
+
+    if direction == "BUY" and snap_current["divergence"] == "BEAR_DIV":
+        return True, "Bearish divergence formed"
+    if direction == "SELL" and snap_current["divergence"] == "BULL_DIV":
+        return True, "Bullish divergence formed"
+
+    return False, None
+
+
+# IMPROVEMENT #7: Prime trading hours filter — scalping dies during the
+# Asian low-volume window. Blocks trades outside NY/London active hours.
+def is_prime_trading_hours(now_utc=None):
+    from datetime import datetime, timezone
+    utc_hour = (now_utc or datetime.now(timezone.utc)).hour
+
+    if CONFIG['PRIME_HOURS_ASIAN_DEAD_START'] <= utc_hour < CONFIG['PRIME_HOURS_ASIAN_DEAD_END']:
+        return False, "Asian dead zone (low volume)"
+    if CONFIG['PRIME_HOURS_OVERLAP_START'] <= utc_hour < CONFIG['PRIME_HOURS_OVERLAP_END']:
+        return True, "Prime overlap (London+NY)"
+    if CONFIG['PRIME_HOURS_NY_CLOSE_START'] <= utc_hour < CONFIG['PRIME_HOURS_NY_CLOSE_END']:
+        return True, "NY session"
+    return False, "After hours"
 
 def calc_tp_sl(direction, price, atr):
     if direction is None or atr is None or pd.isna(atr):
@@ -617,6 +725,61 @@ def calc_tp_sl(direction, price, atr):
     if direction == "BUY":
         return round(price + tp_dist, 4), round(price - sl_dist, 4)
     return round(price - tp_dist, 4), round(price + sl_dist, 4)
+
+
+# IMPROVEMENT #1: Slippage-aware TP/SL — real scalping fills are never
+# exactly at the TP/SL price. This pulls TP in and pushes SL out by an
+# assumed slippage amount so backtest results aren't overly optimistic.
+def calc_tp_sl_with_slippage(direction, price, atr, slippage_bps=None):
+    if direction is None or atr is None or pd.isna(atr):
+        return None, None
+    slippage_bps = slippage_bps if slippage_bps is not None else CONFIG['SLIPPAGE_BPS']
+    sl_dist = round(CONFIG['SL_ATR_MULT'] * atr, 4)
+    tp_dist = round(CONFIG['TP_ATR_MULT'] * atr, 4)
+    slippage_amt = price * (slippage_bps / 10000)
+
+    if direction == "BUY":
+        tp = round(price + tp_dist - slippage_amt, 4)   # TP pulled back (worse fill)
+        sl = round(price - sl_dist - slippage_amt, 4)   # SL pushed further away (worse fill)
+    else:
+        tp = round(price - tp_dist + slippage_amt, 4)
+        sl = round(price + sl_dist + slippage_amt, 4)
+    return tp, sl
+
+
+# IMPROVEMENT #9: Volume spike / momentum filter — scalpers need genuine
+# participation behind a move. Flags bars where volume is well above its
+# recent rolling average.
+def detect_volume_spike(df, lookback=None, multiplier=None):
+    lookback = lookback or CONFIG['VOLUME_SPIKE_LOOKBACK']
+    multiplier = multiplier or CONFIG['VOLUME_SPIKE_MULT']
+    avg_vol = df["volume"].rolling(lookback).mean()
+    vol_ratio = df["volume"] / (avg_vol + 1e-10)
+    return vol_ratio >= multiplier
+
+
+# IMPROVEMENT #4: Partial profit-taking — instead of one TP, scale out at
+# three levels (50% / 30% / 20%) so gains are locked progressively instead
+# of an all-or-nothing single target.
+def calc_tp_sl_scaled(direction, price, atr):
+    if direction is None or atr is None or pd.isna(atr):
+        return None
+    sl_dist = round(CONFIG['SL_ATR_MULT'] * atr, 4)
+    tp_base = round(CONFIG['TP_ATR_MULT'] * atr, 4)
+
+    if direction == "BUY":
+        sl = round(price - sl_dist, 4)
+        tp1 = round(price + tp_base * 0.5, 4)    # 50% closed here
+        tp2 = round(price + tp_base * 0.75, 4)   # 30% closed here
+        tp3 = round(price + tp_base, 4)          # 20% rides to full target
+    else:
+        sl = round(price + sl_dist, 4)
+        tp1 = round(price - tp_base * 0.5, 4)
+        tp2 = round(price - tp_base * 0.75, 4)
+        tp3 = round(price - tp_base, 4)
+
+    return {"sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
+            "tp1_pct": 50, "tp2_pct": 30, "tp3_pct": 20}
 
 
 import time as _time
@@ -640,22 +803,41 @@ def _get_htf_bias_cached(symbol):
 _LTF_CACHE = {}
 _LTF_CACHE_TTL = 15
 
-def _get_ltf_snaps_cached(symbol, preloaded_1m_snap=None):
+# BUGFIX: previously every call to analyze() — regardless of the requested
+# entry timeframe — scored off a fixed 1m+5m pair cached PER SYMBOL (not per
+# timeframe). That meant the "15m" and "1h" dashboard cards showed the exact
+# same buy_score/sell_score as the "5m" card, because they all read the same
+# stale symbol-level cache entry. This maps each entry timeframe to its own
+# "confirmation" timeframe one step up, and caches per (symbol, timeframe)
+# so every card genuinely reflects its own timeframe's data.
+TIMEFRAME_CONFIRM_MAP = {
+    "1m": "5m",
+    "5m": "15m",
+    "15m": "1h",
+    "1h": "4h",
+}
+
+def _get_ltf_snaps_cached(symbol, timeframe="1m", preloaded_entry_snap=None):
     now = _time.time()
-    cached = _LTF_CACHE.get(symbol)
+    confirm_tf = TIMEFRAME_CONFIRM_MAP.get(timeframe, "5m")
+    cache_key = (symbol, timeframe)
+    cached = _LTF_CACHE.get(cache_key)
     if cached and (now - cached["ts"]) < _LTF_CACHE_TTL:
-        return cached["snap_1m"], cached["snap_5m"]
-    # FIX #5: if caller already fetched+analyzed 1m (entry timeframe == 1m),
-    # reuse it instead of hitting the API again.
-    if preloaded_1m_snap is not None:
-        snap_1m = preloaded_1m_snap
+        return cached["snap_entry"], cached["snap_confirm"]
+
+    # If caller already fetched+analyzed the entry timeframe, reuse it
+    # instead of hitting the API again.
+    if preloaded_entry_snap is not None:
+        snap_entry_tf = preloaded_entry_snap
     else:
-        df_1m, _ = fetch_ohlcv_failover(symbol, "1m", CONFIG['LIMIT'])
-        snap_1m = analyze_timeframe(df_1m) if df_1m is not None else None
-    df_5m, _ = fetch_ohlcv_failover(symbol, "5m", CONFIG['LIMIT'])
-    snap_5m = analyze_timeframe(df_5m) if df_5m is not None else None
-    _LTF_CACHE[symbol] = {"snap_1m": snap_1m, "snap_5m": snap_5m, "ts": now}
-    return snap_1m, snap_5m
+        df_entry_tf, _ = fetch_ohlcv_failover(symbol, timeframe, CONFIG['LIMIT'])
+        snap_entry_tf = analyze_timeframe(df_entry_tf) if df_entry_tf is not None else None
+
+    df_confirm, _ = fetch_ohlcv_failover(symbol, confirm_tf, CONFIG['LIMIT'])
+    snap_confirm = analyze_timeframe(df_confirm) if df_confirm is not None else None
+
+    _LTF_CACHE[cache_key] = {"snap_entry": snap_entry_tf, "snap_confirm": snap_confirm, "ts": now}
+    return snap_entry_tf, snap_confirm
 
 
 def analyze(symbol, timeframe="1m"):
@@ -670,19 +852,43 @@ def analyze(symbol, timeframe="1m"):
 
     htf_bias = _get_htf_bias_cached(symbol)
 
-    # FIX #5: pass snap_entry through if timeframe is already 1m
-    preloaded = snap_entry if timeframe == "1m" else None
-    snap_1m, snap_5m = _get_ltf_snaps_cached(symbol, preloaded_1m_snap=preloaded)
-    if snap_1m is None: snap_1m = snap_entry
-    if snap_5m is None: snap_5m = snap_entry
+    # BUGFIX: pass snap_entry through so we don't re-fetch the entry
+    # timeframe's data, and fetch its own confirmation timeframe (one
+    # step up) instead of always reusing a fixed 1m/5m pair. This makes
+    # each entry timeframe's score genuinely reflect that timeframe.
+    snap_entry_tf, snap_confirm = _get_ltf_snaps_cached(
+        symbol, timeframe=timeframe, preloaded_entry_snap=snap_entry
+    )
+    if snap_entry_tf is None: snap_entry_tf = snap_entry
+    if snap_confirm is None: snap_confirm = snap_entry
 
-    buy_score, sell_score = get_ltf_scores(snap_1m, snap_5m)
+    # IMPROVEMENT #7: skip entries outside prime NY/London hours
+    prime_ok, prime_reason = is_prime_trading_hours()
+    if not prime_ok:
+        return {
+            "symbol": symbol, "timeframe": timeframe, "price": round(price, 4),
+            "signal": "WAIT", "reason": f"BLOCKED ({prime_reason})",
+        }
+
+    buy_score, sell_score = get_ltf_scores(snap_entry_tf, snap_confirm)
     direction, reason = decide_direction(
         buy_score, sell_score, htf_bias, snap_entry["adx"],
-        snap_1m["regime"], snap_5m["regime"], entry_rsi=rsi_now
+        snap_entry_tf["regime"], snap_confirm["regime"], entry_rsi=rsi_now,
+        snap_1m=snap_entry_tf, snap_5m=snap_confirm,  # IMPROVEMENT #3: confluence gate
     )
+
+    # IMPROVEMENT #9: require a volume spike behind the move, not just a low-volume drift
+    if direction is not None:
+        vol_spike_series = detect_volume_spike(df_entry)
+        if not bool(vol_spike_series.iloc[-1]):
+            direction, reason = None, f"BLOCKED (No volume spike confirming {reason})"
+
     signal = direction if direction else "WAIT"
-    tp, sl = calc_tp_sl(direction, price, atr_now)
+    if CONFIG['REALISTIC_BACKTEST']:
+        tp, sl = calc_tp_sl_with_slippage(direction, price, atr_now)  # IMPROVEMENT #1
+    else:
+        tp, sl = calc_tp_sl(direction, price, atr_now)
+    tp_levels = calc_tp_sl_scaled(direction, price, atr_now) if direction else None  # IMPROVEMENT #4
 
     return {
         "symbol": symbol, "timeframe": timeframe, "price": round(price, 4),
@@ -692,6 +898,7 @@ def analyze(symbol, timeframe="1m"):
         "regime": snap_entry["regime"]["regime"], "structure": snap_entry["structure_event"],
         "exchange": ex_id, "entry": round(price, 4) if direction else None,
         "tp": tp, "sl": sl, "atr": round(atr_now, 4) if atr_now else None,
+        "tp_levels": tp_levels,  # IMPROVEMENT #4: partial profit-taking (50/30/20)
         "liquidity": {
             "sweep": snap_entry["sweep"], "fvg": snap_entry["fvg"],
             "dist_to_bull_fvg_pct": round(snap_entry["dist_to_bull_fvg_pct"], 3) if not pd.isna(snap_entry["dist_to_bull_fvg_pct"]) else None,
