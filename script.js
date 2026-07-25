@@ -107,6 +107,7 @@ async function loadDashboard() {
         const data = await response.json();
         document.getElementById("btc-content").innerHTML = renderCoin(data.btc);
         document.getElementById("eth-content").innerHTML = renderCoin(data.eth);
+        document.getElementById("dexe-content").innerHTML = renderCoin(data.dexe);
         document.getElementById("status").innerHTML = "🟢 Live";
     } catch (err) {
         if (err.name === "AbortError") {
