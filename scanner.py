@@ -91,6 +91,10 @@ CONFIG = {
     'FVG_PROXIMITY_PCT': 0.3,
     'EQUAL_LEVEL_MIN_COUNT': 3,
 
+    # ── NEW: Target-profit position sizing ──────────────────────────────
+    'TARGET_PROFIT_INR': 1500,   # max profit target per trade in INR
+    'USDT_INR_RATE': 102.0,      # approx conversion rate; update as needed
+
     # ── NEW: Risk management defaults ─────────────────────────────────
     'RISK_PCT_PER_TRADE': 1.0,      # % of account risked per trade
     'MAX_DAILY_LOSS_PCT': 3.0,      # circuit breaker: stop trading for the day
@@ -845,6 +849,26 @@ def _get_ltf_snaps_cached(symbol, timeframe="1m", preloaded_entry_snap=None):
     return snap_entry_tf, snap_confirm
 
 
+def calc_position_size_for_target(entry_price, tp_price, target_profit_inr=None, usdt_inr_rate=None):
+    """
+    Kitni quantity leni hai taaki TP hit hone par net profit target_profit_inr
+    (default ₹1500) ke aas-paas rahe.
+    NOTE: sirf gross price-move par based hai — fees/funding shamil nahi,
+    isliye real fill par milega thoda kam. Entry/exit dono par actual
+    fees alag se ghata lena.
+    Returns None agar entry/tp valid nahi hain (jaise WAIT signal par).
+    """
+    if entry_price is None or tp_price is None:
+        return None
+    target_profit_inr = target_profit_inr if target_profit_inr is not None else CONFIG['TARGET_PROFIT_INR']
+    usdt_inr_rate = usdt_inr_rate if usdt_inr_rate is not None else CONFIG['USDT_INR_RATE']
+    price_move = abs(tp_price - entry_price)
+    if price_move <= 0:
+        return None
+    qty = target_profit_inr / (price_move * usdt_inr_rate)
+    return round(qty, 4)
+
+
 def analyze(symbol, timeframe="1m"):
     df_entry, ex_id = fetch_ohlcv_failover(symbol, timeframe, CONFIG['LIMIT'])
     if df_entry is None:
@@ -895,6 +919,9 @@ def analyze(symbol, timeframe="1m"):
         tp, sl = calc_tp_sl(direction, price, atr_now)
     tp_levels = calc_tp_sl_scaled(direction, price, atr_now) if direction else None  # IMPROVEMENT #4
 
+    # NEW: suggested quantity so a hit TP nets ~CONFIG['TARGET_PROFIT_INR']
+    suggested_qty = calc_position_size_for_target(price, tp) if direction else None
+
     return {
         "symbol": symbol, "timeframe": timeframe, "price": round(price, 4),
         "rsi": round(rsi_now, 2) if rsi_now is not None else None,
@@ -904,6 +931,8 @@ def analyze(symbol, timeframe="1m"):
         "exchange": ex_id, "entry": round(price, 4) if direction else None,
         "tp": tp, "sl": sl, "atr": round(atr_now, 4) if atr_now else None,
         "tp_levels": tp_levels,  # IMPROVEMENT #4: partial profit-taking (50/30/20)
+        "suggested_qty_for_target_profit": suggested_qty,  # NEW: qty for ~₹1500 net at TP
+        "target_profit_inr": CONFIG['TARGET_PROFIT_INR'],
         "liquidity": {
             "sweep": snap_entry["sweep"], "fvg": snap_entry["fvg"],
             "dist_to_bull_fvg_pct": round(snap_entry["dist_to_bull_fvg_pct"], 3) if not pd.isna(snap_entry["dist_to_bull_fvg_pct"]) else None,
