@@ -1,6 +1,6 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from scanner import analyze, run_backtest, run_backtest_full, run_factor_backtest, run_combined_backtest, run_funding_rate_backtest
+from scanner import analyze, run_backtest, run_backtest_full, run_factor_backtest, run_combined_backtest, run_funding_rate_backtest, calc_dynamic_trailing_exit
 # new realistic backtest import
 from scanner_fixed import improved_run_backtest
 import math
@@ -117,6 +117,41 @@ def combined_backtest(symbol, timeframe):
         min_agree = int(request.args.get("min_agree", 2))
         strong_adx = float(request.args.get("strong_adx", 25))
         result = run_combined_backtest(full_symbol, timeframe, min_agree, strong_adx)
+        return jsonify(sanitize(result))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/trail/<symbol>/<timeframe>")
+def trail(symbol, timeframe):
+    """
+    LIVE trade management. Call this AFTER you've taken an entry, passing your
+    actual entry/sl/tp — it fetches the current price/ATR itself and returns
+    an updated stop-loss: locked at a guaranteed minimum profit once price has
+    moved far enough in your favor, then trailing tighter as it extends toward
+    your max target.
+    Query params: direction=BUY|SELL, entry=<price>, sl=<price>, tp=<price optional>,
+                   extreme=<best price since entry, optional>
+    """
+    try:
+        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT"}
+        full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
+
+        direction = request.args.get("direction", "").upper()
+        entry = float(request.args.get("entry"))
+        sl = float(request.args.get("sl"))
+        tp_raw = request.args.get("tp")
+        tp = float(tp_raw) if tp_raw not in (None, "") else None
+        extreme_raw = request.args.get("extreme")
+        extreme = float(extreme_raw) if extreme_raw not in (None, "") else None
+
+        live = analyze(full_symbol, timeframe)
+        current_price = live.get("price")
+        atr = live.get("atr")
+
+        result = calc_dynamic_trailing_exit(direction, entry, current_price, atr, sl, tp, extreme_price=extreme)
+        result["current_price"] = current_price
+        result["symbol"] = full_symbol
+        result["timeframe"] = timeframe
         return jsonify(sanitize(result))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
