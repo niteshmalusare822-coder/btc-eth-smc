@@ -46,17 +46,14 @@ def dashboard():
             "btc": {
                 "1m": safe_analyze("BTC/USDT:USDT", "1m"),
                 "5m": safe_analyze("BTC/USDT:USDT", "5m"),
-                "15m": safe_analyze("BTC/USDT:USDT", "15m"),
             },
             "eth": {
                 "1m": safe_analyze("ETH/USDT:USDT", "1m"),
                 "5m": safe_analyze("ETH/USDT:USDT", "5m"),
-                "15m": safe_analyze("ETH/USDT:USDT", "15m"),
             },
             "dexe": {
                 "1m": safe_analyze("DEXE/USDT:USDT", "1m"),
                 "5m": safe_analyze("DEXE/USDT:USDT", "5m"),
-                "15m": safe_analyze("DEXE/USDT:USDT", "15m"),
             }
         })
     except Exception as e:
