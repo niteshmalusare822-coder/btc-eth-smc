@@ -61,7 +61,7 @@ function renderCoin(data) {
             <p class="${signalClass(d.signal)}">${d.signal}</p>
             <p class="meta">Bias: ${d.htf_bias ?? "-"} | Regime: ${d.regime ?? "-"}</p>
             <p class="meta">Score: BUY ${d.buy_score ?? "-"} / SELL ${d.sell_score ?? "-"}</p>
-            <p class="meta" style="color:${momColor}">${d.momentum_note ?? ""} (${d.momentum_pct ?? "-"}%)</p>
+            <p class="meta" style="color:${momColor}">${d.momentum_note ?? ""} (${d.momentum_pct ?? "-"}%) &nbsp; | &nbsp; This candle: ${d.last_candle_direction ?? "-"} (${d.last_candle_pct ?? "-"}%)</p>
             <p class="reason">${d.reason ?? ""}</p>
             ${tradeRow}
         </div>`;
