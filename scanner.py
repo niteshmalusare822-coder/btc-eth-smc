@@ -1005,6 +1005,17 @@ def analyze(symbol, timeframe="1m"):
     else:
         momentum_note = "😴 Quiet / choppy"
 
+    # NEW: immediate last-candle direction — separate from the 10-candle
+    # momentum window above. The 10-candle number can still read "up" even
+    # while the very last candle just closed red (net effect of an earlier
+    # move that's now reversing) — this makes that visible instead of
+    # confusing the two together.
+    last_candle_pct = None
+    last_open = float(df_entry["open"].iloc[-1])
+    if last_open:
+        last_candle_pct = round((price - last_open) / last_open * 100, 3)
+    last_candle_direction = "🟢 up" if (last_candle_pct or 0) > 0 else ("🔴 down" if (last_candle_pct or 0) < 0 else "➖ flat")
+
     htf_bias = _get_htf_bias_cached(symbol)
 
     # BUGFIX: pass snap_entry through so we don't re-fetch the entry
@@ -1097,6 +1108,8 @@ def analyze(symbol, timeframe="1m"):
         "cvd_pressure": round(snap_entry_tf.get("cvd_pressure", 0.0), 2),  # NEW: Fabio-style aggression proxy (+ve = buy pressure)
         "momentum_pct": momentum_pct,  # NEW: raw % price move, last N candles, NO filters — just "is it moving"
         "momentum_note": momentum_note,
+        "last_candle_pct": last_candle_pct,  # NEW: THIS candle's own move (open to current price)
+        "last_candle_direction": last_candle_direction,
         "target_profit_range_inr": [CONFIG['TARGET_PROFIT_INR_MIN'], CONFIG['TARGET_PROFIT_INR_MAX']],
         "liquidity": {
             "sweep": snap_entry["sweep"], "fvg": snap_entry["fvg"],
