@@ -93,7 +93,8 @@ CONFIG = {
     'EQUAL_LEVEL_MIN_COUNT': 3,
 
     # ── NEW: Target-profit position sizing ──────────────────────────────
-    'TARGET_PROFIT_INR': 1500,   # max profit target per trade in INR
+    'TARGET_PROFIT_INR_MIN': 500,   # minimum profit target per trade in INR
+    'TARGET_PROFIT_INR_MAX': 1000,  # maximum profit target per trade in INR — exit once in this range, don't get greedy
     'USDT_INR_RATE': 102.0,      # approx conversion rate; update as needed
 
     # ── NEW: Live trailing exit (min-profit lock + trail toward max) ─────
@@ -882,7 +883,10 @@ def _get_ltf_snaps_cached(symbol, timeframe="1m", preloaded_entry_snap=None):
 def calc_position_size_for_target(entry_price, tp_price, target_profit_inr=None, usdt_inr_rate=None):
     """
     Kitni quantity leni hai taaki TP hit hone par net profit target_profit_inr
-    (default ₹1500) ke aas-paas rahe.
+    ke aas-paas rahe. Uses TARGET_PROFIT_INR_MIN as the default target if
+    none is passed — sizes for the LOW end of the range so hitting TP means
+    you're guaranteed at least the minimum, with room to exit anywhere up
+    to TARGET_PROFIT_INR_MAX if price runs further.
     NOTE: sirf gross price-move par based hai — fees/funding shamil nahi,
     isliye real fill par milega thoda kam. Entry/exit dono par actual
     fees alag se ghata lena.
@@ -890,7 +894,7 @@ def calc_position_size_for_target(entry_price, tp_price, target_profit_inr=None,
     """
     if entry_price is None or tp_price is None:
         return None
-    target_profit_inr = target_profit_inr if target_profit_inr is not None else CONFIG['TARGET_PROFIT_INR']
+    target_profit_inr = target_profit_inr if target_profit_inr is not None else CONFIG['TARGET_PROFIT_INR_MIN']
     usdt_inr_rate = usdt_inr_rate if usdt_inr_rate is not None else CONFIG['USDT_INR_RATE']
     price_move = abs(tp_price - entry_price)
     if price_move <= 0:
@@ -1044,8 +1048,11 @@ def analyze(symbol, timeframe="1m"):
         tp, sl = calc_tp_sl(direction, price, atr_now)
     tp_levels = calc_tp_sl_scaled(direction, price, atr_now) if direction else None  # IMPROVEMENT #4
 
-    # NEW: suggested quantity so a hit TP nets ~CONFIG['TARGET_PROFIT_INR']
-    suggested_qty = calc_position_size_for_target(price, tp) if direction else None
+    # NEW: suggested quantity for the ₹500-1000 target range — sized off the
+    # MIN so hitting TP guarantees at least ₹500; qty_for_max shows what
+    # size would be needed to net ₹1000 at the same TP (for comparison).
+    suggested_qty_min = calc_position_size_for_target(price, tp, CONFIG['TARGET_PROFIT_INR_MIN']) if direction else None
+    suggested_qty_max = calc_position_size_for_target(price, tp, CONFIG['TARGET_PROFIT_INR_MAX']) if direction else None
 
     return {
         "symbol": symbol, "timeframe": timeframe, "price": round(price, 4),
@@ -1057,9 +1064,10 @@ def analyze(symbol, timeframe="1m"):
         "exchange": ex_id, "entry": round(price, 4) if direction else None,
         "tp": tp, "sl": sl, "atr": round(atr_now, 4) if atr_now else None,
         "tp_levels": tp_levels,  # IMPROVEMENT #4: partial profit-taking (50/30/20)
-        "suggested_qty_for_target_profit": suggested_qty,  # NEW: qty for ~₹1500 net at TP
+        "suggested_qty_for_min_profit": suggested_qty_min,  # NEW: qty for ~₹500 net at TP
+        "suggested_qty_for_max_profit": suggested_qty_max,  # NEW: qty for ~₹1000 net at TP
         "cvd_pressure": round(snap_entry_tf.get("cvd_pressure", 0.0), 2),  # NEW: Fabio-style aggression proxy (+ve = buy pressure)
-        "target_profit_inr": CONFIG['TARGET_PROFIT_INR'],
+        "target_profit_range_inr": [CONFIG['TARGET_PROFIT_INR_MIN'], CONFIG['TARGET_PROFIT_INR_MAX']],
         "liquidity": {
             "sweep": snap_entry["sweep"], "fvg": snap_entry["fvg"],
             "dist_to_bull_fvg_pct": round(snap_entry["dist_to_bull_fvg_pct"], 3) if not pd.isna(snap_entry["dist_to_bull_fvg_pct"]) else None,
