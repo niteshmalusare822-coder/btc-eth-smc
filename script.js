@@ -57,7 +57,7 @@ async function runBacktest(symbol, timeframe) {
     box.innerHTML = "⏳ Running backtest...";
     try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 30000);
+        const timeout = setTimeout(() => controller.abort(), 60000);
         const res = await fetch(`${BACKTEST_URL}/${symbol}/${timeframe}`, { signal: controller.signal });
         clearTimeout(timeout);
         const data = await res.json();
