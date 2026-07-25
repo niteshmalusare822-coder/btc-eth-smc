@@ -100,6 +100,10 @@ CONFIG = {
     'MIN_PROFIT_LOCK_ATR_MULT': 0.3,  # once price moves this many ATR in favor, lock a guaranteed minimum profit (not just breakeven)
     'TRAIL_ATR_MULT': 0.6,            # beyond that, trail the stop this many ATR behind the best price seen
 
+    # ── NEW: CVD pressure proxy (Fabio Valentino aggression-confirmation idea) ─
+    'CVD_PRESSURE_LOOKBACK': 10,      # candles summed for the short-window CVD pressure proxy
+    'CVD_PRESSURE_MIN_ABS': 0,        # pressure must be more negative/positive than this to count as "clearly against" (0 = any opposite sign blocks)
+
     # ── NEW: Risk management defaults ─────────────────────────────────
     'RISK_PCT_PER_TRADE': 1.0,      # % of account risked per trade
     'MAX_DAILY_LOSS_PCT': 3.0,      # circuit breaker: stop trading for the day
@@ -528,6 +532,7 @@ def analyze_timeframe(df):
     sweep = detect_liquidity_sweep(df)
     vp = calc_volume_profile(df, CONFIG['VOLUME_PROFILE_LOOKBACK'], CONFIG['VOLUME_PROFILE_BINS'])
     regime = detect_market_regime(df)
+    cvd_pressure_series = calc_recent_cvd_pressure(df)
     last = df.iloc[-1]
     return {
         "structure_event": last["structure_event"], "structure_trend": last["structure_trend"],
@@ -536,6 +541,7 @@ def analyze_timeframe(df):
         "ema5": last["ema5"], "ema20": last["ema20"], "rsi": last["rsi"], "atr": last["atr"],
         "pattern": last["pat_sig"], "divergence": last["divergence"],
         "sweep": sweep, "vp": vp, "regime": regime,
+        "cvd_pressure": float(cvd_pressure_series.iloc[-1]) if not pd.isna(cvd_pressure_series.iloc[-1]) else 0.0,
         "fvg": last["fvg"],
         "dist_to_bull_fvg_pct": last["dist_to_bull_fvg_pct"],
         "dist_to_bear_fvg_pct": last["dist_to_bear_fvg_pct"],
@@ -644,7 +650,7 @@ def calc_confluence_score(snap_1m, snap_5m):
 
 
 def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regime_5m,
-                      entry_rsi=None, snap_1m=None, snap_5m=None):
+                      entry_rsi=None, snap_1m=None, snap_5m=None, cvd_pressure=None):
     if pd.isna(entry_adx) or entry_adx < CONFIG['ADX_MIN']:
         return None, f"NO TREND (ADX {entry_adx:.1f} < {CONFIG['ADX_MIN']})"
     if entry_rsi is not None and not pd.isna(entry_rsi):
@@ -687,9 +693,17 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regi
 
     if buy_score >= CONFIG['SCORE_THRESHOLD'] and buy_score > sell_score:
         if (buy_score - sell_score) >= CONFIG['SCORE_GAP_MIN'] and htf_bias in ("BULLISH", "NEUTRAL"):
+            # NEW: CVD confirmation (Fabio-style aggression check, proxy-based).
+            # Only blocks when CVD is CLEARLY against the trade — a weak/neutral
+            # reading doesn't veto it, since this is an approximation, not real
+            # tape data (see calc_recent_cvd_pressure docstring).
+            if cvd_pressure is not None and cvd_pressure < -CONFIG['CVD_PRESSURE_MIN_ABS']:
+                return None, f"BLOCKED (CVD pressure against BUY: {cvd_pressure:.1f})"
             return "BUY", "BUY ✅" + (f" (confluence {confluence_score:.1f})" if confluence_score is not None else "")
     if sell_score >= CONFIG['SCORE_THRESHOLD'] and sell_score > buy_score:
         if (sell_score - buy_score) >= CONFIG['SCORE_GAP_MIN'] and htf_bias in ("BEARISH", "NEUTRAL"):
+            if cvd_pressure is not None and cvd_pressure > CONFIG['CVD_PRESSURE_MIN_ABS']:
+                return None, f"BLOCKED (CVD pressure against SELL: {cvd_pressure:.1f})"
             return "SELL", "SELL ✅" + (f" (confluence {confluence_score:.1f})" if confluence_score is not None else "")
     return None, "WAIT (score/bias aligned nahi)"
 
@@ -980,6 +994,7 @@ def analyze(symbol, timeframe="1m"):
         buy_score, sell_score, htf_bias, snap_entry["adx"],
         snap_entry_tf["regime"], snap_confirm["regime"], entry_rsi=rsi_now,
         snap_1m=snap_entry_tf, snap_5m=snap_confirm,  # IMPROVEMENT #3: confluence gate
+        cvd_pressure=snap_entry_tf.get("cvd_pressure"),  # NEW: Fabio-style aggression confirmation
     )
 
     # IMPROVEMENT #9: require a volume spike behind the move, not just a low-volume drift.
@@ -1013,6 +1028,7 @@ def analyze(symbol, timeframe="1m"):
         "tp": tp, "sl": sl, "atr": round(atr_now, 4) if atr_now else None,
         "tp_levels": tp_levels,  # IMPROVEMENT #4: partial profit-taking (50/30/20)
         "suggested_qty_for_target_profit": suggested_qty,  # NEW: qty for ~₹1500 net at TP
+        "cvd_pressure": round(snap_entry_tf.get("cvd_pressure", 0.0), 2),  # NEW: Fabio-style aggression proxy (+ve = buy pressure)
         "target_profit_inr": CONFIG['TARGET_PROFIT_INR'],
         "liquidity": {
             "sweep": snap_entry["sweep"], "fvg": snap_entry["fvg"],
@@ -1549,6 +1565,21 @@ class RiskManager:
 # because fetch_ohlcv() has no real bid/ask tape or footprint data. Use it
 # as a research proxy, not a substitute for an actual order-flow platform.
 
+def calc_recent_cvd_pressure(df, lookback=None):
+    """
+    Short-window CVD pressure proxy — inspired by Fabio Valentino's use of
+    CVD as a leading pressure indicator to confirm entries and breakeven
+    moves. NOT real tape/Level-2 data (that can't be reconstructed from
+    OHLCV candles) — this sums the shape-based delta_proxy (Chaikin-style
+    close-location-within-range * volume) over the last `lookback` candles.
+    Positive = net buy-side pressure recently, negative = net sell-side
+    pressure. Treat as an approximation, not the real thing.
+    """
+    lookback = lookback or CONFIG['CVD_PRESSURE_LOOKBACK']
+    df = calc_candle_delta_proxy(df)
+    return df["delta_proxy"].rolling(lookback).sum()
+
+
 def calc_candle_delta_proxy(df):
     """
     Proxy for per-candle buy/sell aggression ('delta') using the classic
@@ -1772,16 +1803,20 @@ def calc_orderflow_sl(direction, df, atr):
         return round(swing_high * (1 + buffer_pct), 4)
     return None
 
-def apply_breakeven_trigger(direction, entry_price, current_high, current_low, atr, sl):
+def apply_breakeven_trigger(direction, entry_price, current_high, current_low, atr, sl, cvd_pressure=None):
     """
     Once price has moved OF_BREAKEVEN_TRIGGER_ATR_MULT * ATR in favor,
     move SL to break-even (entry_price). Returns the (possibly) updated SL.
     """
     trigger_dist = atr * CONFIG['OF_BREAKEVEN_TRIGGER_ATR_MULT']
     if direction == "BUY" and current_high >= entry_price + trigger_dist:
-        return max(sl, entry_price)
+        # NEW: matches Fabio's rule — only go risk-free once CVD pressure also
+        # confirms the move (price distance alone can be a fake-out wick).
+        if cvd_pressure is None or cvd_pressure >= -CONFIG['CVD_PRESSURE_MIN_ABS']:
+            return max(sl, entry_price)
     if direction == "SELL" and current_low <= entry_price - trigger_dist:
-        return min(sl, entry_price)
+        if cvd_pressure is None or cvd_pressure <= CONFIG['CVD_PRESSURE_MIN_ABS']:
+            return min(sl, entry_price)
     return sl
 
 
@@ -1903,6 +1938,7 @@ def run_orderflow_backtest(symbol, entry_timeframe="1m", structure_timeframe="5m
     df_entry = add_indicators_vectorized(df_entry)
     df_entry = calc_cvd_proxy(df_entry)
     atr_series = calc_atr(df_entry, CONFIG['ATR_PERIOD'])
+    cvd_pressure_series = calc_recent_cvd_pressure(df_entry)  # NEW: for breakeven CVD confirmation
 
     closes = df_entry["close"].values
     highs = df_entry["high"].values
@@ -1953,7 +1989,8 @@ def run_orderflow_backtest(symbol, entry_timeframe="1m", structure_timeframe="5m
         outcome, exit_price = "OPEN", None
         for j in range(i + 1, min(i + WINDOW + 1, n)):
             fh, fl = highs[j], lows[j]
-            current_sl = apply_breakeven_trigger(direction, price, fh, fl, atr_now, current_sl)
+            current_sl = apply_breakeven_trigger(direction, price, fh, fl, atr_now, current_sl,
+                                                  cvd_pressure=cvd_pressure_series.iloc[j])
             if direction == "BUY":
                 if fh >= tp: outcome, exit_price = "WIN", tp; break
                 if fl <= current_sl:
