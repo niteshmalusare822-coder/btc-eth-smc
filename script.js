@@ -45,6 +45,14 @@ function renderCoin(data) {
             </div>`;
         }
 
+        // NEW: momentum awareness — always shown, even on WAIT, so "market is
+        // moving" is visible separately from the filtered trade signal.
+        let momColor = "#888";
+        if (d.momentum_pct !== null && d.momentum_pct !== undefined) {
+            if (Math.abs(d.momentum_pct) >= 1.0) momColor = d.momentum_pct > 0 ? "#00e676" : "#ff4d4d";
+            else if (Math.abs(d.momentum_pct) >= 0.3) momColor = d.momentum_pct > 0 ? "#8bc34a" : "#ff8a65";
+        }
+
         html += `
         <div class="timeframe">
             <h3>${tf}</h3>
@@ -53,6 +61,7 @@ function renderCoin(data) {
             <p class="${signalClass(d.signal)}">${d.signal}</p>
             <p class="meta">Bias: ${d.htf_bias ?? "-"} | Regime: ${d.regime ?? "-"}</p>
             <p class="meta">Score: BUY ${d.buy_score ?? "-"} / SELL ${d.sell_score ?? "-"}</p>
+            <p class="meta" style="color:${momColor}">${d.momentum_note ?? ""} (${d.momentum_pct ?? "-"}%)</p>
             <p class="reason">${d.reason ?? ""}</p>
             ${tradeRow}
         </div>`;
