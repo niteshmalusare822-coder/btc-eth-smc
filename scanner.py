@@ -107,6 +107,7 @@ CONFIG = {
 
     # ── NEW: Raw momentum awareness (independent of trade signal filters) ─
     'MOMENTUM_LOOKBACK': 10,   # candles back to measure raw % price move
+    'ENABLE_PRIME_HOURS_FILTER': False,  # was always-on — OFF by default since crypto trades 24/7, unlike forex/futures sessions
     'RISK_PCT_PER_TRADE': 1.0,      # % of account risked per trade
     'MAX_DAILY_LOSS_PCT': 3.0,      # circuit breaker: stop trading for the day
     'MAX_LEVERAGE': 5,              # sanity cap regardless of exchange max
@@ -1017,12 +1018,19 @@ def analyze(symbol, timeframe="1m"):
     if snap_confirm is None: snap_confirm = snap_entry
 
     # IMPROVEMENT #7: skip entries outside prime NY/London hours
-    prime_ok, prime_reason = is_prime_trading_hours()
-    if not prime_ok:
-        return {
-            "symbol": symbol, "timeframe": timeframe, "price": round(price, 4),
-            "signal": "WAIT", "reason": f"BLOCKED ({prime_reason})",
-        }
+    # UPDATE: made toggleable and OFF by default — crypto trades 24/7 unlike
+    # forex/futures, and this was blocking every signal for ~4 hours every
+    # night (IST 1:30 AM - 5:30 AM gap + Asian session) regardless of actual
+    # market activity. Flip CONFIG['ENABLE_PRIME_HOURS_FILTER'] back to True
+    # if you want this discipline back (e.g. if late-night DEXE signals turn
+    # out to be consistently low quality once you've journaled a few days).
+    if CONFIG['ENABLE_PRIME_HOURS_FILTER']:
+        prime_ok, prime_reason = is_prime_trading_hours()
+        if not prime_ok:
+            return {
+                "symbol": symbol, "timeframe": timeframe, "price": round(price, 4),
+                "signal": "WAIT", "reason": f"BLOCKED ({prime_reason})",
+            }
 
     buy_score, sell_score = get_ltf_scores(snap_entry_tf, snap_confirm)
     direction, reason = decide_direction(
