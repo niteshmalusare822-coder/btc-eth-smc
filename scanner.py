@@ -118,7 +118,7 @@ CONFIG = {
     'ADAPTIVE_SIZE_LOW_VOL_MULT': 1.2,     # grow size 20% in low vol
 
     # #3 Entry confluence filter
-    'MIN_CONFLUENCE_SCORE': 3.5,     # was 5.0 — loosened, minimum weighted confluence to allow entry
+    'MIN_CONFLUENCE_SCORE': 2.0,     # was 3.5, originally 5.0 — loosened further: EMA-only alignment (1.5) was blocking almost everything
 
     # #7 Prime trading hours (separate from OF_SESSION_* used by order-flow module)
     'PRIME_HOURS_ASIAN_DEAD_START': 0,
@@ -133,7 +133,7 @@ CONFIG = {
 
     # #9 Volume spike / momentum filter
     'VOLUME_SPIKE_LOOKBACK': 20,
-    'VOLUME_SPIKE_MULT': 1.5,        # require volume >= 1.5x rolling average
+    'VOLUME_SPIKE_MULT': 1.2,        # was 1.5 — loosened, require volume >= 1.2x rolling average
 
     # #10 Consecutive-loss tilt prevention
     'MAX_CONSECUTIVE_LOSSES': 3,     # pause new trades after this many losses in a row
@@ -982,10 +982,15 @@ def analyze(symbol, timeframe="1m"):
         snap_1m=snap_entry_tf, snap_5m=snap_confirm,  # IMPROVEMENT #3: confluence gate
     )
 
-    # IMPROVEMENT #9: require a volume spike behind the move, not just a low-volume drift
+    # IMPROVEMENT #9: require a volume spike behind the move, not just a low-volume drift.
+    # FIX: was checking ONLY the single most recent candle — a real trending move
+    # often has its volume spike a candle or two before everything else (score,
+    # confluence, regime) finishes aligning. Now accepts a spike anywhere in the
+    # last 3 candles, so a move that already has volume behind it isn't rejected
+    # just because the exact signal candle happened to be quieter.
     if direction is not None:
         vol_spike_series = detect_volume_spike(df_entry)
-        if not bool(vol_spike_series.iloc[-1]):
+        if not bool(vol_spike_series.tail(3).any()):
             direction, reason = None, f"BLOCKED (No volume spike confirming {reason})"
 
     signal = direction if direction else "WAIT"
