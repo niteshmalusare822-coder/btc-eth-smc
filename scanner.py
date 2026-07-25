@@ -96,6 +96,10 @@ CONFIG = {
     'TARGET_PROFIT_INR': 1500,   # max profit target per trade in INR
     'USDT_INR_RATE': 102.0,      # approx conversion rate; update as needed
 
+    # ── NEW: Live trailing exit (min-profit lock + trail toward max) ─────
+    'MIN_PROFIT_LOCK_ATR_MULT': 0.3,  # once price moves this many ATR in favor, lock a guaranteed minimum profit (not just breakeven)
+    'TRAIL_ATR_MULT': 0.6,            # beyond that, trail the stop this many ATR behind the best price seen
+
     # ── NEW: Risk management defaults ─────────────────────────────────
     'RISK_PCT_PER_TRADE': 1.0,      # % of account risked per trade
     'MAX_DAILY_LOSS_PCT': 3.0,      # circuit breaker: stop trading for the day
@@ -868,6 +872,77 @@ def calc_position_size_for_target(entry_price, tp_price, target_profit_inr=None,
         return None
     qty = target_profit_inr / (price_move * usdt_inr_rate)
     return round(qty, 4)
+
+
+def calc_dynamic_trailing_exit(direction, entry_price, current_price, atr, sl, tp, extreme_price=None):
+    """
+    LIVE TRADE MANAGEMENT for an OPEN position — call this repeatedly (e.g. every
+    time the dashboard refreshes) with the latest price. It does two things as the
+    market moves in your favor, and NEVER moves the stop against you:
+
+      1. MIN PROFIT LOCK: once price has moved MIN_PROFIT_LOCK_ATR_MULT * ATR in
+         your favor, the stop-loss is pulled up (BUY) / down (SELL) to guarantee
+         at least that much profit — a real locked-in minimum, not just breakeven.
+      2. TRAIL TOWARD MAX: beyond that, the stop trails behind the best price seen
+         since entry by TRAIL_ATR_MULT * ATR. As the market keeps extending toward
+         `tp` (the max target), the locked-in profit keeps expanding with it; if
+         price pulls back, the stop holds where it is instead of giving profit back.
+
+    entry_price, current_price, sl, tp: your trade's actual numbers.
+    extreme_price: pass the best (highest for BUY / lowest for SELL) price seen
+        since entry if you're tracking it tick-by-tick; otherwise current_price
+        is used (fine if you're only polling occasionally).
+
+    Returns: {"sl": new_sl, "min_profit_locked": bool, "tp_hit": bool, "note": str}
+    """
+    if atr is None or atr <= 0 or entry_price is None or current_price is None:
+        return {"sl": sl, "min_profit_locked": False, "tp_hit": False, "note": "invalid inputs"}
+    if direction not in ("BUY", "SELL"):
+        return {"sl": sl, "min_profit_locked": False, "tp_hit": False, "note": "invalid direction"}
+
+    extreme = extreme_price if extreme_price is not None else current_price
+    min_lock_dist = atr * CONFIG['MIN_PROFIT_LOCK_ATR_MULT']
+    trail_dist = atr * CONFIG['TRAIL_ATR_MULT']
+    new_sl = sl
+    min_profit_locked = False
+    tp_hit = False
+    note = "no change yet — price hasn't moved far enough in favor"
+
+    if direction == "BUY":
+        favorable_move = extreme - entry_price
+        if favorable_move >= min_lock_dist:
+            locked_sl = entry_price + min_lock_dist
+            new_sl = max(new_sl, locked_sl) if new_sl is not None else locked_sl
+            min_profit_locked = True
+            note = "minimum profit locked"
+        trailing_sl = extreme - trail_dist
+        if trailing_sl > new_sl:
+            new_sl = trailing_sl
+            note = "trailing stop tightened toward max"
+        if tp is not None and current_price >= tp:
+            tp_hit = True
+            note = "target reached — consider closing"
+    else:  # SELL
+        favorable_move = entry_price - extreme
+        if favorable_move >= min_lock_dist:
+            locked_sl = entry_price - min_lock_dist
+            new_sl = min(new_sl, locked_sl) if new_sl is not None else locked_sl
+            min_profit_locked = True
+            note = "minimum profit locked"
+        trailing_sl = extreme + trail_dist
+        if trailing_sl < new_sl:
+            new_sl = trailing_sl
+            note = "trailing stop tightened toward max"
+        if tp is not None and current_price <= tp:
+            tp_hit = True
+            note = "target reached — consider closing"
+
+    return {
+        "sl": round(new_sl, 6) if new_sl is not None else None,
+        "min_profit_locked": min_profit_locked,
+        "tp_hit": tp_hit,
+        "note": note,
+    }
 
 
 def analyze(symbol, timeframe="1m"):
