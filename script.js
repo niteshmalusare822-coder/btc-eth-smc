@@ -41,6 +41,7 @@ function renderCoin(data) {
                 <p class="meta">📍 Entry: <b>$${d.entry ?? "-"}</b></p>
                 <p class="meta">🎯 TP: <b style="color:#00e676">$${d.tp ?? "-"}</b> &nbsp; 🛑 SL: <b style="color:#ff4d4d">$${d.sl ?? "-"}</b></p>
                 <p class="meta">📊 ATR: ${d.atr ?? "-"}</p>
+                <p class="meta">💰 Target: ₹${d.target_profit_range_inr?.[0] ?? "-"}–₹${d.target_profit_range_inr?.[1] ?? "-"} → qty ${d.suggested_qty_for_min_profit ?? "-"}–${d.suggested_qty_for_max_profit ?? "-"}</p>
             </div>`;
         }
 
