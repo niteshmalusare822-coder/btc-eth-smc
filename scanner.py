@@ -1293,6 +1293,8 @@ def run_backtest(symbol, timeframe="5m"):
     liq_buy_s, liq_sell_s = _liquidity_score_vectorized(df, w=1.0)
     df["liq_buy"] = liq_buy_s
     df["liq_sell"] = liq_sell_s
+    cvd_pressure_series = calc_recent_cvd_pressure(df)  # NEW: sync with live CVD confirmation
+    df["sweep"] = df["sweep_v"]  # calc_confluence_score expects this key name
 
     closes = df["close"].values
     highs = df["high"].values
@@ -1341,6 +1343,31 @@ def run_backtest(symbol, timeframe="5m"):
         if buy_score >= CONFIG['SCORE_THRESHOLD'] and buy_score > sell_score: direction = "BUY"
         elif sell_score >= CONFIG['SCORE_THRESHOLD'] and sell_score > buy_score: direction = "SELL"
         if direction is None: continue
+
+        # NEW: confluence gate — MATCHES live decide_direction(), which was
+        # missing here entirely. This was the single biggest live-vs-backtest
+        # mismatch: live blocks ~most setups on "Low confluence", but this
+        # backtest was scoring EVERY setup that passed score/gap, regardless
+        # of confluence — so backtest results didn't reflect what live signals
+        # actually looked like.
+        snap_i = {
+            "pattern": pat, "structure_event": struct, "divergence": div,
+            "sweep": df["sweep"].iloc[i],
+            "eq_low_count": df["eq_low_count"].iloc[i] if "eq_low_count" in df.columns else 0,
+            "eq_high_count": df["eq_high_count"].iloc[i] if "eq_high_count" in df.columns else 0,
+            "ema5": ema5, "ema20": ema20,
+        }
+        confluence_score = calc_confluence_score(snap_i, snap_i)
+        if confluence_score < CONFIG['MIN_CONFLUENCE_SCORE']:
+            continue
+
+        # NEW: CVD confirmation — matches live decide_direction().
+        cvd_val = cvd_pressure_series.iloc[i]
+        if not pd.isna(cvd_val):
+            if direction == "BUY" and cvd_val < -CONFIG['CVD_PRESSURE_MIN_ABS']:
+                continue
+            if direction == "SELL" and cvd_val > CONFIG['CVD_PRESSURE_MIN_ABS']:
+                continue
 
         tp, sl = calc_tp_sl(direction, price, atr)
         if tp is None: continue
