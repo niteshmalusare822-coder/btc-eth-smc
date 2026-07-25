@@ -78,7 +78,7 @@ CONFIG = {
     'CHOPPINESS_PERIOD': 14,
     'CHOPPINESS_TREND_MAX': 61.8,
     'LIMIT': 150,
-    'TP_ATR_MULT': 1.5,   # IMPROVEMENT #6: was 2.0 — take quicker scalp wins
+    'TP_ATR_MULT': 2.2,   # was 1.5 (originally 2.0) — bumped up for bigger scalp targets, more room to run
     'SL_ATR_MULT': 0.8,   # IMPROVEMENT #6: was 1.0 — tighter stops for scalping
     'RSI_OVERBOUGHT': 75,   # was 70 — loosened so momentum breakouts aren't blocked too early
     'RSI_OVERSOLD': 25,     # was 30 — loosened so momentum breakdowns aren't blocked too early
@@ -839,6 +839,7 @@ def _get_htf_bias_cached(symbol):
     return htf_bias
 
 _LTF_CACHE = {}
+_SIGNAL_AGE_CACHE = {}  # NEW: tracks how long a signal (same symbol+timeframe+direction) has been continuously active
 _LTF_CACHE_TTL = 15
 
 # BUGFIX: previously every call to analyze() — regardless of the requested
@@ -1019,6 +1020,24 @@ def analyze(symbol, timeframe="1m"):
             direction, reason = None, f"BLOCKED (No volume spike confirming {reason})"
 
     signal = direction if direction else "WAIT"
+
+    # NEW: signal freshness tracker — how long has THIS exact signal (same
+    # symbol+timeframe+direction) been continuously active? Resets to 0 the
+    # moment the signal flips (BUY->SELL, BUY->WAIT, etc.), so you know
+    # whether you're looking at a fresh trigger or one that's been sitting
+    # for a while.
+    age_key = f"{symbol}:{timeframe}"
+    now_ts = _t.time()
+    prev = _SIGNAL_AGE_CACHE.get(age_key)
+    if signal == "WAIT":
+        _SIGNAL_AGE_CACHE.pop(age_key, None)
+        signal_age_seconds = None
+    elif prev is not None and prev["signal"] == signal:
+        signal_age_seconds = round(now_ts - prev["since"], 1)
+    else:
+        _SIGNAL_AGE_CACHE[age_key] = {"signal": signal, "since": now_ts}
+        signal_age_seconds = 0.0
+
     if CONFIG['REALISTIC_BACKTEST']:
         tp, sl = calc_tp_sl_with_slippage(direction, price, atr_now)  # IMPROVEMENT #1
     else:
@@ -1032,6 +1051,7 @@ def analyze(symbol, timeframe="1m"):
         "symbol": symbol, "timeframe": timeframe, "price": round(price, 4),
         "rsi": round(rsi_now, 2) if rsi_now is not None else None,
         "signal": signal, "reason": reason,
+        "signal_age_seconds": signal_age_seconds,  # NEW: 0 = just triggered, higher = been active a while
         "buy_score": buy_score, "sell_score": sell_score, "htf_bias": htf_bias,
         "regime": snap_entry["regime"]["regime"], "structure": snap_entry["structure_event"],
         "exchange": ex_id, "entry": round(price, 4) if direction else None,
