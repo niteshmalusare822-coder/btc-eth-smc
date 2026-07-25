@@ -50,6 +50,7 @@ import time as _t
 COINDCX_PAIR_MAP = {
     "BTC/USDT:USDT": "B-BTC_USDT",
     "ETH/USDT:USDT": "B-ETH_USDT",
+    "DEXE/USDT:USDT": "B-DEXE_USDT",
 }
 
 COINDCX_RESOLUTION_MAP = {
