@@ -826,7 +826,7 @@ def calc_tp_sl_scaled(direction, price, atr):
 import time as _time
 
 _HTF_CACHE = {}
-_HTF_CACHE_TTL = 30
+_HTF_CACHE_TTL = 15  # was 30 — tightened to match the 15s dashboard poll cadence so bias doesn't lag price by up to 2 full refreshes
 
 def _get_htf_bias_cached(symbol):
     now = _time.time()
@@ -843,7 +843,7 @@ def _get_htf_bias_cached(symbol):
 
 _LTF_CACHE = {}
 _SIGNAL_AGE_CACHE = {}  # NEW: tracks how long a signal (same symbol+timeframe+direction) has been continuously active
-_LTF_CACHE_TTL = 15
+_LTF_CACHE_TTL = 10  # was 15 — tightened below the 15s dashboard poll interval so score/signal/regime never lag more than one refresh behind the live price
 
 # BUGFIX: previously every call to analyze() — regardless of the requested
 # entry timeframe — scored off a fixed 1m+5m pair cached PER SYMBOL (not per
