@@ -65,13 +65,13 @@ CONFIG = {
     'RSI_PERIOD': 7,
     'ATR_PERIOD': 14,
     'ADX_PERIOD': 14,
-    'ADX_MIN': 15,        # was 20 — loosened so more real trends qualify for scalping
+    'ADX_MIN': 18,        # was 15 (originally 20) — pulled back up: backtest showed 15 let in too many low-quality trades (35% win rate, PF 0.52)
     'SWING_LOOKBACK': 3,
     'LIQUIDITY_SWEEP_LOOKBACK': 20,
     'VOLUME_PROFILE_LOOKBACK': 100,
     'VOLUME_PROFILE_BINS': 24,
     'SCORE_THRESHOLD': 5.0,   # was 6.0 — loosened so decent (not just perfect) setups fire
-    'SCORE_GAP_MIN': 2.5,     # was 4.0 — loosened, buy/sell no longer need a huge gap
+    'SCORE_GAP_MIN': 3.5,     # was 2.5 (originally 4.0) — pulled back up: 2.5 let buy/sell scores that were too close both qualify, hurting win rate
     'FEE_PCT': 0.04,
     'ATR_COMPRESSION_RATIO': 0.7,
     'ATR_MA_PERIOD': 50,
@@ -122,7 +122,7 @@ CONFIG = {
     'ADAPTIVE_SIZE_LOW_VOL_MULT': 1.2,     # grow size 20% in low vol
 
     # #3 Entry confluence filter
-    'MIN_CONFLUENCE_SCORE': 2.0,     # was 3.5, originally 5.0 — loosened further: EMA-only alignment (1.5) was blocking almost everything
+    'MIN_CONFLUENCE_SCORE': 3.0,     # was 2.0 (originally 5.0, then 3.5) — pulled back up: backtest showed low-confluence trades dragging win rate down
 
     # #7 Prime trading hours (separate from OF_SESSION_* used by order-flow module)
     'PRIME_HOURS_ASIAN_DEAD_START': 0,
@@ -667,11 +667,21 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regi
     is_5m_comp = regime_5m["regime"] == "COMPRESSION"
 
     # PRO ENGINE BREAKOUT BYPASS: 5m compressed zone se 1m volatility trigger track karna
+    # FIX: this bypass used to fire BUY purely off buy_score >= threshold, WITHOUT
+    # checking that buy_score > sell_score — so a candle where SELL score was
+    # actually dominant (and RSI was pinned at an extreme) could still fire a BUY.
+    # It also skipped the confluence gate AND the new CVD confirmation entirely,
+    # since it returns before reaching those checks below. Now it requires the
+    # score to actually be dominant, and requires CVD to not be against it.
     if is_5m_comp and not is_1m_comp and entry_adx > CONFIG['ADX_MIN']:
-        if buy_score >= CONFIG['SCORE_THRESHOLD'] + 0.5 and htf_bias in ("BULLISH", "NEUTRAL"):
-            return "BUY", "COMPRESSION BREAKOUT LONG 🚀"
-        if sell_score >= CONFIG['SCORE_THRESHOLD'] + 0.5 and htf_bias in ("BEARISH", "NEUTRAL"):
-            return "SELL", "COMPRESSION BREAKOUT SHORT 🩸"
+        if (buy_score >= CONFIG['SCORE_THRESHOLD'] + 0.5 and buy_score > sell_score
+                and htf_bias in ("BULLISH", "NEUTRAL")):
+            if cvd_pressure is None or cvd_pressure >= -CONFIG['CVD_PRESSURE_MIN_ABS']:
+                return "BUY", "COMPRESSION BREAKOUT LONG 🚀"
+        if (sell_score >= CONFIG['SCORE_THRESHOLD'] + 0.5 and sell_score > buy_score
+                and htf_bias in ("BEARISH", "NEUTRAL")):
+            if cvd_pressure is None or cvd_pressure <= CONFIG['CVD_PRESSURE_MIN_ABS']:
+                return "SELL", "COMPRESSION BREAKOUT SHORT 🩸"
 
     # Jab tak box squeeze true trap state mein hai tabhi filter open hoga
     if is_1m_comp and is_5m_comp:
