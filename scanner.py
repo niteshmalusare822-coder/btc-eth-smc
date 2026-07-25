@@ -105,7 +105,8 @@ CONFIG = {
     'CVD_PRESSURE_LOOKBACK': 10,      # candles summed for the short-window CVD pressure proxy
     'CVD_PRESSURE_MIN_ABS': 0,        # pressure must be more negative/positive than this to count as "clearly against" (0 = any opposite sign blocks)
 
-    # ── NEW: Risk management defaults ─────────────────────────────────
+    # ── NEW: Raw momentum awareness (independent of trade signal filters) ─
+    'MOMENTUM_LOOKBACK': 10,   # candles back to measure raw % price move
     'RISK_PCT_PER_TRADE': 1.0,      # % of account risked per trade
     'MAX_DAILY_LOSS_PCT': 3.0,      # circuit breaker: stop trading for the day
     'MAX_LEVERAGE': 5,              # sanity cap regardless of exchange max
@@ -984,6 +985,25 @@ def analyze(symbol, timeframe="1m"):
     rsi_now = float(snap_entry["rsi"]) if not pd.isna(snap_entry["rsi"]) else None
     atr_now = float(snap_entry["atr"]) if not pd.isna(snap_entry["atr"]) else None
 
+    # NEW: raw momentum — how much price has ACTUALLY moved recently, with
+    # NO filters applied. This is not a trade signal (that's `signal` below,
+    # which stays disciplined/filtered) — it's purely so you can see "market
+    # is moving" even during stretches where no BUY/SELL clears the filters.
+    mom_lookback = min(CONFIG['MOMENTUM_LOOKBACK'], len(df_entry) - 1)
+    momentum_pct = None
+    if mom_lookback > 0:
+        past_price = float(df_entry["close"].iloc[-1 - mom_lookback])
+        if past_price:
+            momentum_pct = round((price - past_price) / past_price * 100, 3)
+    if momentum_pct is None:
+        momentum_note = "no data"
+    elif abs(momentum_pct) >= 1.0:
+        momentum_note = f"🔥 Strong move ({'up' if momentum_pct > 0 else 'down'})"
+    elif abs(momentum_pct) >= 0.3:
+        momentum_note = f"📈 Moving {'up' if momentum_pct > 0 else '📉 down'}"
+    else:
+        momentum_note = "😴 Quiet / choppy"
+
     htf_bias = _get_htf_bias_cached(symbol)
 
     # BUGFIX: pass snap_entry through so we don't re-fetch the entry
@@ -1067,6 +1087,8 @@ def analyze(symbol, timeframe="1m"):
         "suggested_qty_for_min_profit": suggested_qty_min,  # NEW: qty for ~₹500 net at TP
         "suggested_qty_for_max_profit": suggested_qty_max,  # NEW: qty for ~₹1000 net at TP
         "cvd_pressure": round(snap_entry_tf.get("cvd_pressure", 0.0), 2),  # NEW: Fabio-style aggression proxy (+ve = buy pressure)
+        "momentum_pct": momentum_pct,  # NEW: raw % price move, last N candles, NO filters — just "is it moving"
+        "momentum_note": momentum_note,
         "target_profit_range_inr": [CONFIG['TARGET_PROFIT_INR_MIN'], CONFIG['TARGET_PROFIT_INR_MAX']],
         "liquidity": {
             "sweep": snap_entry["sweep"], "fvg": snap_entry["fvg"],
