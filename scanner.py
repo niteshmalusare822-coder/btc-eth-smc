@@ -64,13 +64,13 @@ CONFIG = {
     'RSI_PERIOD': 7,
     'ATR_PERIOD': 14,
     'ADX_PERIOD': 14,
-    'ADX_MIN': 20,
+    'ADX_MIN': 15,        # was 20 — loosened so more real trends qualify for scalping
     'SWING_LOOKBACK': 3,
     'LIQUIDITY_SWEEP_LOOKBACK': 20,
     'VOLUME_PROFILE_LOOKBACK': 100,
     'VOLUME_PROFILE_BINS': 24,
-    'SCORE_THRESHOLD': 6.0,
-    'SCORE_GAP_MIN': 4.0,
+    'SCORE_THRESHOLD': 5.0,   # was 6.0 — loosened so decent (not just perfect) setups fire
+    'SCORE_GAP_MIN': 2.5,     # was 4.0 — loosened, buy/sell no longer need a huge gap
     'FEE_PCT': 0.04,
     'ATR_COMPRESSION_RATIO': 0.7,
     'ATR_MA_PERIOD': 50,
@@ -79,8 +79,8 @@ CONFIG = {
     'LIMIT': 150,
     'TP_ATR_MULT': 1.5,   # IMPROVEMENT #6: was 2.0 — take quicker scalp wins
     'SL_ATR_MULT': 0.8,   # IMPROVEMENT #6: was 1.0 — tighter stops for scalping
-    'RSI_OVERBOUGHT': 70,
-    'RSI_OVERSOLD': 30,
+    'RSI_OVERBOUGHT': 75,   # was 70 — loosened so momentum breakouts aren't blocked too early
+    'RSI_OVERSOLD': 25,     # was 30 — loosened so momentum breakdowns aren't blocked too early
     'BACKTEST_CANDLES': 6000,
     'BACKTEST_OUTCOME_WINDOW': 10,  # IMPROVEMENT #6: was 20 — tighter realistic scalp window
 
@@ -109,7 +109,7 @@ CONFIG = {
     'ADAPTIVE_SIZE_LOW_VOL_MULT': 1.2,     # grow size 20% in low vol
 
     # #3 Entry confluence filter
-    'MIN_CONFLUENCE_SCORE': 5.0,     # minimum weighted confluence to allow entry
+    'MIN_CONFLUENCE_SCORE': 3.5,     # was 5.0 — loosened, minimum weighted confluence to allow entry
 
     # #7 Prime trading hours (separate from OF_SESSION_* used by order-flow module)
     'PRIME_HOURS_ASIAN_DEAD_START': 0,
@@ -639,9 +639,14 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regi
     if pd.isna(entry_adx) or entry_adx < CONFIG['ADX_MIN']:
         return None, f"NO TREND (ADX {entry_adx:.1f} < {CONFIG['ADX_MIN']})"
     if entry_rsi is not None and not pd.isna(entry_rsi):
-        if entry_rsi > CONFIG['RSI_OVERBOUGHT']:
+        # FIX: RSI filter was direction-agnostic — it blocked BOTH buy and sell
+        # signals whenever RSI touched an extreme, even when the extreme
+        # actually supported the dominant-score direction (e.g. oversold RSI
+        # with a strong buy_score, or overbought RSI with a strong sell_score).
+        # Now it only blocks the entry that would be CHASING the extreme.
+        if entry_rsi > CONFIG['RSI_OVERBOUGHT'] and buy_score >= sell_score:
             return None, f"BLOCKED (RSI overbought {entry_rsi:.1f})"
-        if entry_rsi < CONFIG['RSI_OVERSOLD']:
+        if entry_rsi < CONFIG['RSI_OVERSOLD'] and sell_score >= buy_score:
             return None, f"BLOCKED (RSI oversold {entry_rsi:.1f})"
     is_1m_comp = regime_1m["regime"] == "COMPRESSION"
     is_5m_comp = regime_5m["regime"] == "COMPRESSION"
@@ -1032,11 +1037,14 @@ def run_backtest_full(symbol, entry_timeframe="5m"):
         rsi, adx, atr = row["rsi"], row["adx"], row["atr"]
         if pd.isna(adx) or adx < CONFIG['ADX_MIN']: continue
         if pd.isna(rsi): continue
-        if rsi > CONFIG['RSI_OVERBOUGHT'] or rsi < CONFIG['RSI_OVERSOLD']: continue
         if pd.isna(atr): continue
 
         buy_score, sell_score = row["buy_score"], row["sell_score"]
         if pd.isna(buy_score) or pd.isna(sell_score): continue
+        # FIX: matches decide_direction() — only block the entry that would be
+        # CHASING the RSI extreme, not both directions uniformly.
+        if rsi > CONFIG['RSI_OVERBOUGHT'] and buy_score >= sell_score: continue
+        if rsi < CONFIG['RSI_OVERSOLD'] and sell_score >= buy_score: continue
         gap = abs(buy_score - sell_score)
         if gap < CONFIG['SCORE_GAP_MIN']: continue
 
@@ -1137,7 +1145,6 @@ def run_backtest(symbol, timeframe="5m"):
 
         if pd.isna(adx) or adx < CONFIG['ADX_MIN']: continue
         if pd.isna(rsi): continue
-        if rsi > CONFIG['RSI_OVERBOUGHT'] or rsi < CONFIG['RSI_OVERSOLD']: continue
         if pd.isna(atr): continue
         if df["regime_label"].iloc[i] != "TRENDING": continue  # FIX #1
 
@@ -1157,6 +1164,11 @@ def run_backtest(symbol, timeframe="5m"):
 
         buy_score += df["liq_buy"].iloc[i]
         sell_score += df["liq_sell"].iloc[i]
+
+        # FIX: matches decide_direction() — only block the entry that would be
+        # CHASING the RSI extreme, not both directions uniformly.
+        if rsi > CONFIG['RSI_OVERBOUGHT'] and buy_score >= sell_score: continue
+        if rsi < CONFIG['RSI_OVERSOLD'] and sell_score >= buy_score: continue
 
         gap = abs(buy_score - sell_score)
         if gap < CONFIG['SCORE_GAP_MIN']: continue
