@@ -82,7 +82,7 @@ CONFIG = {
     'SL_ATR_MULT': 0.8,   # IMPROVEMENT #6: was 1.0 — tighter stops for scalping
     'RSI_OVERBOUGHT': 75,   # was 70 — loosened so momentum breakouts aren't blocked too early
     'RSI_OVERSOLD': 25,     # was 30 — loosened so momentum breakdowns aren't blocked too early
-    'BACKTEST_CANDLES': 6000,
+    'BACKTEST_CANDLES': 3000,   # was 6000 — halved so backtest finishes before Render free-tier/frontend timeouts on cold start
     'BACKTEST_OUTCOME_WINDOW': 10,  # IMPROVEMENT #6: was 20 — tighter realistic scalp window
 
     'FVG_MIN_GAP_PCT': 0.02,
