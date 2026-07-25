@@ -28,8 +28,16 @@ function renderCoin(data) {
         // Entry / TP / SL — only on BUY or SELL
         let tradeRow = "";
         if (d.signal === "BUY" || d.signal === "SELL") {
+            const age = d.signal_age_seconds;
+            let ageText = "🆕 Just triggered";
+            let ageColor = "#00e676";
+            if (age !== null && age !== undefined && age > 0) {
+                if (age < 60) { ageText = `⏱️ Active ${Math.round(age)}s`; ageColor = "#00e676"; }
+                else { ageText = `⏱️ Active ${Math.floor(age / 60)}m ${Math.round(age % 60)}s`; ageColor = age > 300 ? "#ffd600" : "#00e676"; }
+            }
             tradeRow = `
             <div style="margin-top:8px;padding-top:8px;border-top:1px solid #444;">
+                <p class="meta" style="color:${ageColor};font-weight:bold">${ageText}</p>
                 <p class="meta">📍 Entry: <b>$${d.entry ?? "-"}</b></p>
                 <p class="meta">🎯 TP: <b style="color:#00e676">$${d.tp ?? "-"}</b> &nbsp; 🛑 SL: <b style="color:#ff4d4d">$${d.sl ?? "-"}</b></p>
                 <p class="meta">📊 ATR: ${d.atr ?? "-"}</p>
