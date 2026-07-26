@@ -80,8 +80,8 @@ CONFIG = {
     'LIMIT': 150,
     'TP_ATR_MULT': 2.2,   # was 1.5 (originally 2.0) — bumped up for bigger scalp targets, more room to run
     'SL_ATR_MULT': 0.8,   # IMPROVEMENT #6: was 1.0 — tighter stops for scalping
-    'RSI_OVERBOUGHT': 90,   # was 70 — loosened so momentum breakouts aren't blocked too early
-    'RSI_OVERSOLD': 10,     # was 30 — loosened so momentum breakdowns aren't blocked too early
+    'RSI_OVERBOUGHT': 85,   # was 75, then 70 — loosened again: strong clean trends were getting blocked at moderate (79-83) RSI
+    'RSI_OVERSOLD': 15,     # was 25, then 30 — loosened again, mirrored for symmetry
     'BACKTEST_CANDLES': 3000,   # was 6000 — halved so backtest finishes before Render free-tier/frontend timeouts on cold start
     'BACKTEST_OUTCOME_WINDOW': 10,  # IMPROVEMENT #6: was 20 — tighter realistic scalp window
 
@@ -172,6 +172,44 @@ CONFIG = {
     'OF_SESSION_LDN_START_UTC': 7,    # London session ~ 07:00-16:00 UTC
     'OF_SESSION_LDN_END_UTC': 16,
 }
+
+# ── NEW: Per-asset threshold overrides ──────────────────────────────────
+# Backtests showed the SAME filter settings behave very differently per
+# asset: BTC/ETH are lower-volatility, choppier (in this period) than DEXE,
+# so the globally-tuned thresholds above (which were tuned mostly against
+# DEXE, since it gave the clearest signal) under-fire and under-perform on
+# BTC/ETH. Rather than loosen the global settings (which would degrade
+# DEXE's already-validated performance), each asset gets its own overrides
+# layered on top of the base CONFIG above.
+# ⚠️ These BTC/ETH values are NOT yet backtest-validated — they're a
+# starting point. Run backtests after deploying and adjust based on what
+# you actually see, the same way DEXE's settings got tuned.
+ASSET_OVERRIDES = {
+    "BTC/USDT:USDT": {
+        'ADX_MIN': 14,             # was 18 (global) — BTC trends are gentler, needs a lower bar
+        'SCORE_GAP_MIN': 2.5,      # was 3.5 (global) — BTC buy/sell scores run closer together
+        'MIN_CONFLUENCE_SCORE': 2.0,  # was 3.0 (global)
+    },
+    "ETH/USDT:USDT": {
+        'ADX_MIN': 14,
+        'SCORE_GAP_MIN': 2.5,
+        'MIN_CONFLUENCE_SCORE': 2.0,
+    },
+    # DEXE intentionally has NO override — it uses the base CONFIG values
+    # above as-is, since those are the ones already validated by backtest
+    # (42.9% win rate, PF 2.22 on 5m).
+}
+
+
+def get_effective_config(symbol):
+    """
+    Returns CONFIG merged with any per-asset override for `symbol`. Use this
+    instead of the raw CONFIG dict wherever a threshold might need to differ
+    by asset (ADX_MIN, SCORE_GAP_MIN, MIN_CONFLUENCE_SCORE, etc.).
+    """
+    eff = dict(CONFIG)
+    eff.update(ASSET_OVERRIDES.get(symbol, {}))
+    return eff
 
 EXCHANGE_IDS = ['mexc', 'bybit', 'okx', 'gateio']
 
@@ -653,9 +691,10 @@ def calc_confluence_score(snap_1m, snap_5m):
 
 
 def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regime_5m,
-                      entry_rsi=None, snap_1m=None, snap_5m=None, cvd_pressure=None):
-    if pd.isna(entry_adx) or entry_adx < CONFIG['ADX_MIN']:
-        return None, f"NO TREND (ADX {entry_adx:.1f} < {CONFIG['ADX_MIN']})"
+                      entry_rsi=None, snap_1m=None, snap_5m=None, cvd_pressure=None, eff_cfg=None):
+    eff_cfg = eff_cfg if eff_cfg is not None else CONFIG  # NEW: per-asset override support
+    if pd.isna(entry_adx) or entry_adx < eff_cfg['ADX_MIN']:
+        return None, f"NO TREND (ADX {entry_adx:.1f} < {eff_cfg['ADX_MIN']})"
     if entry_rsi is not None and not pd.isna(entry_rsi):
         # FIX: RSI filter was direction-agnostic — it blocked BOTH buy and sell
         # signals whenever RSI touched an extreme, even when the extreme
@@ -676,7 +715,7 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regi
     # It also skipped the confluence gate AND the new CVD confirmation entirely,
     # since it returns before reaching those checks below. Now it requires the
     # score to actually be dominant, and requires CVD to not be against it.
-    if is_5m_comp and not is_1m_comp and entry_adx > CONFIG['ADX_MIN']:
+    if is_5m_comp and not is_1m_comp and entry_adx > eff_cfg['ADX_MIN']:
         if (buy_score >= CONFIG['SCORE_THRESHOLD'] + 0.5 and buy_score > sell_score
                 and htf_bias in ("BULLISH", "NEUTRAL")):
             if cvd_pressure is None or cvd_pressure >= -CONFIG['CVD_PRESSURE_MIN_ABS']:
@@ -701,11 +740,11 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regi
     confluence_score = None
     if snap_1m is not None and snap_5m is not None:
         confluence_score = calc_confluence_score(snap_1m, snap_5m)
-        if confluence_score < CONFIG['MIN_CONFLUENCE_SCORE']:
-            return None, f"BLOCKED (Low confluence {confluence_score:.1f} < {CONFIG['MIN_CONFLUENCE_SCORE']})"
+        if confluence_score < eff_cfg['MIN_CONFLUENCE_SCORE']:
+            return None, f"BLOCKED (Low confluence {confluence_score:.1f} < {eff_cfg['MIN_CONFLUENCE_SCORE']})"
 
     if buy_score >= CONFIG['SCORE_THRESHOLD'] and buy_score > sell_score:
-        if (buy_score - sell_score) >= CONFIG['SCORE_GAP_MIN'] and htf_bias in ("BULLISH", "NEUTRAL"):
+        if (buy_score - sell_score) >= eff_cfg['SCORE_GAP_MIN'] and htf_bias in ("BULLISH", "NEUTRAL"):
             # NEW: CVD confirmation (Fabio-style aggression check, proxy-based).
             # Only blocks when CVD is CLEARLY against the trade — a weak/neutral
             # reading doesn't veto it, since this is an approximation, not real
@@ -714,7 +753,7 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regi
                 return None, f"BLOCKED (CVD pressure against BUY: {cvd_pressure:.1f})"
             return "BUY", "BUY ✅" + (f" (confluence {confluence_score:.1f})" if confluence_score is not None else "")
     if sell_score >= CONFIG['SCORE_THRESHOLD'] and sell_score > buy_score:
-        if (sell_score - buy_score) >= CONFIG['SCORE_GAP_MIN'] and htf_bias in ("BEARISH", "NEUTRAL"):
+        if (sell_score - buy_score) >= eff_cfg['SCORE_GAP_MIN'] and htf_bias in ("BEARISH", "NEUTRAL"):
             if cvd_pressure is not None and cvd_pressure > CONFIG['CVD_PRESSURE_MIN_ABS']:
                 return None, f"BLOCKED (CVD pressure against SELL: {cvd_pressure:.1f})"
             return "SELL", "SELL ✅" + (f" (confluence {confluence_score:.1f})" if confluence_score is not None else "")
@@ -1044,11 +1083,13 @@ def analyze(symbol, timeframe="1m"):
             }
 
     buy_score, sell_score = get_ltf_scores(snap_entry_tf, snap_confirm)
+    eff_cfg = get_effective_config(symbol)  # NEW: per-asset threshold overrides
     direction, reason = decide_direction(
         buy_score, sell_score, htf_bias, snap_entry["adx"],
         snap_entry_tf["regime"], snap_confirm["regime"], entry_rsi=rsi_now,
         snap_1m=snap_entry_tf, snap_5m=snap_confirm,  # IMPROVEMENT #3: confluence gate
         cvd_pressure=snap_entry_tf.get("cvd_pressure"),  # NEW: Fabio-style aggression confirmation
+        eff_cfg=eff_cfg,  # NEW: per-asset overrides (BTC/ETH looser than DEXE-tuned defaults)
     )
 
     # IMPROVEMENT #9: require a volume spike behind the move, not just a low-volume drift.
@@ -1319,6 +1360,7 @@ def run_backtest_full(symbol, entry_timeframe="5m"):
 # FIX #1: run_backtest() (fast single-timeframe) now applies the regime
 # filter so it's no longer looser than live. Previously only ADX+RSI gated it.
 def run_backtest(symbol, timeframe="5m"):
+    eff_cfg = get_effective_config(symbol)  # NEW: per-asset threshold overrides, kept in sync with live analyze()
     df, ex_id = fetch_ohlcv_failover(symbol, timeframe, CONFIG['BACKTEST_CANDLES'])
     if df is None:
         return {"error": "no data"}
@@ -1352,7 +1394,7 @@ def run_backtest(symbol, timeframe="5m"):
         pat = df["pat_sig"].iloc[i]; div = df["divergence"].iloc[i]; struct = df["structure_event"].iloc[i]
         price = closes[i]
 
-        if pd.isna(adx) or adx < CONFIG['ADX_MIN']: continue
+        if pd.isna(adx) or adx < eff_cfg['ADX_MIN']: continue
         if pd.isna(rsi): continue
         if pd.isna(atr): continue
         if df["regime_label"].iloc[i] != "TRENDING": continue  # FIX #1
@@ -1380,7 +1422,7 @@ def run_backtest(symbol, timeframe="5m"):
         if rsi < CONFIG['RSI_OVERSOLD'] and sell_score >= buy_score: continue
 
         gap = abs(buy_score - sell_score)
-        if gap < CONFIG['SCORE_GAP_MIN']: continue
+        if gap < eff_cfg['SCORE_GAP_MIN']: continue
 
         direction = None
         if buy_score >= CONFIG['SCORE_THRESHOLD'] and buy_score > sell_score: direction = "BUY"
@@ -1401,7 +1443,7 @@ def run_backtest(symbol, timeframe="5m"):
             "ema5": ema5, "ema20": ema20,
         }
         confluence_score = calc_confluence_score(snap_i, snap_i)
-        if confluence_score < CONFIG['MIN_CONFLUENCE_SCORE']:
+        if confluence_score < eff_cfg['MIN_CONFLUENCE_SCORE']:
             continue
 
         # NEW: CVD confirmation — matches live decide_direction().
