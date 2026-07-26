@@ -118,7 +118,7 @@ async function runBacktest(symbol, timeframe) {
 async function loadDashboard() {
     try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 25000);
+        const timeout = setTimeout(() => controller.abort(), 40000);
         const response = await fetch(API_URL, { signal: controller.signal });
         clearTimeout(timeout);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -126,13 +126,14 @@ async function loadDashboard() {
         document.getElementById("btc-content").innerHTML = renderCoin(data.btc);
         document.getElementById("eth-content").innerHTML = renderCoin(data.eth);
         document.getElementById("dexe-content").innerHTML = renderCoin(data.dexe);
-        document.getElementById("status").innerHTML = "🟢 Live";
+        const now = new Date().toLocaleTimeString();
+        document.getElementById("status").innerHTML = `🟢 Live (updated ${now})`;
     } catch (err) {
         if (err.name === "AbortError") {
-            document.getElementById("status").innerHTML = "⏳ Loading...";
+            document.getElementById("status").innerHTML = "⏳ Refresh taking longer than usual — showing last known data above";
         } else {
             console.error("Fetch error:", err);
-            document.getElementById("status").innerHTML = "🔴 Disconnected";
+            document.getElementById("status").innerHTML = "🔴 Disconnected — showing last known data above";
         }
     }
 }
