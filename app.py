@@ -1,5 +1,7 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+import signal_log
+from scanner import fetch_ohlcv_failover
 from sma_strategy_test import backtest_sma
 from scanner import analyze, run_backtest, run_backtest_full, run_factor_backtest, run_combined_backtest, run_funding_rate_backtest, calc_dynamic_trailing_exit
 # new realistic backtest import
@@ -43,7 +45,7 @@ def health():
 @app.route("/api/dashboard")
 def dashboard():
     try:
-        return jsonify({
+        data = {
             "btc": {
                 "1m": safe_analyze("BTC/USDT:USDT", "1m"),
                 "5m": safe_analyze("BTC/USDT:USDT", "5m"),
@@ -60,7 +62,20 @@ def dashboard():
                 "1m": safe_analyze("BANK/USDT:USDT", "1m"),
                 "5m": safe_analyze("BANK/USDT:USDT", "5m"),
             }
-        })
+        }
+
+        # NEW: auto-journal every BUY/SELL the scanner emits. Deduped, so a
+        # signal that stays live across many polls is still one entry.
+        try:
+            tickers = {"btc": "BTC/USDT:USDT", "eth": "ETH/USDT:USDT",
+                       "dexe": "DEXE/USDT:USDT", "bank": "BANK/USDT:USDT"}
+            for key, tick in tickers.items():
+                for tf, payload in data.get(key, {}).items():
+                    signal_log.log_signal(tick, tf, payload)
+        except Exception:
+            pass          # journaling must never break the dashboard
+
+        return jsonify(data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -201,3 +216,28 @@ def funding_backtest(symbol, timeframe):
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
 
+
+@app.route("/api/journal/stats")
+def journal_stats():
+    """Is the scanner actually profitable? This is the number that matters."""
+    try:
+        signal_log.resolve_open(fetch_ohlcv_failover)
+    except Exception:
+        pass
+    return jsonify(signal_log.stats(request.args.get("symbol"),
+                                    request.args.get("timeframe")))
+
+
+@app.route("/api/journal")
+def journal_list():
+    try:
+        limit = int(request.args.get("limit", 50))
+    except ValueError:
+        limit = 50
+    return jsonify({"signals": signal_log.recent(limit)})
+
+
+@app.route("/api/journal/resolve")
+def journal_resolve():
+    n = signal_log.resolve_open(fetch_ohlcv_failover)
+    return jsonify({"resolved": n})
