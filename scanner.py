@@ -1107,12 +1107,10 @@ def analyze(symbol, timeframe="1m"):
     bo = detect_blowoff(df_entry, symbol=symbol)
     bo_ok, bo_reason = blowoff_gate(direction, bo)
     if not bo_ok:
-        return {
-            "symbol": symbol, "timeframe": timeframe, "price": round(price, 4),
-            "signal": "WAIT", "reason": bo_reason,
-            "blowoff": {"score": bo["score"], "confirmed": bo["confirmed"],
-                        "levels": bo.get("levels", {})},
-        }
+        # Follow the same pattern as the volume-spike filter below: kill the
+        # direction and fall through, so the dashboard still gets the full
+        # payload (RSI, bias, regime, scores, momentum) instead of a stub.
+        direction, reason = None, bo_reason
 
     # IMPROVEMENT #9: require a volume spike behind the move, not just a low-volume drift.
     # FIX: was checking ONLY the single most recent candle — a real trending move
@@ -1126,6 +1124,10 @@ def analyze(symbol, timeframe="1m"):
             direction, reason = None, f"BLOCKED (No volume spike confirming {reason})"
 
     signal = direction if direction else "WAIT"
+    blowoff_info = {
+        "active": bo["blowoff"], "score": bo["score"],
+        "confirmed": bo["confirmed"], "levels": bo.get("levels", {}),
+    }
 
     # NEW: signal freshness tracker — how long has THIS exact signal (same
     # symbol+timeframe+direction) been continuously active? Resets to 0 the
@@ -1169,6 +1171,7 @@ def analyze(symbol, timeframe="1m"):
         "suggested_qty_for_min_profit": suggested_qty_min,  # NEW: qty for ~₹500 net at TP
         "suggested_qty_for_max_profit": suggested_qty_max,  # NEW: qty for ~₹1000 net at TP
         "cvd_pressure": round(snap_entry_tf.get("cvd_pressure", 0.0), 2),  # NEW: Fabio-style aggression proxy (+ve = buy pressure)
+        "blowoff": blowoff_info,  # NEW: parabolic exhaustion state (see blowoff.py)
         "momentum_pct": momentum_pct,  # NEW: raw % price move, last N candles, NO filters — just "is it moving"
         "momentum_note": momentum_note,
         "last_candle_pct": last_candle_pct,  # NEW: THIS candle's own move (open to current price)
