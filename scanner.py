@@ -52,6 +52,7 @@ COINDCX_PAIR_MAP = {
     "BTC/USDT:USDT": "B-BTC_USDT",
     "ETH/USDT:USDT": "B-ETH_USDT",
     "DEXE/USDT:USDT": "B-DEXE_USDT",
+    "BANK/USDT:USDT": "B-BANK_USDT",   # VERIFY exact pair name on CoinDCX
 }
 
 COINDCX_RESOLUTION_MAP = {
@@ -195,6 +196,13 @@ ASSET_OVERRIDES = {
         'ADX_MIN': 14,
         'SCORE_GAP_MIN': 2.5,
         'MIN_CONFLUENCE_SCORE': 2.0,
+    },
+    "BANK/USDT:USDT": {
+        # BANK is a low-cap that moves in violent bursts. Tighter gates than
+        # DEXE so the scanner isn't firing on every impulse candle.
+        'ADX_MIN': 22,
+        'SCORE_GAP_MIN': 4.5,
+        'MIN_CONFLUENCE_SCORE': 4.0,
     },
     # DEXE intentionally has NO override — it uses the base CONFIG values
     # above as-is, since those are the ones already validated by backtest
