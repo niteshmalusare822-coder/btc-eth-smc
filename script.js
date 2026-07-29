@@ -126,6 +126,7 @@ async function loadDashboard() {
         document.getElementById("btc-content").innerHTML = renderCoin(data.btc);
         document.getElementById("eth-content").innerHTML = renderCoin(data.eth);
         document.getElementById("dexe-content").innerHTML = renderCoin(data.dexe);
+        document.getElementById("bank-content").innerHTML = renderCoin(data.bank);
         const now = new Date().toLocaleTimeString();
         document.getElementById("status").innerHTML = `🟢 Live (updated ${now})`;
     } catch (err) {
