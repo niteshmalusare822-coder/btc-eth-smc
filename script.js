@@ -53,6 +53,17 @@ function renderCoin(data) {
             else if (Math.abs(d.momentum_pct) >= 0.3) momColor = d.momentum_pct > 0 ? "#8bc34a" : "#ff8a65";
         }
 
+        // NEW: blow-off exhaustion banner
+        let boRow = "";
+        if (d.blowoff && d.blowoff.active) {
+            const lv = d.blowoff.levels || {};
+            const tag = d.blowoff.confirmed ? "CONFIRMED — climax low broken" : "ACTIVE — not confirmed yet";
+            boRow = `<p class="meta" style="color:#ff9100;font-weight:bold;">
+                🚫 BLOW-OFF ${tag} (score ${d.blowoff.score ?? "-"})<br>
+                <span style="font-weight:normal">invalidation $${lv.invalidation?.toFixed?.(5) ?? "-"} &nbsp;|&nbsp; 0.618 $${lv.fib_618?.toFixed?.(5) ?? "-"}</span>
+            </p>`;
+        }
+
         html += `
         <div class="timeframe">
             <h3>${tf}</h3>
@@ -62,6 +73,7 @@ function renderCoin(data) {
             <p class="meta">Bias: ${d.htf_bias ?? "-"} | Regime: ${d.regime ?? "-"}</p>
             <p class="meta">Score: BUY ${d.buy_score ?? "-"} / SELL ${d.sell_score ?? "-"}</p>
             <p class="meta" style="color:${momColor}">${d.momentum_note ?? ""} (${d.momentum_pct ?? "-"}%) &nbsp; | &nbsp; This candle: ${d.last_candle_direction ?? "-"} (${d.last_candle_pct ?? "-"}%)</p>
+            ${boRow}
             <p class="reason">${d.reason ?? ""}</p>
             ${tradeRow}
         </div>`;
