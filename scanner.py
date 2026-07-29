@@ -45,6 +45,7 @@ import requests
 import pandas as pd
 import numpy as np
 import time as _t
+from blowoff import detect_blowoff, blowoff_series, blowoff_gate, blowoff_gate_row
 
 # Map our symbol format -> CoinDCX futures pair format
 COINDCX_PAIR_MAP = {
@@ -1092,6 +1093,19 @@ def analyze(symbol, timeframe="1m"):
         eff_cfg=eff_cfg,  # NEW: per-asset overrides (BTC/ETH looser than DEXE-tuned defaults)
     )
 
+    # NEW: blow-off exhaustion veto. Blocks longs into a parabolic climax, and
+    # blocks shorts until the climax candle's low is actually broken.
+    # Same module + same thresholds as run_backtest() — see blowoff.py.
+    bo = detect_blowoff(df_entry, symbol=symbol)
+    bo_ok, bo_reason = blowoff_gate(direction, bo)
+    if not bo_ok:
+        return {
+            "symbol": symbol, "timeframe": timeframe, "price": round(price, 4),
+            "signal": "WAIT", "reason": bo_reason,
+            "blowoff": {"score": bo["score"], "confirmed": bo["confirmed"],
+                        "levels": bo.get("levels", {})},
+        }
+
     # IMPROVEMENT #9: require a volume spike behind the move, not just a low-volume drift.
     # FIX: was checking ONLY the single most recent candle — a real trending move
     # often has its volume spike a candle or two before everything else (score,
@@ -1370,6 +1384,7 @@ def run_backtest(symbol, timeframe="5m"):
     df = detect_pro_divergence_vectorized(df)
     df = detect_structure_live_pro(df, CONFIG['SWING_LOOKBACK'])
     df["sweep_v"] = detect_liquidity_sweep_vectorized(df, CONFIG['LIQUIDITY_SWEEP_LOOKBACK'])
+    bo_df = blowoff_series(df, symbol=symbol)  # NEW: causal, computed once, no lookahead
     df = compute_active_fvg_series(df, CONFIG['FVG_MIN_GAP_PCT'])
     df = calc_equal_level_density(df, CONFIG['BSL_SSL_LOOKBACK'], CONFIG['EQUAL_LEVEL_TOLERANCE_PCT'])
     df = detect_inducement(df, CONFIG['INDUCEMENT_MINOR_LOOKBACK'])
@@ -1428,6 +1443,10 @@ def run_backtest(symbol, timeframe="5m"):
         if buy_score >= CONFIG['SCORE_THRESHOLD'] and buy_score > sell_score: direction = "BUY"
         elif sell_score >= CONFIG['SCORE_THRESHOLD'] and sell_score > buy_score: direction = "SELL"
         if direction is None: continue
+
+        # NEW: blow-off veto — MATCHES live analyze(). Precomputed above.
+        if not blowoff_gate_row(direction, bo_df, i)[0]:
+            continue
 
         # NEW: confluence gate — MATCHES live decide_direction(), which was
         # missing here entirely. This was the single biggest live-vs-backtest
