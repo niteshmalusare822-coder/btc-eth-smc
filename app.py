@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from sma_strategy_test import backtest_sma
 from scanner import analyze, run_backtest, run_backtest_full, run_factor_backtest, run_combined_backtest, run_funding_rate_backtest, calc_dynamic_trailing_exit
 # new realistic backtest import
 from scanner_fixed import improved_run_backtest
@@ -62,6 +63,34 @@ def dashboard():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/strategy-test/<symbol>/<timeframe>")
+def strategy_test(symbol, timeframe):
+    """Does the SMA8/50 setup actually make money? Run it, don't guess."""
+    sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT",
+               "DEXE": "DEXE/USDT:USDT", "BANK": "BANK/USDT:USDT"}
+    ticker = sym_map.get(symbol.upper())
+    if not ticker:
+        return jsonify({"error": f"unknown symbol {symbol}"}), 400
+    try:
+        return jsonify(backtest_sma(ticker, timeframe))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/strategy-test-all")
+def strategy_test_all():
+    """All four assets, both timeframes, one call."""
+    out = {}
+    for name, ticker in (("BTC", "BTC/USDT:USDT"), ("ETH", "ETH/USDT:USDT"),
+                         ("DEXE", "DEXE/USDT:USDT"), ("BANK", "BANK/USDT:USDT")):
+        for tf in ("5m", "15m"):
+            try:
+                out[f"{name}_{tf}"] = backtest_sma(ticker, tf)
+            except Exception as e:
+                out[f"{name}_{tf}"] = {"error": str(e)}
+    return jsonify(out)
 
 @app.route("/api/backtest/<symbol>/<timeframe>")
 def backtest(symbol, timeframe):
@@ -171,3 +200,4 @@ def funding_backtest(symbol, timeframe):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
