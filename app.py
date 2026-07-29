@@ -54,6 +54,10 @@ def dashboard():
             "dexe": {
                 "1m": safe_analyze("DEXE/USDT:USDT", "1m"),
                 "5m": safe_analyze("DEXE/USDT:USDT", "5m"),
+            },
+            "bank": {
+                "1m": safe_analyze("BANK/USDT:USDT", "1m"),
+                "5m": safe_analyze("BANK/USDT:USDT", "5m"),
             }
         })
     except Exception as e:
@@ -62,7 +66,7 @@ def dashboard():
 @app.route("/api/backtest/<symbol>/<timeframe>")
 def backtest(symbol, timeframe):
     try:
-        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT"}
+        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT", "BANK": "BANK/USDT:USDT"}
         full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
         result = run_backtest(full_symbol, timeframe)
         return jsonify(sanitize(result))
@@ -73,7 +77,7 @@ def backtest(symbol, timeframe):
 @app.route("/api/backtest-realistic/<symbol>/<timeframe>")
 def backtest_realistic(symbol, timeframe):
     try:
-        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT"}
+        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT", "BANK": "BANK/USDT:USDT"}
         full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
         # optional query params
         capital = float(request.args.get('capital', 10000))
@@ -89,7 +93,7 @@ def backtest_realistic(symbol, timeframe):
 @app.route("/api/backtest-full/<symbol>/<timeframe>")
 def backtest_full(symbol, timeframe):
     try:
-        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT"}
+        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT", "BANK": "BANK/USDT:USDT"}
         full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
         result = run_backtest_full(full_symbol, timeframe)
         return jsonify(sanitize(result))
@@ -99,7 +103,7 @@ def backtest_full(symbol, timeframe):
 @app.route("/api/factor-backtest/<symbol>/<timeframe>")
 def factor_backtest(symbol, timeframe):
     try:
-        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT"}
+        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT", "BANK": "BANK/USDT:USDT"}
         full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
         result = run_factor_backtest(full_symbol, timeframe)
         return jsonify(sanitize(result))
@@ -109,7 +113,7 @@ def factor_backtest(symbol, timeframe):
 @app.route("/api/combined-backtest/<symbol>/<timeframe>")
 def combined_backtest(symbol, timeframe):
     try:
-        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT"}
+        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT", "BANK": "BANK/USDT:USDT"}
         full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
         min_agree = int(request.args.get("min_agree", 2))
         strong_adx = float(request.args.get("strong_adx", 25))
@@ -130,7 +134,7 @@ def trail(symbol, timeframe):
                    extreme=<best price since entry, optional>
     """
     try:
-        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT"}
+        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT", "BANK": "BANK/USDT:USDT"}
         full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
 
         direction = request.args.get("direction", "").upper()
@@ -156,8 +160,8 @@ def trail(symbol, timeframe):
 @app.route("/api/funding-backtest/<symbol>/<timeframe>")
 def funding_backtest(symbol, timeframe):
     try:
-        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT"}
-        funding_sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT"}
+        sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT", "BANK": "BANK/USDT:USDT"}
+        funding_sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT", "BANK": "BANK/USDT:USDT"}
         full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
         funding_symbol = funding_sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT")
         result = run_funding_rate_backtest(full_symbol, timeframe, funding_symbol)
