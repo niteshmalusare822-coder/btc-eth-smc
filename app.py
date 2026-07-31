@@ -1,5 +1,7 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+import threading
+import time
 import signal_log
 from scanner import fetch_ohlcv_failover
 from sma_strategy_test import backtest_sma
@@ -42,42 +44,71 @@ def home():
 def health():
     return jsonify({"status": "ok"})
 
+# ── Background dashboard builder ─────────────────────────────
+# The old route built all 8 analyze() calls INSIDE the request. That meant
+# ~20 CoinDCX HTTP fetches per request while the frontend polled every 15s
+# on a single sync gunicorn worker -> requests queued forever -> timeouts.
+# Now a background thread keeps one fresh snapshot in memory and the route
+# just hands it over in milliseconds.
+
+TICKERS = {
+    "btc":  "BTC/USDT:USDT",
+    "eth":  "ETH/USDT:USDT",
+    "dexe": "DEXE/USDT:USDT",
+    "bank": "BANK/USDT:USDT",
+}
+
+_DASH = {"data": None, "ts": 0.0, "error": None}
+_DASH_LOCK = threading.Lock()
+_SCAN_INTERVAL = 10          # seconds to wait between full scans
+
+
+def _build_dashboard():
+    data = {}
+    for key, tick in TICKERS.items():
+        data[key] = {
+            "1m": safe_analyze(tick, "1m"),
+            "5m": safe_analyze(tick, "5m"),
+        }
+    try:
+        for key, tick in TICKERS.items():
+            for tf, payload in data[key].items():
+                signal_log.log_signal(tick, tf, payload)
+    except Exception:
+        pass                 # journaling must never break the dashboard
+    return data
+
+
+def _refresh_loop():
+    while True:
+        try:
+            fresh = _build_dashboard()
+            with _DASH_LOCK:
+                _DASH["data"] = fresh
+                _DASH["ts"] = time.time()
+                _DASH["error"] = None
+        except Exception as e:
+            with _DASH_LOCK:
+                _DASH["error"] = str(e)
+        time.sleep(_SCAN_INTERVAL)
+
+
+threading.Thread(target=_refresh_loop, daemon=True).start()
+
+
 @app.route("/api/dashboard")
 def dashboard():
-    try:
-        data = {
-            "btc": {
-                "1m": safe_analyze("BTC/USDT:USDT", "1m"),
-                "5m": safe_analyze("BTC/USDT:USDT", "5m"),
-            },
-            "eth": {
-                "1m": safe_analyze("ETH/USDT:USDT", "1m"),
-                "5m": safe_analyze("ETH/USDT:USDT", "5m"),
-            },
-            "dexe": {
-                "1m": safe_analyze("DEXE/USDT:USDT", "1m"),
-                "5m": safe_analyze("DEXE/USDT:USDT", "5m"),
-            },
-            "bank": {
-                "1m": safe_analyze("BANK/USDT:USDT", "1m"),
-                "5m": safe_analyze("BANK/USDT:USDT", "5m"),
-            }
-        }
+    with _DASH_LOCK:
+        data = _DASH["data"]
+        ts = _DASH["ts"]
+        err = _DASH["error"]
 
-        # NEW: auto-journal every BUY/SELL the scanner emits. Deduped, so a
-        # signal that stays live across many polls is still one entry.
-        try:
-            tickers = {"btc": "BTC/USDT:USDT", "eth": "ETH/USDT:USDT",
-                       "dexe": "DEXE/USDT:USDT", "bank": "BANK/USDT:USDT"}
-            for key, tick in tickers.items():
-                for tf, payload in data.get(key, {}).items():
-                    signal_log.log_signal(tick, tf, payload)
-        except Exception:
-            pass          # journaling must never break the dashboard
+    if data is None:
+        return jsonify({"warming": True, "error": err}), 200
 
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    out = dict(data)
+    out["_age_seconds"] = round(time.time() - ts, 1)
+    return jsonify(out)
 
 
 @app.route("/api/strategy-test/<symbol>/<timeframe>")
