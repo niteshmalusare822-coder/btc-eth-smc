@@ -110,11 +110,22 @@ def _refresh_loop():
         time.sleep(_SCAN_INTERVAL)
 
 
-threading.Thread(target=_refresh_loop, daemon=True).start()
+_scanner_started = False
+_START_LOCK = threading.Lock()
+
+
+def _ensure_scanner():
+    global _scanner_started
+    with _START_LOCK:
+        if _scanner_started:
+            return
+        _scanner_started = True
+        threading.Thread(target=_refresh_loop, daemon=True).start()
 
 
 @app.route("/api/dashboard")
 def dashboard():
+    _ensure_scanner()
     with _DASH_LOCK:
         data = _DASH["data"]
         ts = _DASH["ts"]
