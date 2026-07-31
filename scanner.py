@@ -1398,6 +1398,26 @@ def run_backtest(symbol, timeframe="5m"):
     bo_df = blowoff_series(df, symbol=symbol)  # NEW: causal, computed once, no lookahead
     df = compute_active_fvg_series(df, CONFIG['FVG_MIN_GAP_PCT'])
     df = calc_equal_level_density(df, CONFIG['BSL_SSL_LOOKBACK'], CONFIG['EQUAL_LEVEL_TOLERANCE_PCT'])
+    # FIX (live/backtest parity): the confluence gate awards +1.5 when the
+    # entry timeframe's EMA trend AGREES with the confirmation timeframe's.
+    # This loop only ever had ONE timeframe and passed the same snapshot in
+    # twice -- so the comparison was always "equal to itself" and the +1.5 was
+    # granted on EVERY bar. Live only grants it when the two timeframes really
+    # agree, so the backtest was systematically 1.5 points more permissive and
+    # took setups that live blocks.
+    #
+    # Build the confirmation timeframe by resampling (no extra network call),
+    # then shift(1) so each bar only ever sees the last COMPLETED higher
+    # timeframe candle. Without the shift this would leak future closes.
+    _confirm_tf = TIMEFRAME_CONFIRM_MAP.get(timeframe)
+    _confirm_rule = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}.get(_confirm_tf)
+    if _confirm_rule:
+        _htf_close = df["close"].resample(_confirm_rule).last().dropna()
+        df["htf_ema5"] = calc_ema(_htf_close, 5).shift(1).reindex(df.index, method="ffill")
+        df["htf_ema20"] = calc_ema(_htf_close, 20).shift(1).reindex(df.index, method="ffill")
+    else:
+        df["htf_ema5"] = df["ema5"]
+        df["htf_ema20"] = df["ema20"]
     df = detect_inducement(df, CONFIG['INDUCEMENT_MINOR_LOOKBACK'])
     regime_series, _, _ = _vectorized_regime(df)  # FIX #1
     df["regime_label"] = regime_series
@@ -1472,7 +1492,11 @@ def run_backtest(symbol, timeframe="5m"):
             "eq_high_count": df["eq_high_count"].iloc[i] if "eq_high_count" in df.columns else 0,
             "ema5": ema5, "ema20": ema20,
         }
-        confluence_score = calc_confluence_score(snap_i, snap_i)
+        _h5 = df["htf_ema5"].iloc[i]
+        _h20 = df["htf_ema20"].iloc[i]
+        if pd.isna(_h5) or pd.isna(_h20):
+            _h5, _h20 = ema5, ema20     # not enough history yet -- fall back
+        confluence_score = calc_confluence_score(snap_i, {"ema5": _h5, "ema20": _h20})
         if confluence_score < eff_cfg['MIN_CONFLUENCE_SCORE']:
             continue
 
