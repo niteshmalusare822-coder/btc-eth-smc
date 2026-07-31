@@ -127,27 +127,49 @@ async function runBacktest(symbol, timeframe) {
 }
 
 // ── Dashboard ────────────────────────────────────────────
+let inFlight = false;          // stops overlapping polls piling up on the server
+
 async function loadDashboard() {
+    if (inFlight) return;      // previous request still running - skip this tick
+    inFlight = true;
+
+    const statusEl = document.getElementById("status");
     try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 40000);
-        const response = await fetch(API_URL, { signal: controller.signal });
+        // 90s, not 40s: a cold Render instance needs ~60s to answer the very
+        // first request. Once warm the response is near-instant anyway.
+        const timeout = setTimeout(() => controller.abort(), 90000);
+        const response = await fetch(API_URL, { signal: controller.signal, cache: "no-store" });
         clearTimeout(timeout);
+
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
-        document.getElementById("btc-content").innerHTML = renderCoin(data.btc);
-        document.getElementById("eth-content").innerHTML = renderCoin(data.eth);
+
+        if (data.warming) {
+            statusEl.innerHTML = "⏳ Server waking up — first scan running (30–60s)";
+            return;
+        }
+
+        document.getElementById("btc-content").innerHTML  = renderCoin(data.btc);
+        document.getElementById("eth-content").innerHTML  = renderCoin(data.eth);
         document.getElementById("dexe-content").innerHTML = renderCoin(data.dexe);
         document.getElementById("bank-content").innerHTML = renderCoin(data.bank);
+
         const now = new Date().toLocaleTimeString();
-        document.getElementById("status").innerHTML = `🟢 Live (updated ${now})`;
+        const age = data._age_seconds;
+        const stale = age > 45;
+        statusEl.innerHTML = stale
+            ? `🟡 Live (updated ${now}) — scan data ${age}s old`
+            : `🟢 Live (updated ${now})`;
     } catch (err) {
         if (err.name === "AbortError") {
-            document.getElementById("status").innerHTML = "⏳ Refresh taking longer than usual — showing last known data above";
+            statusEl.innerHTML = "⏳ Server slow to respond — retrying";
         } else {
             console.error("Fetch error:", err);
-            document.getElementById("status").innerHTML = "🔴 Disconnected — showing last known data above";
+            statusEl.innerHTML = `🔴 Disconnected (${err.message}) — retrying`;
         }
+    } finally {
+        inFlight = false;
     }
 }
 
