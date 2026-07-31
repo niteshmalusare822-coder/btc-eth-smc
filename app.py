@@ -45,11 +45,10 @@ def health():
     return jsonify({"status": "ok"})
 
 # ── Background dashboard builder ─────────────────────────────
-# The old route built all 8 analyze() calls INSIDE the request. That meant
-# ~20 CoinDCX HTTP fetches per request while the frontend polled every 15s
-# on a single sync gunicorn worker -> requests queued forever -> timeouts.
-# Now a background thread keeps one fresh snapshot in memory and the route
-# just hands it over in milliseconds.
+# Publishes each symbol AS SOON as it finishes instead of waiting for all
+# four. On Render's free tier (0.1 CPU) a full pass can take minutes, so
+# waiting for the whole set meant the dashboard sat on "warming" forever.
+# Every step is logged to stdout so Render logs show exactly where time goes.
 
 TICKERS = {
     "btc":  "BTC/USDT:USDT",
@@ -58,38 +57,56 @@ TICKERS = {
     "bank": "BANK/USDT:USDT",
 }
 
-_DASH = {"data": None, "ts": 0.0, "error": None}
+_DASH = {"data": None, "ts": 0.0, "error": None, "progress": "not started", "passes": 0}
 _DASH_LOCK = threading.Lock()
-_SCAN_INTERVAL = 10          # seconds to wait between full scans
+_SCAN_INTERVAL = 10          # seconds to wait between full passes
+
+
+def _log(msg):
+    print(f"[scan] {msg}", flush=True)
+
+
+def _publish(key, payload):
+    with _DASH_LOCK:
+        if _DASH["data"] is None:
+            _DASH["data"] = {}
+        _DASH["data"][key] = payload
+        _DASH["ts"] = time.time()
+        _DASH["progress"] = f"{key} updated"
 
 
 def _build_dashboard():
-    data = {}
     for key, tick in TICKERS.items():
-        data[key] = {
-            "1m": safe_analyze(tick, "1m"),
-            "5m": safe_analyze(tick, "5m"),
-        }
-    try:
-        for key, tick in TICKERS.items():
-            for tf, payload in data[key].items():
-                signal_log.log_signal(tick, tf, payload)
-    except Exception:
-        pass                 # journaling must never break the dashboard
-    return data
+        t0 = time.time()
+        payload = {}
+        for tf in ("1m", "5m"):
+            t1 = time.time()
+            payload[tf] = safe_analyze(tick, tf)
+            _log(f"{key} {tf} took {time.time() - t1:.1f}s")
+        _publish(key, payload)
+        _log(f"{key} published in {time.time() - t0:.1f}s")
+
+        try:
+            for tf, p in payload.items():
+                signal_log.log_signal(tick, tf, p)
+        except Exception as e:
+            _log(f"journal failed for {key}: {e}")
 
 
 def _refresh_loop():
+    _log("background scanner thread started")
     while True:
+        t0 = time.time()
         try:
-            fresh = _build_dashboard()
+            _build_dashboard()
             with _DASH_LOCK:
-                _DASH["data"] = fresh
-                _DASH["ts"] = time.time()
                 _DASH["error"] = None
+                _DASH["passes"] += 1
+            _log(f"full pass complete in {time.time() - t0:.1f}s")
         except Exception as e:
             with _DASH_LOCK:
                 _DASH["error"] = str(e)
+            _log(f"pass FAILED: {e}")
         time.sleep(_SCAN_INTERVAL)
 
 
@@ -102,12 +119,18 @@ def dashboard():
         data = _DASH["data"]
         ts = _DASH["ts"]
         err = _DASH["error"]
+        progress = _DASH["progress"]
+        passes = _DASH["passes"]
 
-    if data is None:
-        return jsonify({"warming": True, "error": err}), 200
+    if not data:
+        return jsonify({"warming": True, "progress": progress, "error": err}), 200
 
     out = dict(data)
     out["_age_seconds"] = round(time.time() - ts, 1)
+    out["_progress"] = progress
+    out["_passes"] = passes
+    if err:
+        out["_error"] = err
     return jsonify(out)
 
 
