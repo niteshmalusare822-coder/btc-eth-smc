@@ -48,6 +48,8 @@ import time as _t
 from blowoff import detect_blowoff, blowoff_series, blowoff_gate, blowoff_gate_row
 
 # Map our symbol format -> CoinDCX futures pair format
+import sizing  # risk-first position sizing (replaces profit-target sizing)
+
 COINDCX_PAIR_MAP = {
     "BTC/USDT:USDT": "B-BTC_USDT",
     "ETH/USDT:USDT": "B-ETH_USDT",
@@ -86,6 +88,17 @@ CONFIG = {
     'RSI_OVERSOLD': 15,     # was 25, then 30 — loosened again, mirrored for symmetry
     'BACKTEST_CANDLES': 3000,   # was 6000 — halved so backtest finishes before Render free-tier/frontend timeouts on cold start
     'BACKTEST_OUTCOME_WINDOW': 10,  # IMPROVEMENT #6: was 20 — tighter realistic scalp window
+
+    # ── Divergence quality gates ────────────────────────────────────
+    # The old test was: price makes a new 20-bar high AND rsi is anywhere
+    # below its own 20-bar high. In a trend RSI peaks early and then sits
+    # below that peak for the rest of the move, so this fired on roughly a
+    # third of all new highs in a pure uptrend with no reversal at all.
+    # Real divergence needs TWO separated peaks and a meaningful RSI gap.
+    'DIV_MIN_RSI_GAP': 5.0,          # RSI must be this many points below its prior peak
+    'DIV_MIN_PEAK_SEPARATION': 5,    # ...and that peak must be this many bars back
+    'DIV_TRENDING_WEIGHT': 0.35,     # divergence counts this much in a TRENDING regime
+    'DIV_RANGING_WEIGHT': 1.0,       # ...and fully in a RANGING one
 
     'FVG_MIN_GAP_PCT': 0.02,
     'BSL_SSL_LOOKBACK': 20,
@@ -427,16 +440,56 @@ def detect_candle_patterns_vectorized(df):
     df.loc[bull_eng, "pat_sig"] = "BUY"; df.loc[bear_eng, "pat_sig"] = "SELL"
     return df
 
+def _bars_since_extreme(series, lookback, use_max=True):
+    """How many bars back the rolling extreme sits. A divergence between two
+    peaks one bar apart is noise, not a signal — this is what lets us insist
+    the two peaks are actually separated in time. Uses only past bars, so it
+    is safe in both live and backtest paths."""
+    f = np.argmax if use_max else np.argmin
+    return series.rolling(lookback).apply(
+        lambda w: len(w) - 1 - f(w), raw=True)
+
+
 def detect_pro_divergence_vectorized(df, lookback=20):
     df = df.copy()
     df["divergence"] = ""
-    roll_min_c = df["close"].shift(1).rolling(lookback).min()
-    roll_min_r = df["rsi"].shift(1).rolling(lookback).min()
-    roll_max_c = df["close"].shift(1).rolling(lookback).max()
-    roll_max_r = df["rsi"].shift(1).rolling(lookback).max()
-    df.loc[(df["close"] <= roll_min_c) & (df["rsi"] > roll_min_r) & (df["rsi"] < 50), "divergence"] = "BULL_DIV"
-    df.loc[(df["close"] >= roll_max_c) & (df["rsi"] < roll_max_r) & (df["rsi"] > 50), "divergence"] = "BEAR_DIV"
+    prior_c = df["close"].shift(1)
+    prior_r = df["rsi"].shift(1)
+
+    roll_min_c = prior_c.rolling(lookback).min()
+    roll_min_r = prior_r.rolling(lookback).min()
+    roll_max_c = prior_c.rolling(lookback).max()
+    roll_max_r = prior_r.rolling(lookback).max()
+
+    gap = CONFIG['DIV_MIN_RSI_GAP']
+    sep = CONFIG['DIV_MIN_PEAK_SEPARATION']
+    bars_to_peak = _bars_since_extreme(prior_r, lookback, use_max=True)
+    bars_to_trough = _bars_since_extreme(prior_r, lookback, use_max=False)
+
+    bull = (
+        (df["close"] <= roll_min_c) &
+        (df["rsi"] - roll_min_r >= gap) &      # RSI meaningfully higher, not just higher
+        (bars_to_trough >= sep) &              # ...than a trough that is genuinely earlier
+        (df["rsi"] < 50)
+    )
+    bear = (
+        (df["close"] >= roll_max_c) &
+        (roll_max_r - df["rsi"] >= gap) &
+        (bars_to_peak >= sep) &
+        (df["rsi"] > 50)
+    )
+    df.loc[bull, "divergence"] = "BULL_DIV"
+    df.loc[bear, "divergence"] = "BEAR_DIV"
     return df
+
+
+def divergence_weight(regime_label):
+    """Divergence is a mean-reversion signal. Letting it carry full weight
+    inside a trend is what produced 17.6 counter-trend points against 9.9
+    with-trend points on a coin that was going straight up."""
+    if regime_label == "TRENDING":
+        return CONFIG['DIV_TRENDING_WEIGHT']
+    return CONFIG['DIV_RANGING_WEIGHT']
 
 def detect_liquidity_sweep(df):
     data = df.tail(CONFIG['LIQUIDITY_SWEEP_LOOKBACK'])
@@ -635,8 +688,13 @@ def get_ltf_scores(snap_1m, snap_5m):
     for snap, w in [(snap_1m, 1.0), (snap_5m, 1.2)]:
         if snap["pattern"] == "BUY": buy_score += 2 * w
         elif snap["pattern"] == "SELL": sell_score += 2 * w
-        if snap["divergence"] == "BULL_DIV": buy_score += 3 * w
-        elif snap["divergence"] == "BEAR_DIV": sell_score += 3 * w
+        # Divergence is discounted inside a trend — see divergence_weight().
+        try:
+            dw = divergence_weight(snap["regime"]["regime"])
+        except (KeyError, TypeError):
+            dw = 1.0
+        if snap["divergence"] == "BULL_DIV": buy_score += 3 * w * dw
+        elif snap["divergence"] == "BEAR_DIV": sell_score += 3 * w * dw
         if snap["sweep"] == "EQUAL_LOW_SWEEP": buy_score += 3 * w
         elif snap["sweep"] == "EQUAL_HIGH_SWEEP": sell_score += 3 * w
         if snap["structure_event"] in ("BOS_BULL", "CHoCH_BULL"):
@@ -930,6 +988,27 @@ def _get_ltf_snaps_cached(symbol, timeframe="1m", preloaded_entry_snap=None):
     return snap_entry_tf, snap_confirm
 
 
+def _px(v):
+    """Round a price for display without destroying it.
+
+    round(x, 2) is fine for BTC at 63,000 but turns a 0.0568 BANK entry, its
+    0.0592 target and its 0.0553 stop into three identical "0.06"s, making
+    the backtest trade list unreadable on exactly the assets it matters for.
+    Scale the precision to the price instead.
+    """
+    if v is None:
+        return None
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    a = abs(v)
+    if a >= 100:  return round(v, 2)
+    if a >= 1:    return round(v, 4)
+    if a >= 0.01: return round(v, 6)
+    return float(f"{v:.6g}")
+
+
 def calc_position_size_for_target(entry_price, tp_price, target_profit_inr=None, usdt_inr_rate=None):
     """
     Kitni quantity leni hai taaki TP hit hone par net profit target_profit_inr
@@ -1158,6 +1237,13 @@ def analyze(symbol, timeframe="1m"):
     suggested_qty_min = calc_position_size_for_target(price, tp, CONFIG['TARGET_PROFIT_INR_MIN']) if direction else None
     suggested_qty_max = calc_position_size_for_target(price, tp, CONFIG['TARGET_PROFIT_INR_MAX']) if direction else None
 
+    # RISK-FIRST SIZING — this is the number to trade off. The two lines above
+    # size for a fixed rupee PROFIT, which has no upper bound as the stop
+    # tightens; they are kept only so the dashboard can show the contrast.
+    risk_size = sizing.calc_risk_based_size(price, sl, tp) if direction else None
+    capital_for_target = (sizing.capital_needed_for_profit(
+        price, sl, tp, CONFIG['TARGET_PROFIT_INR_MIN']) if direction else None)
+
     return {
         "symbol": symbol, "timeframe": timeframe, "price": round(price, 4),
         "rsi": round(rsi_now, 2) if rsi_now is not None else None,
@@ -1168,7 +1254,9 @@ def analyze(symbol, timeframe="1m"):
         "exchange": ex_id, "entry": round(price, 4) if direction else None,
         "tp": tp, "sl": sl, "atr": round(atr_now, 4) if atr_now else None,
         "tp_levels": tp_levels,  # IMPROVEMENT #4: partial profit-taking (50/30/20)
-        "suggested_qty_for_min_profit": suggested_qty_min,  # NEW: qty for ~₹500 net at TP
+        "risk_size": risk_size,             # THE number to trade off — risk-first
+        "capital_needed_for_500": capital_for_target,
+        "suggested_qty_for_min_profit": suggested_qty_min,  # legacy, display-only
         "suggested_qty_for_max_profit": suggested_qty_max,  # NEW: qty for ~₹1000 net at TP
         "cvd_pressure": round(snap_entry_tf.get("cvd_pressure", 0.0), 2),  # NEW: Fabio-style aggression proxy (+ve = buy pressure)
         "blowoff": blowoff_info,  # NEW: parabolic exhaustion state (see blowoff.py)
@@ -1352,7 +1440,7 @@ def run_backtest_full(symbol, entry_timeframe="5m"):
                    else (price - exit_price) / price * 100) - CONFIG['FEE_PCT']
         results.append({
             "time": row["timestamp"].strftime("%m-%d %H:%M") if "timestamp" in row else str(row.name),
-            "direction": direction, "entry": round(price, 2), "tp": round(tp, 2), "sl": round(sl, 2),
+            "direction": direction, "entry": _px(price), "tp": _px(tp), "sl": _px(sl),
             "outcome": outcome, "pnl_pct": round(pnl_pct, 4),
         })
 
@@ -1448,8 +1536,12 @@ def run_backtest(symbol, timeframe="5m"):
         buy_score, sell_score = 0.0, 0.0
         if pat == "BUY": buy_score += 2
         elif pat == "SELL": sell_score += 2
-        if div == "BULL_DIV": buy_score += 3
-        elif div == "BEAR_DIV": sell_score += 3
+        # Mirrors the regime discount applied in get_ltf_scores(). Kept
+        # identical on purpose — divergence weighting drifting between the
+        # live and backtest paths is exactly the class of bug fixed before.
+        dw = divergence_weight(df["regime_label"].iloc[i])
+        if div == "BULL_DIV": buy_score += 3 * dw
+        elif div == "BEAR_DIV": sell_score += 3 * dw
         if struct in ("BOS_BULL", "CHoCH_BULL"): buy_score += 2
         elif struct in ("BOS_BEAR", "CHoCH_BEAR"): sell_score += 2
         if not pd.isna(vwap):
@@ -1526,7 +1618,7 @@ def run_backtest(symbol, timeframe="5m"):
                    else (price - exit_price) / price * 100) - CONFIG['FEE_PCT']
         results.append({
             "time": df.index[i].strftime("%m-%d %H:%M"),
-            "direction": direction, "entry": round(price, 2), "tp": round(tp, 2), "sl": round(sl, 2),
+            "direction": direction, "entry": _px(price), "tp": _px(tp), "sl": _px(sl),
             "outcome": outcome, "pnl_pct": round(pnl_pct, 4),
         })
 
@@ -2213,7 +2305,7 @@ def run_orderflow_backtest(symbol, entry_timeframe="1m", structure_timeframe="5m
         results.append({
             "time": df_entry.index[i].strftime("%m-%d %H:%M"), "session": session_name,
             "setup": setup_type, "direction": direction,
-            "entry": round(price, 2), "tp": round(tp, 2), "sl": round(sl, 2),
+            "entry": _px(price), "tp": _px(tp), "sl": _px(sl),
             "outcome": outcome, "pnl_pct": round(pnl_pct, 4),
         })
 
@@ -2358,7 +2450,7 @@ def run_combined_backtest(symbol, timeframe="5m", min_agree=2, strong_adx=25, us
                    else (price - exit_price) / price * 100) - CONFIG['FEE_PCT']
         results.append({
             "time": df.index[i].strftime("%m-%d %H:%M"),
-            "direction": direction, "entry": round(price, 2), "tp": round(tp, 2), "sl": round(sl, 2),
+            "direction": direction, "entry": _px(price), "tp": _px(tp), "sl": _px(sl),
             "outcome": outcome, "pnl_pct": round(pnl_pct, 4), "votes": votes,
         })
 
@@ -2492,7 +2584,7 @@ def run_funding_rate_backtest(symbol="BTC/USDT:USDT", price_timeframe="15m", fun
                    else (price - exit_price) / price * 100) - CONFIG['FEE_PCT']
         results.append({
             "time": price_df.index[i].strftime("%m-%d %H:%M"),
-            "direction": direction, "entry": round(price, 2),
+            "direction": direction, "entry": _px(price),
             "funding_rate": round(float(fr), 6),
             "outcome": outcome, "pnl_pct": round(pnl_pct, 4),
         })
