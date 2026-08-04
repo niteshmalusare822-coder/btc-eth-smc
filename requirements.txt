@@ -5,3 +5,4 @@ pandas
 numpy
 gunicorn
 requests
+psycopg2-binary
