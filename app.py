@@ -46,11 +46,14 @@ def home():
 def health():
     """Keepalive target. Also revives the scanner if its thread has died,
     so an external cron ping is enough to keep the whole thing healthy."""
-    _ensure_scanner()
+    revived = _ensure_scanner()
     with _DASH_LOCK:
         return jsonify({
-            "status": "ok",
+            # "ok" only when nothing needed resuscitating on this ping.
+            "status": "revived" if revived else "ok",
             "scanner_alive": _scanner_thread is not None and _scanner_thread.is_alive(),
+            "revived_this_ping": revived,
+            "total_revivals": _revivals,
             "passes": _DASH["passes"],
             "last_pass_seconds": _DASH["last_pass_seconds"],
             "progress": _DASH["progress"],
@@ -72,7 +75,7 @@ TICKERS = {
 }
 
 _DASH = {"data": None, "ts": 0.0, "error": None, "progress": "not started",
-         "passes": 0, "last_pass_seconds": None, "thread_alive": False}
+         "passes": 0, "last_pass_seconds": None}
 _DASH_LOCK = threading.Lock()
 
 # Render's free tier gives 0.1 CPU. A full pass over 4 tickers x 2 timeframes
@@ -138,8 +141,6 @@ def _build_dashboard():
 
 def _refresh_loop():
     _log("background scanner thread started")
-    with _DASH_LOCK:
-        _DASH["thread_alive"] = True
     while True:
         t0 = time.time()
         try:
@@ -166,24 +167,30 @@ def _refresh_loop():
 
 
 _scanner_thread = None
+_revivals = 0          # how many times the loop had to be resurrected
 _START_LOCK = threading.Lock()
 
 
 def _ensure_scanner():
     """Start the scanner, or restart it if the thread has died.
 
+    Returns True if a dead (or never-started) thread had to be revived, so
+    callers can surface that instead of silently papering over a crash.
+
     This used to fire only inside /api/dashboard, which meant a keepalive
     pinging /health kept the instance awake without ever starting a scan.
     It now runs at import time as well, and re-checks liveness on each call.
     """
-    global _scanner_thread
+    global _scanner_thread, _revivals
     with _START_LOCK:
         if _scanner_thread is not None and _scanner_thread.is_alive():
-            return
+            return False
         if _scanner_thread is not None:
-            _log("scanner thread was dead — restarting")
+            _revivals += 1
+            _log(f"scanner thread was dead — restarting (revival #{_revivals})")
         _scanner_thread = threading.Thread(target=_refresh_loop, daemon=True)
         _scanner_thread.start()
+        return True
 
 
 # Start immediately on import so gunicorn boots a working scanner without
@@ -386,6 +393,7 @@ def scanner_status():
         return jsonify({
             "scanner_alive": _scanner_thread is not None and _scanner_thread.is_alive(),
             "passes_completed": _DASH["passes"],
+            "total_revivals": _revivals,
             "last_pass_seconds": _DASH["last_pass_seconds"],
             "min_rest_seconds": _MIN_REST,
             "progress": _DASH["progress"],
