@@ -7,6 +7,36 @@ function signalClass(signal) {
     return "signal-wait";
 }
 
+// Risk-first sizing. The only quantity shown is the one whose downside is
+// capped. The old "qty for ₹500 profit" line is deliberately gone — it had no
+// upper bound and was the thing recommending 4x-oversized positions.
+function renderSize(d) {
+    const s = d.risk_size;
+    if (!s) return "";
+
+    if (!s.tradeable) {
+        return `<div style="margin-top:8px;padding:8px;border:1px solid #ff4d4d;border-radius:4px;">
+            <p class="meta" style="color:#ff4d4d;font-weight:bold;margin:0;">🚫 DON'T TAKE THIS</p>
+            <p class="meta" style="margin:4px 0 0;">${s.note}</p>
+        </div>`;
+    }
+
+    const levColor = s.leverage_needed > 3 ? "#ff9100" : "#00e676";
+    const need = d.capital_needed_for_500;
+    const needLine = (need && need > s.capital_inr)
+        ? `<p class="meta" style="color:#888;margin:4px 0 0;">₹500/trade would need ₹${Number(need).toLocaleString("en-IN")} capital at this risk level.</p>`
+        : "";
+
+    return `<div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:4px;">
+        <p class="meta" style="margin:0;">📦 Qty: <b>${s.qty}</b> &nbsp; (notional ₹${s.notional_inr.toLocaleString("en-IN")})</p>
+        <p class="meta" style="margin:4px 0 0;">🛑 Risk: <b style="color:#ff4d4d">₹${s.risk_inr}</b> (${s.risk_pct_of_capital}% of ₹${s.capital_inr})
+           &nbsp;|&nbsp; ⚙️ <b style="color:${levColor}">${s.leverage_needed}x</b></p>
+        <p class="meta" style="margin:4px 0 0;">🎯 If TP hits: <b style="color:#00e676">₹${s.profit_at_tp_inr}</b> &nbsp; (R:R ${s.reward_risk}, fees ₹${s.fee_cost_inr})</p>
+        <p class="meta" style="margin:4px 0 0;color:#888;">${s.note}</p>
+        ${needLine}
+    </div>`;
+}
+
 function renderCoin(data) {
     // A missing ticker used to silently render as an empty string, which is
     // why the page could look completely blank while reporting "Live".
@@ -57,7 +87,7 @@ function renderCoin(data) {
                 <p class="meta">📍 Entry: <b>$${d.entry ?? "-"}</b></p>
                 <p class="meta">🎯 TP: <b style="color:#00e676">$${d.tp ?? "-"}</b> &nbsp; 🛑 SL: <b style="color:#ff4d4d">$${d.sl ?? "-"}</b></p>
                 <p class="meta">📊 ATR: ${d.atr ?? "-"}</p>
-                <p class="meta">💰 Target: ₹${d.target_profit_range_inr?.[0] ?? "-"}–₹${d.target_profit_range_inr?.[1] ?? "-"} → qty ${d.suggested_qty_for_min_profit ?? "-"}–${d.suggested_qty_for_max_profit ?? "-"}</p>
+                ${renderSize(d)}
             </div>`;
         }
 
@@ -185,7 +215,15 @@ async function loadDashboard() {
 
         if (data.warming) {
             const detail = data.progress ? ` — ${data.progress}` : "";
-            statusEl.innerHTML = `⏳ First scan running${detail}`;
+            // If we already had data, the backend just restarted. The numbers
+            // still on screen are now orphaned, so age-label them rather than
+            // leaving them looking current.
+            if (lastGood) {
+                const secs = Math.round((Date.now() - lastGoodAt) / 1000);
+                statusEl.innerHTML = `⏳ Backend restarted, rescanning${detail} — numbers below are ${secs}s old`;
+            } else {
+                statusEl.innerHTML = `⏳ First scan running${detail}`;
+            }
             if (data.error) statusEl.innerHTML += `<br><span style="color:#ff4d4d">backend error: ${data.error}</span>`;
             return;
         }
