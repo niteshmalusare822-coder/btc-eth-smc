@@ -44,6 +44,14 @@
   .backtest-controls button:hover {
     background: #7986cb;
   }
+  /* Viability panel — sits directly under the status line so the first
+     thing visible is whether this system has earned the right to be traded,
+     not the signals themselves. */
+  #viability {
+    max-width: 900px;
+    margin: 12px auto 0;
+    color: #ddd;
+  }
   #backtest-result {
     background: #12121e;
     border-radius: 8px;
@@ -59,6 +67,9 @@
     <h1>BTC & ETH Futures Dashboard</h1>
     <div id="status">Connecting...</div>
 </header>
+
+<!-- Edge verdict: filled by loadViability() in script.js -->
+<div id="viability"></div>
 
 <!-- Main signal grid -->
 <div class="grid">
@@ -110,6 +121,7 @@
   class="chart">
 </iframe>
 
-<script src="script.js?v=6"></script>
+<!-- v=7: bumped so phones do not keep serving the cached v=6 script -->
+<script src="script.js?v=7"></script>
 </body>
 </html>
