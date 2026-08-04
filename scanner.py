@@ -867,11 +867,15 @@ def is_prime_trading_hours(now_utc=None):
 def calc_tp_sl(direction, price, atr):
     if direction is None or atr is None or pd.isna(atr):
         return None, None
-    sl_dist = round(CONFIG['SL_ATR_MULT'] * atr, 4)
-    tp_dist = round(CONFIG['TP_ATR_MULT'] * atr, 4)
+    # Was round(..., 4). On BANK (price ~0.054) that put a 3.8% error into the
+    # stop distance, and on any sub-0.0001 asset the stop rounded onto the
+    # entry, making the trade impossible to size. _px scales precision to the
+    # magnitude of the number instead.
+    sl_dist = CONFIG['SL_ATR_MULT'] * atr
+    tp_dist = CONFIG['TP_ATR_MULT'] * atr
     if direction == "BUY":
-        return round(price + tp_dist, 4), round(price - sl_dist, 4)
-    return round(price - tp_dist, 4), round(price + sl_dist, 4)
+        return _px(price + tp_dist), _px(price - sl_dist)
+    return _px(price - tp_dist), _px(price + sl_dist)
 
 
 # IMPROVEMENT #1: Slippage-aware TP/SL — real scalping fills are never
@@ -1002,11 +1006,11 @@ def _px(v):
         v = float(v)
     except (TypeError, ValueError):
         return None
-    a = abs(v)
-    if a >= 100:  return round(v, 2)
-    if a >= 1:    return round(v, 4)
-    if a >= 0.01: return round(v, 6)
-    return float(f"{v:.6g}")
+    # Significant figures, not decimal places. Fixed decimals quantise a
+    # 0.00023 BANK stop distance into oblivion while leaving BTC untouched.
+    # 8 sig-figs is exact enough that sizing and journal maths are unaffected,
+    # and still renders sanely on screen.
+    return float(f"{v:.8g}")
 
 
 def calc_position_size_for_target(entry_price, tp_price, target_profit_inr=None, usdt_inr_rate=None):
@@ -1166,7 +1170,7 @@ def analyze(symbol, timeframe="1m"):
         prime_ok, prime_reason = is_prime_trading_hours()
         if not prime_ok:
             return {
-                "symbol": symbol, "timeframe": timeframe, "price": round(price, 4),
+                "symbol": symbol, "timeframe": timeframe, "price": _px(price),
                 "signal": "WAIT", "reason": f"BLOCKED ({prime_reason})",
             }
 
@@ -1245,14 +1249,14 @@ def analyze(symbol, timeframe="1m"):
         price, sl, tp, CONFIG['TARGET_PROFIT_INR_MIN']) if direction else None)
 
     return {
-        "symbol": symbol, "timeframe": timeframe, "price": round(price, 4),
+        "symbol": symbol, "timeframe": timeframe, "price": _px(price),
         "rsi": round(rsi_now, 2) if rsi_now is not None else None,
         "signal": signal, "reason": reason,
         "signal_age_seconds": signal_age_seconds,  # NEW: 0 = just triggered, higher = been active a while
         "buy_score": buy_score, "sell_score": sell_score, "htf_bias": htf_bias,
         "regime": snap_entry["regime"]["regime"], "structure": snap_entry["structure_event"],
-        "exchange": ex_id, "entry": round(price, 4) if direction else None,
-        "tp": tp, "sl": sl, "atr": round(atr_now, 4) if atr_now else None,
+        "exchange": ex_id, "entry": _px(price) if direction else None,
+        "tp": tp, "sl": sl, "atr": _px(atr_now) if atr_now else None,
         "tp_levels": tp_levels,  # IMPROVEMENT #4: partial profit-taking (50/30/20)
         "risk_size": risk_size,             # THE number to trade off — risk-first
         "capital_needed_for_500": capital_for_target,
@@ -1322,8 +1326,14 @@ def _ltf_score_series(df1m, df5m):
         buy = pd.Series(0.0, index=df.index); sell = pd.Series(0.0, index=df.index)
         buy += np.where(df["pat_sig"] == "BUY", 2 * w, 0.0)
         sell += np.where(df["pat_sig"] == "SELL", 2 * w, 0.0)
-        buy += np.where(df["divergence"] == "BULL_DIV", 3 * w, 0.0)
-        sell += np.where(df["divergence"] == "BEAR_DIV", 3 * w, 0.0)
+        # Same regime discount as get_ltf_scores() and run_backtest(). This
+        # path is used by run_backtest_full(); leaving it undiscounted would
+        # reintroduce a live-vs-backtest scoring mismatch.
+        _dw = np.where(df["regime_label"] == "TRENDING",
+                       CONFIG['DIV_TRENDING_WEIGHT'], CONFIG['DIV_RANGING_WEIGHT']) \
+              if "regime_label" in df.columns else 1.0
+        buy += np.where(df["divergence"] == "BULL_DIV", 3 * w * _dw, 0.0)
+        sell += np.where(df["divergence"] == "BEAR_DIV", 3 * w * _dw, 0.0)
         buy += np.where(df["sweep_v"] == "EQUAL_LOW_SWEEP", 3 * w, 0.0)
         sell += np.where(df["sweep_v"] == "EQUAL_HIGH_SWEEP", 3 * w, 0.0)
         is_choch = df["structure_event"].astype(str).str.contains("CHoCH")
@@ -2194,7 +2204,7 @@ def analyze_orderflow(symbol, entry_timeframe="1m", structure_timeframe="5m"):
     if direction is None or atr_now is None:
         return {
             "symbol": symbol, "timeframe": entry_timeframe, "signal": "WAIT",
-            "reason": reason, "session": session_name, "price": round(price, 4),
+            "reason": reason, "session": session_name, "price": _px(price),
             "vp_nodes": vp_nodes,
         }
 
@@ -2208,9 +2218,9 @@ def analyze_orderflow(symbol, entry_timeframe="1m", structure_timeframe="5m"):
     return {
         "symbol": symbol, "timeframe": entry_timeframe, "signal": direction,
         "setup_type": setup_type, "reason": reason, "session": session_name,
-        "price": round(price, 4), "entry": round(price, 4),
+        "price": _px(price), "entry": _px(price),
         "sl": sl, "tp": round(tp, 4) if tp is not None else None,
-        "atr": round(atr_now, 4),
+        "atr": _px(atr_now),
         "cvd_proxy": round(float(df_entry["cvd_proxy"].iloc[-1]), 2),
         "absorption": df_entry["absorption"].iloc[-1] or None,
         "vp_nodes": vp_nodes,
