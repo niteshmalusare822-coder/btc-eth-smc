@@ -5,86 +5,144 @@ Answers the one question the scanner has never been asked:
 does it actually make money?
 
 How it works:
-  1. Every time /api/dashboard runs, any BUY/SELL signal gets recorded once
-     (deduped — a signal that stays live for 20 polls is still one entry).
+  1. Every scan pass records any BUY/SELL signal once (deduped — a signal
+     that stays live for 20 polls is still one entry).
   2. Later calls walk forward through candles from the entry time and mark
      each open signal WIN (TP first) or LOSS (SL first).
-  3. /api/journal/stats gives you win rate, expectancy, profit factor —
-     computed from what the scanner ACTUALLY said, not from a backtest.
+  3. /api/journal/stats gives win rate, expectancy and profit factor from
+     what the scanner ACTUALLY said, not from a backtest.
 
-IMPORTANT — persistence on Render free tier:
-  The filesystem is wiped on every restart and redeploy. Free instances also
-  sleep when idle. So this DB will lose history unless you either
-    (a) attach a Render persistent disk and set JOURNAL_DB to a path on it, or
-    (b) run this locally / on a VPS.
-  Set the env var JOURNAL_DB to control the location.
+PERSISTENCE
+  Set DATABASE_URL to a Postgres connection string and the journal lives
+  there permanently. Without it, this falls back to SQLite at JOURNAL_DB —
+  fine locally, but on Render's free tier that path is wiped on every
+  restart and redeploy, which is why earlier journal data never survived
+  long enough to test anything.
+
+  Resolution is deliberately pessimistic: if a candle touches both the stop
+  and the target, it is recorded as a LOSS. Better to understate the edge
+  than to invent one.
 """
 
 import os
-import json
 import sqlite3
 from datetime import datetime, timezone
 
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DB_PATH = os.environ.get("JOURNAL_DB", "/tmp/signal_journal.db")
+USING_POSTGRES = bool(DATABASE_URL)
+
+if USING_POSTGRES:
+    import psycopg2
+    import psycopg2.extras
 
 
-def _conn():
-    c = sqlite3.connect(DB_PATH, timeout=10)
-    c.row_factory = sqlite3.Row
-    return c
+def backend():
+    """Which store is live. Surfaced on /api/journal/stats so a silent
+    fallback to ephemeral SQLite can never go unnoticed again."""
+    return {
+        "backend": "postgres" if USING_POSTGRES else "sqlite",
+        "ephemeral": not USING_POSTGRES,
+        "location": "DATABASE_URL" if USING_POSTGRES else DB_PATH,
+        "warning": None if USING_POSTGRES else
+                   "SQLite on Render free tier is wiped on every restart. "
+                   "Set DATABASE_URL to keep journal history.",
+    }
+
+
+class _Conn:
+    """Thin wrapper so the same SQL works on both engines."""
+
+    def __init__(self):
+        if USING_POSTGRES:
+            self.c = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+            self.cur = self.c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        else:
+            self.c = sqlite3.connect(DB_PATH, timeout=10)
+            self.c.row_factory = sqlite3.Row
+            self.cur = self.c.cursor()
+
+    def execute(self, sql, args=()):
+        if USING_POSTGRES:
+            sql = sql.replace("?", "%s")
+        self.cur.execute(sql, args)
+        return self.cur
+
+    def fetchall(self):
+        return [dict(r) for r in self.cur.fetchall()]
+
+    def fetchone(self):
+        r = self.cur.fetchone()
+        return dict(r) if r is not None else None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, *_):
+        if exc_type is None:
+            self.c.commit()
+        else:
+            self.c.rollback()
+        self.c.close()
+        return False
+
+
+_conn = _Conn
+_initialised = False
 
 
 def init_db():
-    with _conn() as c:
-        c.execute("""
+    global _initialised
+    if _initialised:
+        return
+    pk = "BIGSERIAL PRIMARY KEY" if USING_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    with _Conn() as c:
+        c.execute(f"""
             CREATE TABLE IF NOT EXISTS signals (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                id           {pk},
                 logged_at    TEXT NOT NULL,
                 symbol       TEXT NOT NULL,
                 timeframe    TEXT NOT NULL,
                 direction    TEXT NOT NULL,
-                entry        REAL NOT NULL,
-                tp           REAL,
-                sl           REAL,
-                rsi          REAL,
-                buy_score    REAL,
-                sell_score   REAL,
+                entry        DOUBLE PRECISION NOT NULL,
+                tp           DOUBLE PRECISION,
+                sl           DOUBLE PRECISION,
+                rsi          DOUBLE PRECISION,
+                buy_score    DOUBLE PRECISION,
+                sell_score   DOUBLE PRECISION,
                 htf_bias     TEXT,
                 regime       TEXT,
                 blowoff      INTEGER DEFAULT 0,
                 outcome      TEXT DEFAULT 'OPEN',
                 resolved_at  TEXT,
-                exit_price   REAL,
-                pnl_pct      REAL,
+                exit_price   DOUBLE PRECISION,
+                pnl_pct      DOUBLE PRECISION,
                 bars_held    INTEGER
             )
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_open ON signals(outcome)")
-
-
-def _has_open(c, symbol, timeframe, direction):
-    row = c.execute(
-        "SELECT 1 FROM signals WHERE symbol=? AND timeframe=? AND direction=? "
-        "AND outcome='OPEN' LIMIT 1", (symbol, timeframe, direction)
-    ).fetchone()
-    return row is not None
+        c.execute("CREATE INDEX IF NOT EXISTS idx_market ON signals(symbol, timeframe)")
+    _initialised = True
 
 
 def log_signal(symbol, timeframe, payload):
     """Record a BUY/SELL signal once. Returns True if a new row was written."""
     if not isinstance(payload, dict):
         return False
-    sig = payload.get("signal")
-    if sig not in ("BUY", "SELL"):
+    if payload.get("signal") not in ("BUY", "SELL"):
         return False
+    sig = payload["signal"]
     entry = payload.get("entry") or payload.get("price")
     if not entry:
         return False
 
     init_db()
-    with _conn() as c:
-        if _has_open(c, symbol, timeframe, sig):
-            return False          # already tracking this one
+    with _Conn() as c:
+        c.execute("SELECT 1 FROM signals WHERE symbol=? AND timeframe=? "
+                  "AND direction=? AND outcome='OPEN' LIMIT 1",
+                  (symbol, timeframe, sig))
+        if c.fetchone() is not None:
+            return False                      # already tracking this one
         bo = payload.get("blowoff") or {}
         c.execute(
             "INSERT INTO signals (logged_at,symbol,timeframe,direction,entry,tp,sl,"
@@ -100,14 +158,13 @@ def log_signal(symbol, timeframe, payload):
 
 
 def resolve_open(fetch_fn, limit=300):
-    """
-    Walk candles forward from each open signal and mark WIN/LOSS.
-    fetch_fn(symbol, timeframe, limit) -> (df, source)
-    """
+    """Walk candles forward from each open signal and mark WIN/LOSS.
+    fetch_fn(symbol, timeframe, limit) -> (df, source)"""
     init_db()
     resolved = 0
-    with _conn() as c:
-        rows = c.execute("SELECT * FROM signals WHERE outcome='OPEN'").fetchall()
+    with _Conn() as c:
+        c.execute("SELECT * FROM signals WHERE outcome='OPEN'")
+        rows = c.fetchall()
 
     by_market = {}
     for r in rows:
@@ -120,10 +177,7 @@ def resolve_open(fetch_fn, limit=300):
             continue
         if df is None or len(df) == 0:
             continue
-        if "timestamp" in df.columns:
-            ts = df["timestamp"]
-        else:
-            ts = None
+        ts = df["timestamp"] if "timestamp" in df.columns else None
 
         for r in group:
             tp, sl = r["tp"], r["sl"]
@@ -144,11 +198,13 @@ def resolve_open(fetch_fn, limit=300):
             for j in range(start, len(df)):
                 hi = float(df["high"].iloc[j])
                 lo = float(df["low"].iloc[j])
+                # Stop checked first on purpose — an ambiguous candle counts
+                # against us, so the journal can never flatter the strategy.
                 if r["direction"] == "BUY":
-                    if lo <= sl: outcome, exit_px = "LOSS", sl
+                    if lo <= sl:   outcome, exit_px = "LOSS", sl
                     elif hi >= tp: outcome, exit_px = "WIN", tp
                 else:
-                    if hi >= sl: outcome, exit_px = "LOSS", sl
+                    if hi >= sl:   outcome, exit_px = "LOSS", sl
                     elif lo <= tp: outcome, exit_px = "WIN", tp
                 if outcome:
                     bars = j - start
@@ -159,13 +215,11 @@ def resolve_open(fetch_fn, limit=300):
             pnl = (exit_px - r["entry"]) / r["entry"] * 100
             if r["direction"] == "SELL":
                 pnl = -pnl
-            with _conn() as c:
-                c.execute(
-                    "UPDATE signals SET outcome=?,resolved_at=?,exit_price=?,"
-                    "pnl_pct=?,bars_held=? WHERE id=?",
-                    (outcome, datetime.now(timezone.utc).isoformat(),
-                     exit_px, round(pnl, 4), bars, r["id"])
-                )
+            with _Conn() as c:
+                c.execute("UPDATE signals SET outcome=?,resolved_at=?,exit_price=?,"
+                          "pnl_pct=?,bars_held=? WHERE id=?",
+                          (outcome, datetime.now(timezone.utc).isoformat(),
+                           exit_px, round(pnl, 4), bars, r["id"]))
             resolved += 1
     return resolved
 
@@ -179,13 +233,18 @@ def stats(symbol=None, timeframe=None):
         q += " AND symbol=?"; args.append(symbol)
     if timeframe:
         q += " AND timeframe=?"; args.append(timeframe)
-    with _conn() as c:
-        rows = [dict(r) for r in c.execute(q, args).fetchall()]
-        open_n = c.execute("SELECT COUNT(*) n FROM signals WHERE outcome='OPEN'").fetchone()["n"]
 
+    with _Conn() as c:
+        c.execute(q, tuple(args))
+        rows = c.fetchall()
+        c.execute("SELECT COUNT(*) AS n FROM signals WHERE outcome='OPEN'")
+        open_n = c.fetchone()["n"]
+
+    store = backend()
     if not rows:
         return {"resolved": 0, "open": open_n,
-                "note": "no resolved signals yet — needs time to accumulate"}
+                "note": "no resolved signals yet — needs time to accumulate",
+                "storage": store}
 
     wins = [r for r in rows if r["outcome"] == "WIN"]
     losses = [r for r in rows if r["outcome"] == "LOSS"]
@@ -210,11 +269,12 @@ def stats(symbol=None, timeframe=None):
         "total_pct": round(sum(r["pnl_pct"] for r in rows), 2),
         "profit_factor": round(gp / gl, 2) if gl > 0 else None,
         "verdict": verdict,
+        "storage": store,
     }
 
 
 def recent(limit=50):
     init_db()
-    with _conn() as c:
-        return [dict(r) for r in c.execute(
-            "SELECT * FROM signals ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+    with _Conn() as c:
+        c.execute("SELECT * FROM signals ORDER BY id DESC LIMIT ?", (int(limit),))
+        return c.fetchall()
