@@ -3,6 +3,7 @@ from flask_cors import CORS
 import threading
 import time
 import signal_log
+import viability
 from scanner import fetch_ohlcv_failover
 from sma_strategy_test import backtest_sma
 from scanner import analyze, run_backtest, run_backtest_full, run_factor_backtest, run_combined_backtest, run_funding_rate_backtest, calc_dynamic_trailing_exit
@@ -377,6 +378,20 @@ def journal_list():
 def journal_resolve():
     n = signal_log.resolve_open(fetch_ohlcv_failover)
     return jsonify({"resolved": n})
+
+
+@app.route("/api/viability")
+def viability_report():
+    """Straight answer to 'is this worth trading, and at what account size?'
+    Built from resolved journal rows only — never from a backtest."""
+    try:
+        tpd = float(request.args.get("trades_per_day", 1.0))
+        target = float(request.args.get("target_monthly_inr", 5000))
+        return jsonify(viability.assess(signal_log.stats(),
+                                        trades_per_day=tpd,
+                                        target_monthly_inr=target))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/scanner-status")
