@@ -7,6 +7,60 @@ function signalClass(signal) {
     return "signal-wait";
 }
 
+const VIABILITY_URL = "https://crypto-scanner-api-xnwd.onrender.com/api/viability";
+
+// The panel that answers "is this worth trading yet?". Deliberately sits at
+// the top of the page: on a Rs.3,000 account the scanner's job is to prove
+// or disprove itself, not to hand out trades.
+async function loadViability() {
+    const el = document.getElementById("viability");
+    if (!el) return;
+    try {
+        const res = await fetch(VIABILITY_URL, { cache: "no-store" });
+        const v = await res.json();
+        if (v.error) { el.innerHTML = ""; return; }
+
+        const colour = { COLLECTING: "#ff9100", INCONCLUSIVE: "#ff9100",
+                         DISPROVEN: "#ff4d4d", CONFIRMED: "#00e676" }[v.stage] || "#888";
+
+        let body = `<p style="margin:6px 0 0;font-size:13px;">${v.verdict}</p>`;
+
+        if (v.stage === "COLLECTING") {
+            const pct = v.progress_pct || 0;
+            body += `<div style="margin-top:8px;height:8px;background:#333;border-radius:4px;overflow:hidden;">
+                        <div style="width:${pct}%;height:100%;background:${colour};"></div>
+                     </div>
+                     <p style="margin:4px 0 0;font-size:12px;color:#888;">
+                        ${v.resolved_signals} / ${v.signals_needed_for_verdict} signals · ${pct}%
+                     </p>`;
+        }
+
+        if (v.stage === "CONFIRMED" && v.projection_at_current_capital) {
+            const p = v.projection_at_current_capital;
+            body += `<p style="margin:6px 0 0;font-size:13px;">
+                        At ₹${v.capital_inr.toLocaleString("en-IN")}: <b>₹${p.expectancy_per_trade_inr}</b>/trade,
+                        <b>₹${p.per_month_inr.toLocaleString("en-IN")}</b>/month at ${p.trades_per_day} trade/day
+                     </p>`;
+            if (v.capital_needed_for_target) {
+                body += `<p style="margin:4px 0 0;font-size:12px;color:#888;">
+                            ₹${v.target_monthly_inr.toLocaleString("en-IN")}/month would need
+                            ₹${Number(v.capital_needed_for_target).toLocaleString("en-IN")} capital.
+                         </p>`;
+            }
+        }
+
+        el.innerHTML = `<div style="padding:10px;border:1px solid ${colour};border-radius:6px;margin-bottom:12px;">
+            <p style="margin:0;font-weight:bold;color:${colour};">${v.stage}
+               <span style="font-weight:normal;color:#888;font-size:12px;">
+                 · breakeven ${v.breakeven_win_rate_pct}% · R:R ${v.reward_risk}
+               </span></p>
+            ${body}
+        </div>`;
+    } catch (err) {
+        console.error("viability fetch failed:", err);
+    }
+}
+
 // Risk-first sizing. The only quantity shown is the one whose downside is
 // capped. The old "qty for ₹500 profit" line is deliberately gone — it had no
 // upper bound and was the thing recommending 4x-oversized positions.
@@ -257,3 +311,7 @@ async function loadDashboard() {
 
 loadDashboard();
 setInterval(loadDashboard, 15000);
+// Journal stats move slowly; polling this as often as prices would just burn
+// the free tier's CPU for numbers that change a few times an hour.
+loadViability();
+setInterval(loadViability, 120000);
