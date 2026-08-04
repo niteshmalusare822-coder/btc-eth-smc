@@ -8,9 +8,25 @@ function signalClass(signal) {
 }
 
 function renderCoin(data) {
+    // A missing ticker used to silently render as an empty string, which is
+    // why the page could look completely blank while reporting "Live".
+    if (!data || typeof data !== "object" || Object.keys(data).length === 0) {
+        return `<div class="timeframe"><p class="signal-wait">⏳ Waiting for first scan…</p></div>`;
+    }
+
     let html = "";
     for (const tf in data) {
         const d = data[tf];
+
+        if (!d) {
+            html += `<div class="timeframe"><h3>${tf}</h3><p class="signal-wait">⏳ Waiting…</p></div>`;
+            continue;
+        }
+
+        if (d.pending) {
+            html += `<div class="timeframe"><h3>${tf}</h3><p class="signal-wait">⏳ Scanning…</p></div>`;
+            continue;
+        }
 
         if (d.error) {
             html += `<div class="timeframe"><h3>${tf}</h3><p class="signal-wait">No data</p></div>`;
@@ -128,6 +144,28 @@ async function runBacktest(symbol, timeframe) {
 
 // ── Dashboard ────────────────────────────────────────────
 let inFlight = false;          // stops overlapping polls piling up on the server
+let lastGood = null;           // last successful payload
+let lastGoodAt = null;         // when we received it
+
+function paint(data) {
+    document.getElementById("btc-content").innerHTML  = renderCoin(data.btc);
+    document.getElementById("eth-content").innerHTML  = renderCoin(data.eth);
+    document.getElementById("dexe-content").innerHTML = renderCoin(data.dexe);
+    document.getElementById("bank-content").innerHTML = renderCoin(data.bank);
+}
+
+// A failed poll should never wipe the screen. Repaint what we had and label
+// it clearly as stale so it is obvious the numbers are not current.
+function paintStale(reason) {
+    const statusEl = document.getElementById("status");
+    if (!lastGood) {
+        statusEl.innerHTML = `🔴 ${reason} — no data yet, retrying`;
+        return;
+    }
+    paint(lastGood);
+    const secs = Math.round((Date.now() - lastGoodAt) / 1000);
+    statusEl.innerHTML = `🟠 ${reason} — showing data from ${secs}s ago`;
+}
 
 async function loadDashboard() {
     if (inFlight) return;      // previous request still running - skip this tick
@@ -146,27 +184,33 @@ async function loadDashboard() {
         const data = await response.json();
 
         if (data.warming) {
-            statusEl.innerHTML = "⏳ Server waking up — first scan running (30–60s)";
+            const detail = data.progress ? ` — ${data.progress}` : "";
+            statusEl.innerHTML = `⏳ First scan running${detail}`;
+            if (data.error) statusEl.innerHTML += `<br><span style="color:#ff4d4d">backend error: ${data.error}</span>`;
             return;
         }
 
-        document.getElementById("btc-content").innerHTML  = renderCoin(data.btc);
-        document.getElementById("eth-content").innerHTML  = renderCoin(data.eth);
-        document.getElementById("dexe-content").innerHTML = renderCoin(data.dexe);
-        document.getElementById("bank-content").innerHTML = renderCoin(data.bank);
+        lastGood = data;
+        lastGoodAt = Date.now();
+        paint(data);
 
         const now = new Date().toLocaleTimeString();
         const age = data._age_seconds;
-        const stale = age > 45;
+        // The scanner now rests ~60s+ between passes, so 45s was flagging
+        // healthy data as stale on every other poll.
+        const stale = age > 180;
         statusEl.innerHTML = stale
             ? `🟡 Live (updated ${now}) — scan data ${age}s old`
             : `🟢 Live (updated ${now})`;
+        if (data._error) {
+            statusEl.innerHTML += `<br><span style="color:#ff9100">last pass warning: ${data._error}</span>`;
+        }
     } catch (err) {
         if (err.name === "AbortError") {
-            statusEl.innerHTML = "⏳ Server slow to respond — retrying";
+            paintStale("Server slow to respond");
         } else {
             console.error("Fetch error:", err);
-            statusEl.innerHTML = `🔴 Disconnected (${err.message}) — retrying`;
+            paintStale(`Disconnected (${err.message})`);
         }
     } finally {
         inFlight = false;
