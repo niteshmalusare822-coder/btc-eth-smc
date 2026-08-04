@@ -709,6 +709,8 @@ def analyze_timeframe(df, closed_only=False, eff_cfg=None):
     cvd_pressure_series = calc_recent_cvd_pressure(df)
     last = df.iloc[-1]
     return {
+        "cvd_pressure_norm": float(calc_cvd_pressure_norm(df).iloc[-1])
+                             if not pd.isna(calc_cvd_pressure_norm(df).iloc[-1]) else 0.0,
         "structure_event": last["structure_event"], "structure_trend": last["structure_trend"],
         "adx": last["adx"], "price": last["close"], "vwap": last["vwap"],
         "volume": last["volume"],
@@ -1947,10 +1949,16 @@ class RiskManager:
 # ══════════════════════════════════════════════════════════════════════════
 # ORDER FLOW PROXY MODULE — approximated from OHLCV
 # ══════════════════════════════════════════════════════════════════════════
-def calc_recent_cvd_pressure(df, lookback=None):
+def calc_cvd_pressure_norm(df, lookback=None):
+    """Raw delta sum ka scale asset aur volume ke saath badalta hai, isliye
+    usse 0 se compare karna arbitrary hai. Isko window ke total volume se
+    normalize karo — result -1..+1 mein aata hai aur assets ke beech tulnaa
+    ke layak hota hai."""
     lookback = lookback or CONFIG['CVD_PRESSURE_LOOKBACK']
-    df = calc_candle_delta_proxy(df)
-    return df["delta_proxy"].rolling(lookback).sum()
+    d = calc_candle_delta_proxy(df)
+    delta_sum = d["delta_proxy"].rolling(lookback).sum()
+    vol_sum = d["volume"].rolling(lookback).sum()
+    return delta_sum / (vol_sum + 1e-10)
 
 
 def calc_candle_delta_proxy(df):
