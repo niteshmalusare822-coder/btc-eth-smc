@@ -1,39 +1,87 @@
 """
-SCALPING BOT — Multi-Factor Engine + Liquidity Concepts Combo  (v2.1 — FIXED)
-================================================================
+SCALPING BOT — Multi-Factor Engine + Liquidity Concepts Combo  (v3 — AUDIT FIXES)
+================================================================================
 Base engine (EMA/RSI/ADX/Structure/Divergence/VolumeProfile/Regime) +
 Liquidity Concepts (BSL/SSL, Sweep, FVG, Inducement, Equal-Level Density).
 
-CHANGES FROM v1 (see comments tagged "# FIX:"):
-  1. run_backtest() now applies the SAME regime filter as live decide_direction()
-     (previously it only checked ADX/RSI — backtest was looser than live, so
-     tuning results from step2_grid_search() were not trustworthy).
-  2. run_backtest_full() now requires BOTH 1m and 5m regime == TRENDING
-     (previously only checked entry-timeframe regime, and only blocked
-     RANGING, not COMPRESSION — so it did NOT actually mirror live despite
-     the docstring saying so).
-  3. Equal-Level Density (crowded pool) is now its own testable factor in
-     run_factor_backtest(), instead of being silently baked into every score
-     with unknown standalone edge.
-  4. Removed the RSI<35/>65 mean-reversion score bonus from get_ltf_scores()
-     and the vectorized equivalents — it was contradicting the trend-following
-     ADX-gated framework (decide_direction blocks RSI<30/>70, so encouraging
-     RSI<35 entries via score bonus was internally inconsistent).
-  5. analyze() no longer double-fetches 1m data when timeframe="1m".
-  6. NEW: risk_management section — position sizing by % risk, daily loss
-     circuit breaker, leverage sanity check. None of this existed in v1.
+WHAT CHANGED IN v3 — every edit is tagged "# FIX v3:" inline.
+Read this list before deploying; several of these change how many signals fire.
 
-CHANGES IN v2.1 (this pass):
-  7. FIX: removed a stray duplicate/orphaned dict block sitting right after
-     analyze_timeframe()'s return statement — it was outside any bracket and
-     caused a SyntaxError on import, so the whole module could not load.
-  8. FIX: get_ltf_scores() was missing the calc_liquidity_score(snap) call
-     (sweep magnitude, inducement, FVG-proximity, equal-level-density bonus).
-     The vectorized backtest path (_ltf_score_series -> score_component ->
-     _liquidity_score_vectorized) DOES include this, so live analyze() scores
-     were silently lower/different than backtested scores using the same
-     SCORE_THRESHOLD/SCORE_GAP_MIN — live and backtest were not apples-to-apples.
-     Restored the call so live matches backtest again.
+  F1  Wilder RSI and Wilder ATR. calc_rsi/calc_atr used rolling().mean()
+      (Cutler's), while calc_adx internally used ewm (Wilder). Two different
+      ATR definitions in one file, and neither matched the TradingView chart
+      sitting next to the dashboard.
+
+  F2  CLOSED-CANDLE RULE. analyze_timeframe() read df.iloc[-1] — the candle
+      still forming. Every indicator, candle pattern and BOS/CHoCH flipped on
+      each 10-second poll. This was the single biggest cause of BUY->SELL
+      flapping in a trending market. analyze_timeframe(closed_only=True) now
+      drops the forming bar; all live paths pass True, backtests pass False.
+
+  F3  COST GATE. TP_ATR_MULT 2.2 on a 5m ATR is often smaller than the
+      round-trip taker fee. A trade whose gross target is ~2x its own cost
+      cannot be profitable at any realistic win rate. cost_gate() rejects
+      those setups outright, live and in backtest.
+
+  F4  FEE_PCT (0.04) was deducted ONCE. Taker fees are charged per side.
+      Replaced by ROUND_TRIP_COST_PCT covering entry + exit + spread.
+
+  F5  STOP CHECKED FIRST. Every backtest loop tested TP before SL, so any
+      candle spanning both levels was scored a WIN. With TP 2.2 ATR / SL 0.8
+      ATR that is routine. Now the stop wins ambiguous candles.
+
+  F6  TIMEOUT TRADES NO LONGER DELETED. `if outcome == "OPEN": continue`
+      silently removed every trade that chopped sideways — exactly the
+      trades that in reality exit flat and eat the full fee. Now closed at
+      market and counted.
+
+  F7  ENTRY AT NEXT BAR'S OPEN. Backtests filled at the close of the signal
+      bar, a price not knowable until that bar ended.
+
+  F8  NEUTRAL HTF BIAS NOW BLOCKS BOTH DIRECTIONS. Previously
+      htf_bias in ("BULLISH","NEUTRAL") let a NEUTRAL 15m permit longs AND
+      shorts. That is what allowed counter-trend shorts during clean rallies.
+
+  F9  NaN NO LONGER VOTES BEARISH. `if ema5 > ema20: buy else: sell` sends
+      any NaN into the sell branch. Same in get_htf_bias. Structural short
+      bias whenever data was short or malformed.
+
+  F10 LOOK-AHEAD REMOVED from run_backtest_full(). The DataFrame index is
+      candle OPEN time but each row's indicators are computed through that
+      candle's CLOSE. merge_asof(direction="backward") therefore handed a
+      5m bar the 15m row whose values only exist 10-15 minutes later.
+      The 15m bias series is now shift(1)ed before alignment.
+
+  F11 candles_tested now reports len(df), not the CONFIG constant. CoinDCX
+      and the ccxt fallbacks cap the response well below 3000, so the old
+      number was fiction.
+
+  F12 REGIME NOW HONOURS PER-ASSET ADX_MIN. ASSET_OVERRIDES lowered BTC/ETH
+      ADX_MIN to 14, but detect_market_regime() read the global CONFIG value
+      (18) — so the regime gate kept blocking the very trades the override
+      was meant to allow. The override was doing nothing on BTC and ETH.
+
+  F13 calc_tp_sl_with_slippage() used round(x, 4). calc_tp_sl() was already
+      fixed to use _px() for exactly this reason: on BANK (~0.054) 4dp
+      collapses entry, TP and SL toward the same number. REALISTIC_BACKTEST
+      is True, so LIVE was using the broken one.
+
+  F14 CoinDCX resolutions for 1h and 4h added. TIMEFRAME_CONFIRM_MAP maps
+      15m->1h and 1h->4h, but COINDCX_RESOLUTION_MAP had neither, so those
+      confirmation snapshots silently fell through to a different exchange.
+      Entry and confirmation timeframes were being read from two venues.
+
+  F15 MAX_CONSECUTIVE_LOSSES is now enforced in RiskManager. It was declared
+      in CONFIG and referenced nowhere.
+
+  F16 Backtests report blocked_by_cost_gate so a sudden drop in trade count
+      is visible rather than mysterious.
+
+KNOWN REMAINING GAP (not fixed here, needs a decision):
+  run_backtest_full() still does not apply the confluence gate, the CVD
+  check or the blow-off veto that live analyze() and run_backtest() apply.
+  Its numbers will therefore be more permissive than live. Treat
+  run_backtest() as the closer proxy until that parity work is done.
 
 ⚠️ Educational / research tool. Not financial advice. No backtest or live
    signal guarantees future profit. Forward-test on paper first, and only
@@ -47,7 +95,6 @@ import numpy as np
 import time as _t
 from blowoff import detect_blowoff, blowoff_series, blowoff_gate, blowoff_gate_row
 
-# Map our symbol format -> CoinDCX futures pair format
 import sizing  # risk-first position sizing (replaces profit-target sizing)
 
 COINDCX_PAIR_MAP = {
@@ -57,48 +104,67 @@ COINDCX_PAIR_MAP = {
     "BANK/USDT:USDT": "B-BANK_USDT",   # VERIFY exact pair name on CoinDCX
 }
 
+# FIX v3 (F14): 1h and 4h were missing. TIMEFRAME_CONFIRM_MAP asks for them
+# (15m->1h, 1h->4h), so every 15m and 1h card was silently pulling its
+# confirmation candles from mexc/bybit/okx instead of CoinDCX — a different
+# venue with different prints than the one actually being traded.
 COINDCX_RESOLUTION_MAP = {
     "1m": "1",
     "5m": "5",
     "15m": "15",
+    "1h": "60",
+    "4h": "240",
 }
+
+# FIX v3 (F14): matching seconds table, used to compute the "from" timestamp.
+TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400}
 
 CONFIG = {
     'EMA_FAST': 5,
     'EMA_SLOW': 20,
-    'RSI_PERIOD': 7,
+    'RSI_PERIOD': 14,     # FIX v3 (F1): was 7. With Wilder smoothing a 7-period
+                          # RSI is extremely noisy and its 15/85 gates stop meaning
+                          # anything. 14 is the period the thresholds assume.
     'ATR_PERIOD': 14,
     'ADX_PERIOD': 14,
-    'ADX_MIN': 18,        # was 15 (originally 20) — pulled back up: backtest showed 15 let in too many low-quality trades (35% win rate, PF 0.52)
+    'ADX_MIN': 18,
     'SWING_LOOKBACK': 3,
     'LIQUIDITY_SWEEP_LOOKBACK': 20,
     'VOLUME_PROFILE_LOOKBACK': 100,
     'VOLUME_PROFILE_BINS': 24,
-    'SCORE_THRESHOLD': 5.0,   # was 6.0 — loosened so decent (not just perfect) setups fire
-    'SCORE_GAP_MIN': 3.5,     # was 2.5 (originally 4.0) — pulled back up: 2.5 let buy/sell scores that were too close both qualify, hurting win rate
-    'FEE_PCT': 0.04,
+    'SCORE_THRESHOLD': 5.0,
+    'SCORE_GAP_MIN': 3.5,
+
+    # ── FIX v3 (F3, F4): real transaction cost ──────────────────────────
+    # FEE_PCT (0.04, deducted once) modelled roughly a third of reality.
+    # Taker fee is charged on entry AND exit, and the spread costs you too.
+    # PUT YOUR OWN NUMBER HERE — check CoinDCX's futures fee schedule.
+    # This is (taker_fee_pct * 2) + typical_spread_pct.
+    'ROUND_TRIP_COST_PCT': 0.10,
+
+    # A trade must target at least this multiple of its own cost, or the
+    # arithmetic cannot work. At 2.2R gross TP / 0.8R SL and cost c, the
+    # breakeven win rate is (0.8R + c) / (3.0R). When c approaches R that
+    # number climbs past 60% and stays there.
+    'MIN_TP_COST_RATIO': 3.0,
+
     'ATR_COMPRESSION_RATIO': 0.7,
     'ATR_MA_PERIOD': 50,
     'CHOPPINESS_PERIOD': 14,
     'CHOPPINESS_TREND_MAX': 61.8,
     'LIMIT': 150,
-    'TP_ATR_MULT': 2.2,   # was 1.5 (originally 2.0) — bumped up for bigger scalp targets, more room to run
-    'SL_ATR_MULT': 0.8,   # IMPROVEMENT #6: was 1.0 — tighter stops for scalping
-    'RSI_OVERBOUGHT': 85,   # was 75, then 70 — loosened again: strong clean trends were getting blocked at moderate (79-83) RSI
-    'RSI_OVERSOLD': 15,     # was 25, then 30 — loosened again, mirrored for symmetry
-    'BACKTEST_CANDLES': 3000,   # was 6000 — halved so backtest finishes before Render free-tier/frontend timeouts on cold start
-    'BACKTEST_OUTCOME_WINDOW': 10,  # IMPROVEMENT #6: was 20 — tighter realistic scalp window
+    'TP_ATR_MULT': 2.2,
+    'SL_ATR_MULT': 0.8,
+    'RSI_OVERBOUGHT': 85,
+    'RSI_OVERSOLD': 15,
+    'BACKTEST_CANDLES': 3000,
+    'BACKTEST_OUTCOME_WINDOW': 10,
 
     # ── Divergence quality gates ────────────────────────────────────
-    # The old test was: price makes a new 20-bar high AND rsi is anywhere
-    # below its own 20-bar high. In a trend RSI peaks early and then sits
-    # below that peak for the rest of the move, so this fired on roughly a
-    # third of all new highs in a pure uptrend with no reversal at all.
-    # Real divergence needs TWO separated peaks and a meaningful RSI gap.
-    'DIV_MIN_RSI_GAP': 5.0,          # RSI must be this many points below its prior peak
-    'DIV_MIN_PEAK_SEPARATION': 5,    # ...and that peak must be this many bars back
-    'DIV_TRENDING_WEIGHT': 0.35,     # divergence counts this much in a TRENDING regime
-    'DIV_RANGING_WEIGHT': 1.0,       # ...and fully in a RANGING one
+    'DIV_MIN_RSI_GAP': 5.0,
+    'DIV_MIN_PEAK_SEPARATION': 5,
+    'DIV_TRENDING_WEIGHT': 0.35,
+    'DIV_RANGING_WEIGHT': 1.0,
 
     'FVG_MIN_GAP_PCT': 0.02,
     'BSL_SSL_LOOKBACK': 20,
@@ -107,42 +173,33 @@ CONFIG = {
     'FVG_PROXIMITY_PCT': 0.3,
     'EQUAL_LEVEL_MIN_COUNT': 3,
 
-    # ── NEW: Target-profit position sizing ──────────────────────────────
-    'TARGET_PROFIT_INR_MIN': 500,   # minimum profit target per trade in INR
-    'TARGET_PROFIT_INR_MAX': 1000,  # maximum profit target per trade in INR — exit once in this range, don't get greedy
-    'USDT_INR_RATE': 102.0,      # approx conversion rate; update as needed
+    'TARGET_PROFIT_INR_MIN': 500,
+    'TARGET_PROFIT_INR_MAX': 1000,
+    'USDT_INR_RATE': 102.0,
 
-    # ── NEW: Live trailing exit (min-profit lock + trail toward max) ─────
-    'MIN_PROFIT_LOCK_ATR_MULT': 0.3,  # once price moves this many ATR in favor, lock a guaranteed minimum profit (not just breakeven)
-    'TRAIL_ATR_MULT': 0.6,            # beyond that, trail the stop this many ATR behind the best price seen
+    'MIN_PROFIT_LOCK_ATR_MULT': 0.3,
+    'TRAIL_ATR_MULT': 0.6,
 
-    # ── NEW: CVD pressure proxy (Fabio Valentino aggression-confirmation idea) ─
-    'CVD_PRESSURE_LOOKBACK': 10,      # candles summed for the short-window CVD pressure proxy
-    'CVD_PRESSURE_MIN_ABS': 0,        # pressure must be more negative/positive than this to count as "clearly against" (0 = any opposite sign blocks)
+    'CVD_PRESSURE_LOOKBACK': 10,
+    'CVD_PRESSURE_MIN_ABS': 0,
 
-    # ── NEW: Raw momentum awareness (independent of trade signal filters) ─
-    'MOMENTUM_LOOKBACK': 10,   # candles back to measure raw % price move
-    'ENABLE_PRIME_HOURS_FILTER': False,  # was always-on — OFF by default since crypto trades 24/7, unlike forex/futures sessions
-    'RISK_PCT_PER_TRADE': 1.0,      # % of account risked per trade
-    'MAX_DAILY_LOSS_PCT': 3.0,      # circuit breaker: stop trading for the day
-    'MAX_LEVERAGE': 5,              # sanity cap regardless of exchange max
-    'MAX_CONCURRENT_POSITIONS': 2,  # BTC + ETH at most, don't stack more
+    'MOMENTUM_LOOKBACK': 10,
+    'ENABLE_PRIME_HOURS_FILTER': False,
+    'RISK_PCT_PER_TRADE': 1.0,
+    'MAX_DAILY_LOSS_PCT': 3.0,
+    'MAX_LEVERAGE': 5,
+    'MAX_CONCURRENT_POSITIONS': 2,
 
-    # ── NEW: 10 scalping improvements ──────────────────────────────────
-    # #1 Slippage-aware backtesting
-    'SLIPPAGE_BPS': 2,               # 2 basis points slippage assumption
-    'REALISTIC_BACKTEST': True,      # if True, backtests apply slippage to fills
+    'SLIPPAGE_BPS': 2,
+    'REALISTIC_BACKTEST': True,
 
-    # #2 Volatility-adaptive position sizing
-    'ADAPTIVE_SIZE_HIGH_VOL_RATIO': 1.5,   # atr/recent_atr_avg above this = high-vol
-    'ADAPTIVE_SIZE_LOW_VOL_RATIO': 0.7,    # below this = low-vol
-    'ADAPTIVE_SIZE_HIGH_VOL_MULT': 0.6,    # shrink size 40% in high vol
-    'ADAPTIVE_SIZE_LOW_VOL_MULT': 1.2,     # grow size 20% in low vol
+    'ADAPTIVE_SIZE_HIGH_VOL_RATIO': 1.5,
+    'ADAPTIVE_SIZE_LOW_VOL_RATIO': 0.7,
+    'ADAPTIVE_SIZE_HIGH_VOL_MULT': 0.6,
+    'ADAPTIVE_SIZE_LOW_VOL_MULT': 1.2,
 
-    # #3 Entry confluence filter
-    'MIN_CONFLUENCE_SCORE': 3.0,     # was 2.0 (originally 5.0, then 3.5) — pulled back up: backtest showed low-confluence trades dragging win rate down
+    'MIN_CONFLUENCE_SCORE': 3.0,
 
-    # #7 Prime trading hours (separate from OF_SESSION_* used by order-flow module)
     'PRIME_HOURS_ASIAN_DEAD_START': 0,
     'PRIME_HOURS_ASIAN_DEAD_END': 8,
     'PRIME_HOURS_OVERLAP_START': 8,
@@ -150,60 +207,41 @@ CONFIG = {
     'PRIME_HOURS_NY_CLOSE_START': 17,
     'PRIME_HOURS_NY_CLOSE_END': 20,
 
-    # #8 Grid-search tuning
-    'GRID_MIN_WIN_RATE': 50.0,       # skip tuning configs below this win rate
+    'GRID_MIN_WIN_RATE': 50.0,
 
-    # #9 Volume spike / momentum filter
     'VOLUME_SPIKE_LOOKBACK': 20,
-    'VOLUME_SPIKE_MULT': 1.2,        # was 1.5 — loosened, require volume >= 1.2x rolling average
+    'VOLUME_SPIKE_MULT': 1.2,
 
-    # #10 Consecutive-loss tilt prevention
-    'MAX_CONSECUTIVE_LOSSES': 3,     # pause new trades after this many losses in a row
+    'MAX_CONSECUTIVE_LOSSES': 3,   # FIX v3 (F15): now actually enforced
 
-    # ── NEW: Fabio Valentino order-flow-STYLE proxy settings ──────────────
-    # ⚠️ IMPORTANT: fetch_ohlcv() only returns O/H/L/C/Volume candles — it does
-    # NOT include real bid/ask tape, delta, or aggression "bubbles" the way a
-    # footprint/order-flow platform (Bookmap, ATAS, etc.) does. Everything below
-    # is an OHLCV-based APPROXIMATION of order-flow concepts, not the real thing.
-    # It's a reasonable proxy for research, but treat it as such.
-    'OF_DELTA_LOOKBACK': 20,          # candles used for rolling CVD-proxy slope
-    'OF_ABSORPTION_VOL_MULT': 1.8,    # vol > rolling_avg_vol * this = "big order" candle
-    'OF_ABSORPTION_BODY_MAX_PCT': 35, # body must be <= this % of candle range to count as absorption
-    'OF_VP_LOOKBACK': 100,            # volume profile window for HVN/LVN mapping
+    # ── Order-flow proxy settings ───────────────────────────────────────
+    'OF_DELTA_LOOKBACK': 20,
+    'OF_ABSORPTION_VOL_MULT': 1.8,
+    'OF_ABSORPTION_BODY_MAX_PCT': 35,
+    'OF_VP_LOOKBACK': 100,
     'OF_VP_BINS': 30,
-    'OF_LVN_PCTL': 25,                # bins below this volume percentile = Low Volume Node
-    'OF_HVN_PCTL': 75,                # bins above this volume percentile = High Volume Node
-    'OF_RETEST_TOL_PCT': 0.15,        # % distance to an LVN level counted as "retest"
-    'OF_BREAKOUT_LOOKBACK': 20,       # bars used to define the balance range for breakout
-    'OF_SECOND_DRIVE_MAX_BARS': 12,   # max bars allowed between breakout and retest
-    'OF_SQUEEZE_ATR_MULT': 1.5,       # candle range vs ATR to qualify as a "squeeze" acceleration bar
-    'OF_SQUEEZE_VOL_MULT': 1.5,       # volume vs rolling avg to qualify as squeeze
-    'OF_BREAKEVEN_TRIGGER_ATR_MULT': 0.5,  # move SL to break-even after price moves this many ATR in favor
-    'OF_SL_BUFFER_TICKS_PCT': 0.03,   # extra % buffer beyond swing high/low, proxy for "1-2 ticks" buffer
-    'OF_RISK_BASE_PCT': 0.25,         # base risk % of equity per trade (Fabio: 0.25-0.5%)
-    'OF_RISK_HOUSE_MONEY_PCT': 0.50,  # risk % once trading with today's banked profit ("house money")
-    'OF_SESSION_NY_START_UTC': 13,    # New York session ~ 13:30-20:00 UTC (rounded to hour here)
+    'OF_LVN_PCTL': 25,
+    'OF_HVN_PCTL': 75,
+    'OF_RETEST_TOL_PCT': 0.15,
+    'OF_BREAKOUT_LOOKBACK': 20,
+    'OF_SECOND_DRIVE_MAX_BARS': 12,
+    'OF_SQUEEZE_ATR_MULT': 1.5,
+    'OF_SQUEEZE_VOL_MULT': 1.5,
+    'OF_BREAKEVEN_TRIGGER_ATR_MULT': 0.5,
+    'OF_SL_BUFFER_TICKS_PCT': 0.03,
+    'OF_RISK_BASE_PCT': 0.25,
+    'OF_RISK_HOUSE_MONEY_PCT': 0.50,
+    'OF_SESSION_NY_START_UTC': 13,
     'OF_SESSION_NY_END_UTC': 20,
-    'OF_SESSION_LDN_START_UTC': 7,    # London session ~ 07:00-16:00 UTC
+    'OF_SESSION_LDN_START_UTC': 7,
     'OF_SESSION_LDN_END_UTC': 16,
 }
 
-# ── NEW: Per-asset threshold overrides ──────────────────────────────────
-# Backtests showed the SAME filter settings behave very differently per
-# asset: BTC/ETH are lower-volatility, choppier (in this period) than DEXE,
-# so the globally-tuned thresholds above (which were tuned mostly against
-# DEXE, since it gave the clearest signal) under-fire and under-perform on
-# BTC/ETH. Rather than loosen the global settings (which would degrade
-# DEXE's already-validated performance), each asset gets its own overrides
-# layered on top of the base CONFIG above.
-# ⚠️ These BTC/ETH values are NOT yet backtest-validated — they're a
-# starting point. Run backtests after deploying and adjust based on what
-# you actually see, the same way DEXE's settings got tuned.
 ASSET_OVERRIDES = {
     "BTC/USDT:USDT": {
-        'ADX_MIN': 14,             # was 18 (global) — BTC trends are gentler, needs a lower bar
-        'SCORE_GAP_MIN': 2.5,      # was 3.5 (global) — BTC buy/sell scores run closer together
-        'MIN_CONFLUENCE_SCORE': 2.0,  # was 3.0 (global)
+        'ADX_MIN': 14,
+        'SCORE_GAP_MIN': 2.5,
+        'MIN_CONFLUENCE_SCORE': 2.0,
     },
     "ETH/USDT:USDT": {
         'ADX_MIN': 14,
@@ -211,27 +249,18 @@ ASSET_OVERRIDES = {
         'MIN_CONFLUENCE_SCORE': 2.0,
     },
     "BANK/USDT:USDT": {
-        # BANK is a low-cap that moves in violent bursts. Tighter gates than
-        # DEXE so the scanner isn't firing on every impulse candle.
         'ADX_MIN': 22,
         'SCORE_GAP_MIN': 4.5,
         'MIN_CONFLUENCE_SCORE': 4.0,
     },
-    # DEXE intentionally has NO override — it uses the base CONFIG values
-    # above as-is, since those are the ones already validated by backtest
-    # (42.9% win rate, PF 2.22 on 5m).
 }
 
 
 def get_effective_config(symbol):
-    """
-    Returns CONFIG merged with any per-asset override for `symbol`. Use this
-    instead of the raw CONFIG dict wherever a threshold might need to differ
-    by asset (ADX_MIN, SCORE_GAP_MIN, MIN_CONFLUENCE_SCORE, etc.).
-    """
     eff = dict(CONFIG)
     eff.update(ASSET_OVERRIDES.get(symbol, {}))
     return eff
+
 
 EXCHANGE_IDS = ['mexc', 'bybit', 'okx', 'gateio']
 
@@ -250,7 +279,9 @@ def fetch_coindcx_futures(ticker, timeframe, limit):
     if pair is None or resolution is None:
         return None, None
 
-    tf_seconds = {"1m": 60, "5m": 300, "15m": 900}[timeframe]
+    tf_seconds = TF_SECONDS.get(timeframe)   # FIX v3 (F14): shared table, no KeyError
+    if tf_seconds is None:
+        return None, None
     to_time = int(_t.time())
     from_time = to_time - (tf_seconds * (limit + 5))
 
@@ -302,7 +333,8 @@ def fetch_ohlcv_failover(ticker, timeframe, limit):
             df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
             df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
             df.set_index("timestamp", inplace=True)
-            return df.astype(float), ex_id
+            df = df.astype(float).sort_index()
+            return df.tail(limit), ex_id
         except Exception:
             continue
     return None, None
@@ -312,16 +344,25 @@ def fetch_ohlcv_failover(ticker, timeframe, limit):
 def calc_ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
 
+
 def calc_rsi(close, period=14):
+    """FIX v3 (F1): Wilder smoothing (ewm alpha=1/period), not a simple
+    rolling mean. The old version was Cutler's RSI — a different indicator
+    with a different distribution, so RSI_OVERBOUGHT/OVERSOLD were calibrated
+    against numbers TradingView never produces."""
     delta = close.diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    gain = delta.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
     return 100 - (100 / (1 + (gain / (loss + 1e-10))))
 
+
 def calc_atr(df, period=14):
+    """FIX v3 (F1): Wilder ATR. calc_adx() below already smoothed TR with
+    ewm(alpha=1/period); this used rolling().mean(). Two ATRs, one file."""
     h, l, c = df["high"], df["low"], df["close"]
     tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
+    return tr.ewm(alpha=1 / period, adjust=False).mean()
+
 
 def calc_adx(df, period=14):
     high, low, close = df["high"], df["low"], df["close"]
@@ -336,6 +377,7 @@ def calc_adx(df, period=14):
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-10)
     return dx.ewm(alpha=1 / period, adjust=False).mean()
 
+
 def calc_choppiness_index(df, period=14):
     atr_sum = pd.concat([
         df["high"] - df["low"],
@@ -347,6 +389,7 @@ def calc_choppiness_index(df, period=14):
     denom = np.log10(period + 1e-10)
     return 100 * np.log10((atr_sum / (high_roll - low_roll + 1e-10)) + 1e-10) / denom
 
+
 def calc_session_vwap(df):
     tp = (df["high"] + df["low"] + df["close"]) / 3
     tpv = tp * df["volume"]
@@ -354,6 +397,7 @@ def calc_session_vwap(df):
     cum_tpv = pd.Series(tpv.values, index=df.index).groupby(day).cumsum()
     cum_vol = df["volume"].groupby(day).cumsum()
     return cum_tpv / (cum_vol + 1e-10)
+
 
 def calc_volume_profile(df, lookback=100, bins=24):
     data = df.tail(lookback)
@@ -372,7 +416,14 @@ def calc_volume_profile(df, lookback=100, bins=24):
     poc_price = (bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2
     return {"poc": round(poc_price, 4)}
 
-def detect_market_regime(df):
+
+def detect_market_regime(df, eff_cfg=None):
+    """FIX v3 (F12): accepts eff_cfg so the per-asset ADX_MIN override is
+    honoured. Previously this read the global CONFIG['ADX_MIN'] (18) while
+    decide_direction() read the override (14 for BTC/ETH). The regime gate
+    therefore blocked exactly the trades the override existed to allow —
+    the BTC and ETH overrides were doing nothing at all."""
+    eff_cfg = eff_cfg if eff_cfg is not None else CONFIG
     atr = calc_atr(df, CONFIG['ATR_PERIOD'])
     atr_ma = atr.rolling(CONFIG['ATR_MA_PERIOD']).mean()
     ci = calc_choppiness_index(df, CONFIG['CHOPPINESS_PERIOD'])
@@ -382,7 +433,7 @@ def detect_market_regime(df):
     atr_ratio = (current_atr / current_atr_ma) if current_atr_ma > 0 else 1.0
     is_compressed = atr_ratio < CONFIG['ATR_COMPRESSION_RATIO']
     is_choppy = current_ci > CONFIG['CHOPPINESS_TREND_MAX'] if not np.isnan(current_ci) else False
-    is_trending = current_adx >= CONFIG['ADX_MIN'] if not np.isnan(current_adx) else False
+    is_trending = current_adx >= eff_cfg['ADX_MIN'] if not np.isnan(current_adx) else False
     if is_compressed:
         regime = "COMPRESSION"
     elif is_choppy or not is_trending:
@@ -425,6 +476,7 @@ def detect_structure_live_pro(df, lookback=3):
     df["structure_trend"] = trends
     return df
 
+
 def detect_candle_patterns_vectorized(df):
     df = df.copy()
     o, h, l, c = df["open"], df["high"], df["low"], df["close"]
@@ -440,11 +492,8 @@ def detect_candle_patterns_vectorized(df):
     df.loc[bull_eng, "pat_sig"] = "BUY"; df.loc[bear_eng, "pat_sig"] = "SELL"
     return df
 
+
 def _bars_since_extreme(series, lookback, use_max=True):
-    """How many bars back the rolling extreme sits. A divergence between two
-    peaks one bar apart is noise, not a signal — this is what lets us insist
-    the two peaks are actually separated in time. Uses only past bars, so it
-    is safe in both live and backtest paths."""
     f = np.argmax if use_max else np.argmin
     return series.rolling(lookback).apply(
         lambda w: len(w) - 1 - f(w), raw=True)
@@ -468,8 +517,8 @@ def detect_pro_divergence_vectorized(df, lookback=20):
 
     bull = (
         (df["close"] <= roll_min_c) &
-        (df["rsi"] - roll_min_r >= gap) &      # RSI meaningfully higher, not just higher
-        (bars_to_trough >= sep) &              # ...than a trough that is genuinely earlier
+        (df["rsi"] - roll_min_r >= gap) &
+        (bars_to_trough >= sep) &
         (df["rsi"] < 50)
     )
     bear = (
@@ -484,12 +533,10 @@ def detect_pro_divergence_vectorized(df, lookback=20):
 
 
 def divergence_weight(regime_label):
-    """Divergence is a mean-reversion signal. Letting it carry full weight
-    inside a trend is what produced 17.6 counter-trend points against 9.9
-    with-trend points on a coin that was going straight up."""
     if regime_label == "TRENDING":
         return CONFIG['DIV_TRENDING_WEIGHT']
     return CONFIG['DIV_RANGING_WEIGHT']
+
 
 def detect_liquidity_sweep(df):
     data = df.tail(CONFIG['LIQUIDITY_SWEEP_LOOKBACK'])
@@ -499,6 +546,7 @@ def detect_liquidity_sweep(df):
     if last["high"] > p_highs.max() and last["close"] < p_highs.max(): return "EQUAL_HIGH_SWEEP"
     if last["low"] < p_lows.min() and last["close"] > p_lows.min(): return "EQUAL_LOW_SWEEP"
     return None
+
 
 def detect_liquidity_sweep_vectorized(df, lookback=20):
     high, low, close = df["high"], df["low"], df["close"]
@@ -527,6 +575,7 @@ def detect_fvg_vectorized(df, min_gap_pct=0.02):
     df.loc[bear_mask, "fvg_bottom"] = high[bear_mask]
     return df
 
+
 def compute_active_fvg_series(df, min_gap_pct=0.02):
     df = detect_fvg_vectorized(df, min_gap_pct)
     n = len(df)
@@ -550,6 +599,7 @@ def compute_active_fvg_series(df, min_gap_pct=0.02):
     df["dist_to_bear_fvg_pct"] = dist_bear
     return df
 
+
 def detect_bsl_ssl_zones(df, lookback=20):
     df = df.copy()
     df["bsl_level"] = df["high"].rolling(lookback).max()
@@ -557,6 +607,7 @@ def detect_bsl_ssl_zones(df, lookback=20):
     df["dist_to_bsl_pct"] = (df["bsl_level"] - df["close"]) / df["close"] * 100
     df["dist_to_ssl_pct"] = (df["close"] - df["ssl_level"]) / df["close"] * 100
     return df
+
 
 def calc_equal_level_density(df, lookback=20, tol_pct=0.05):
     def count_equal_high(window):
@@ -572,6 +623,7 @@ def calc_equal_level_density(df, lookback=20, tol_pct=0.05):
     df["eq_low_count"] = df["low"].rolling(lookback).apply(count_equal_low, raw=True)
     return df
 
+
 def detect_inducement(df, minor_lookback=2):
     df = df.copy()
     high, low, close, open_ = df["high"], df["low"], df["close"], df["open"]
@@ -583,6 +635,7 @@ def detect_inducement(df, minor_lookback=2):
     df.loc[bull_ind, "inducement"] = "BULL_INDUCEMENT"
     df.loc[bear_ind, "inducement"] = "BEAR_INDUCEMENT"
     return df
+
 
 def calc_liquidity_score(snap):
     buy, sell = 0.0, 0.0
@@ -597,6 +650,7 @@ def calc_liquidity_score(snap):
     if snap.get("sweep") == "EQUAL_LOW_SWEEP" and eql >= CONFIG['EQUAL_LEVEL_MIN_COUNT']: buy += 1.0
     if snap.get("sweep") == "EQUAL_HIGH_SWEEP" and eqh >= CONFIG['EQUAL_LEVEL_MIN_COUNT']: sell += 1.0
     return buy, sell
+
 
 def _liquidity_score_vectorized(df, w=1.0):
     buy = pd.Series(0.0, index=df.index); sell = pd.Series(0.0, index=df.index)
@@ -623,7 +677,24 @@ def add_indicators_vectorized(df):
     df["vwap"] = calc_session_vwap(df)
     return df
 
-def analyze_timeframe(df):
+
+def _drop_forming_candle(df):
+    """FIX v3 (F2): the exchange returns the candle currently being built,
+    because fetch_coindcx_futures() asks for data up to `now`. Reading
+    df.iloc[-1] therefore means every indicator, every candle pattern and
+    every BOS/CHoCH confirmation is recomputed from a bar that is still
+    changing — the classic repaint. Signals flipped between polls for no
+    reason other than an unfinished wick."""
+    if df is None or len(df) < 2:
+        return df
+    return df.iloc[:-1]
+
+
+def analyze_timeframe(df, closed_only=False, eff_cfg=None):
+    """FIX v3 (F2): closed_only defaults False so backtest/vectorized paths
+    are untouched. Every LIVE caller passes True."""
+    if closed_only:
+        df = _drop_forming_candle(df)
     df = add_indicators_vectorized(df)
     df = detect_candle_patterns_vectorized(df)
     df = detect_pro_divergence_vectorized(df)
@@ -634,13 +705,13 @@ def analyze_timeframe(df):
     df = detect_inducement(df, CONFIG['INDUCEMENT_MINOR_LOOKBACK'])
     sweep = detect_liquidity_sweep(df)
     vp = calc_volume_profile(df, CONFIG['VOLUME_PROFILE_LOOKBACK'], CONFIG['VOLUME_PROFILE_BINS'])
-    regime = detect_market_regime(df)
+    regime = detect_market_regime(df, eff_cfg=eff_cfg)   # FIX v3 (F12)
     cvd_pressure_series = calc_recent_cvd_pressure(df)
     last = df.iloc[-1]
     return {
         "structure_event": last["structure_event"], "structure_trend": last["structure_trend"],
         "adx": last["adx"], "price": last["close"], "vwap": last["vwap"],
-        "volume": last["volume"],  # <-- Volatility acceleration trace karne ke liye line add ki
+        "volume": last["volume"],
         "ema5": last["ema5"], "ema20": last["ema20"], "rsi": last["rsi"], "atr": last["atr"],
         "pattern": last["pat_sig"], "divergence": last["divergence"],
         "sweep": sweep, "vp": vp, "regime": regime,
@@ -653,17 +724,22 @@ def analyze_timeframe(df):
         "eq_high_count": last["eq_high_count"], "eq_low_count": last["eq_low_count"],
         "inducement": last["inducement"],
     }
-    # FIX #7: removed a stray duplicate dict block that was sitting here,
-    # outside the function's return statement / outside any bracket. It was
-    # a leftover copy-paste of the same keys and caused a SyntaxError on
-    # import, which meant the entire module failed to load.
 
 
 def get_htf_bias(snap_15m):
+    """FIX v3 (F9): NaN no longer votes bearish. The old line was
+        score += weight*0.5 if snap["ema5"] > snap["ema20"] else -weight*0.5
+    and a NaN comparison is False, so it fell into the -0.5 branch. Combined
+    with a NaN RSI that is -1.25 — enough on its own to return BEARISH from
+    missing data alone."""
     weight = 1.0; score = 0.0
     if snap_15m["structure_trend"] == "BULL": score += weight
     elif snap_15m["structure_trend"] == "BEAR": score -= weight
-    score += weight * 0.5 if snap_15m["ema5"] > snap_15m["ema20"] else -weight * 0.5
+
+    e5, e20 = snap_15m.get("ema5"), snap_15m.get("ema20")
+    if pd.notna(e5) and pd.notna(e20):
+        score += weight * 0.5 if e5 > e20 else -weight * 0.5
+
     if not pd.isna(snap_15m["rsi"]):
         if snap_15m["rsi"] > 55: score += weight * 0.3
         elif snap_15m["rsi"] < 45: score -= weight * 0.3
@@ -675,64 +751,64 @@ def get_htf_bias(snap_15m):
     if score <= -0.9: return "BEARISH"
     return "NEUTRAL"
 
-# FIX #4: removed RSI<35/>65 mean-reversion score bonus (contradicted the
-# ADX-gated trend-following filter in decide_direction, which blocks
-# RSI<30/>70 trades). Score now stays purely trend/structure/liquidity based.
-# FIX #8: restored calc_liquidity_score(snap) call — this was missing here,
-# so live scores were not including sweep/inducement/FVG-proximity/equal-level
-# bonuses that the vectorized backtest path DOES include. Without this, live
-# analyze() and run_backtest()/run_backtest_full() used different scoring
-# formulas even though they share the same SCORE_THRESHOLD/SCORE_GAP_MIN.
+
 def get_ltf_scores(snap_1m, snap_5m):
     buy_score, sell_score = 0.0, 0.0
     for snap, w in [(snap_1m, 1.0), (snap_5m, 1.2)]:
+        if snap is None:
+            continue
         if snap["pattern"] == "BUY": buy_score += 2 * w
         elif snap["pattern"] == "SELL": sell_score += 2 * w
-        # Divergence is discounted inside a trend — see divergence_weight().
+
         try:
             dw = divergence_weight(snap["regime"]["regime"])
         except (KeyError, TypeError):
             dw = 1.0
         if snap["divergence"] == "BULL_DIV": buy_score += 3 * w * dw
         elif snap["divergence"] == "BEAR_DIV": sell_score += 3 * w * dw
+
         if snap["sweep"] == "EQUAL_LOW_SWEEP": buy_score += 3 * w
         elif snap["sweep"] == "EQUAL_HIGH_SWEEP": sell_score += 3 * w
+
         if snap["structure_event"] in ("BOS_BULL", "CHoCH_BULL"):
             buy_score += (2 if "CHoCH" in snap["structure_event"] else 1.5) * w
         elif snap["structure_event"] in ("BOS_BEAR", "CHoCH_BEAR"):
             sell_score += (2 if "CHoCH" in snap["structure_event"] else 1.5) * w
+
         if snap["vp"]["poc"] is not None:
             buy_score += 0.5 * w if snap["price"] > snap["vp"]["poc"] else 0
             sell_score += 0.5 * w if snap["price"] <= snap["vp"]["poc"] else 0
+
         if not pd.isna(snap["vwap"]):
             buy_score += 0.5 * w if snap["price"] > snap["vwap"] else 0
             sell_score += 0.5 * w if snap["price"] <= snap["vwap"] else 0
-        if snap["ema5"] > snap["ema20"]: buy_score += 0.5 * w
-        else: sell_score += 0.5 * w
-        # RSI mean-reversion bonus removed here (FIX #4)
 
-        # FIX #8: RESTORED — liquidity score (sweep magnitude, inducement,
-        # FVG proximity, equal-level density). This makes live scoring
-        # consistent with the vectorized backtest's _liquidity_score_vectorized().
+        # FIX v3 (F9): NaN EMA used to fall through to the sell branch.
+        e5, e20 = snap.get("ema5"), snap.get("ema20")
+        if pd.notna(e5) and pd.notna(e20):
+            if e5 > e20: buy_score += 0.5 * w
+            else: sell_score += 0.5 * w
+
         liq_buy, liq_sell = calc_liquidity_score(snap)
         buy_score += liq_buy * w
         sell_score += liq_sell * w
 
-        # 🔥 Scalper Acceleration Boost (kept from your latest edit):
+        # Scalper acceleration boost. NOTE: this re-scores the same two
+        # conditions (price vs vwap, ema5 vs ema20) that were already scored
+        # above, so a plain trending bar collects 2.0 per snapshot from
+        # trend alone with no actual setup present. Left in place because
+        # the confluence gate is what stops a no-setup trade, but be aware
+        # it is why scores drift high in strong trends.
         if "volume" in snap and not pd.isna(snap["vwap"]):
-            # Agar price trend ke sath vwap se door bhaag raha hai (Fast Momentum)
-            if snap["price"] > snap["vwap"] and snap["ema5"] > snap["ema20"]:
-                buy_score += 1.0 * w
-            elif snap["price"] <= snap["vwap"] and snap["ema5"] <= snap["ema20"]:
-                sell_score += 1.0 * w
+            if pd.notna(e5) and pd.notna(e20):
+                if snap["price"] > snap["vwap"] and e5 > e20:
+                    buy_score += 1.0 * w
+                elif snap["price"] <= snap["vwap"] and e5 <= e20:
+                    sell_score += 1.0 * w
 
     return round(buy_score, 2), round(sell_score, 2)
 
-# IMPROVEMENT #3: Entry confluence filter — the base score system uses many
-# lightweight 0.5-weight factors that can add up without any single strong
-# signal. This counts only the STRONG factors (structure break, divergence,
-# sweep+density combo, pattern, EMA alignment across both timeframes) and
-# requires a minimum weighted confluence before an entry is allowed.
+
 def calc_confluence_score(snap_1m, snap_5m):
     confluence = 0.0
 
@@ -758,16 +834,11 @@ def calc_confluence_score(snap_1m, snap_5m):
 
 
 def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regime_5m,
-                      entry_rsi=None, snap_1m=None, snap_5m=None, cvd_pressure=None, eff_cfg=None):
-    eff_cfg = eff_cfg if eff_cfg is not None else CONFIG  # NEW: per-asset override support
+                     entry_rsi=None, snap_1m=None, snap_5m=None, cvd_pressure=None, eff_cfg=None):
+    eff_cfg = eff_cfg if eff_cfg is not None else CONFIG
     if pd.isna(entry_adx) or entry_adx < eff_cfg['ADX_MIN']:
         return None, f"NO TREND (ADX {entry_adx:.1f} < {eff_cfg['ADX_MIN']})"
     if entry_rsi is not None and not pd.isna(entry_rsi):
-        # FIX: RSI filter was direction-agnostic — it blocked BOTH buy and sell
-        # signals whenever RSI touched an extreme, even when the extreme
-        # actually supported the dominant-score direction (e.g. oversold RSI
-        # with a strong buy_score, or overbought RSI with a strong sell_score).
-        # Now it only blocks the entry that would be CHASING the extreme.
         if entry_rsi > CONFIG['RSI_OVERBOUGHT'] and buy_score >= sell_score:
             return None, f"BLOCKED (RSI overbought {entry_rsi:.1f})"
         if entry_rsi < CONFIG['RSI_OVERSOLD'] and sell_score >= buy_score:
@@ -775,62 +846,51 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regi
     is_1m_comp = regime_1m["regime"] == "COMPRESSION"
     is_5m_comp = regime_5m["regime"] == "COMPRESSION"
 
-    # PRO ENGINE BREAKOUT BYPASS: 5m compressed zone se 1m volatility trigger track karna
-    # FIX: this bypass used to fire BUY purely off buy_score >= threshold, WITHOUT
-    # checking that buy_score > sell_score — so a candle where SELL score was
-    # actually dominant (and RSI was pinned at an extreme) could still fire a BUY.
-    # It also skipped the confluence gate AND the new CVD confirmation entirely,
-    # since it returns before reaching those checks below. Now it requires the
-    # score to actually be dominant, and requires CVD to not be against it.
+    # Compression-breakout bypass.
+    # FIX v3 (F8): htf_bias must now actively agree. A NEUTRAL 15m used to
+    # authorise both a long and a short here, which is how a clean uptrend
+    # still produced SELL signals.
     if is_5m_comp and not is_1m_comp and entry_adx > eff_cfg['ADX_MIN']:
         if (buy_score >= CONFIG['SCORE_THRESHOLD'] + 0.5 and buy_score > sell_score
-                and htf_bias in ("BULLISH", "NEUTRAL")):
+                and htf_bias == "BULLISH"):
             if cvd_pressure is None or cvd_pressure >= -CONFIG['CVD_PRESSURE_MIN_ABS']:
-                return "BUY", "COMPRESSION BREAKOUT LONG 🚀"
+                return "BUY", "COMPRESSION BREAKOUT LONG"
         if (sell_score >= CONFIG['SCORE_THRESHOLD'] + 0.5 and sell_score > buy_score
-                and htf_bias in ("BEARISH", "NEUTRAL")):
+                and htf_bias == "BEARISH"):
             if cvd_pressure is None or cvd_pressure <= CONFIG['CVD_PRESSURE_MIN_ABS']:
-                return "SELL", "COMPRESSION BREAKOUT SHORT 🩸"
+                return "SELL", "COMPRESSION BREAKOUT SHORT"
 
-    # Jab tak box squeeze true trap state mein hai tabhi filter open hoga
     if is_1m_comp and is_5m_comp:
         return None, "BLOCKED (Tight Squeeze Range)"
 
     if regime_1m["regime"] == "RANGING" or regime_5m["regime"] == "RANGING":
-        return None, f"BLOCKED (Choppy Flat Zones)"
+        return None, "BLOCKED (Choppy Flat Zones)"
 
     if regime_1m["regime"] != "TRENDING" or regime_5m["regime"] != "TRENDING":
         return None, "BLOCKED (Not Dynamic Trending Structure)"
 
-    # IMPROVEMENT #3: confluence gate (only enforced when snaps are provided,
-    # so existing callers that don't pass snaps keep their old behavior).
     confluence_score = None
     if snap_1m is not None and snap_5m is not None:
         confluence_score = calc_confluence_score(snap_1m, snap_5m)
         if confluence_score < eff_cfg['MIN_CONFLUENCE_SCORE']:
             return None, f"BLOCKED (Low confluence {confluence_score:.1f} < {eff_cfg['MIN_CONFLUENCE_SCORE']})"
 
+    # FIX v3 (F8): NEUTRAL now blocks BOTH sides instead of permitting both.
+    # A higher timeframe with no opinion is a reason to stand down, not a
+    # licence to trade either way.
     if buy_score >= CONFIG['SCORE_THRESHOLD'] and buy_score > sell_score:
-        if (buy_score - sell_score) >= eff_cfg['SCORE_GAP_MIN'] and htf_bias in ("BULLISH", "NEUTRAL"):
-            # NEW: CVD confirmation (Fabio-style aggression check, proxy-based).
-            # Only blocks when CVD is CLEARLY against the trade — a weak/neutral
-            # reading doesn't veto it, since this is an approximation, not real
-            # tape data (see calc_recent_cvd_pressure docstring).
+        if (buy_score - sell_score) >= eff_cfg['SCORE_GAP_MIN'] and htf_bias == "BULLISH":
             if cvd_pressure is not None and cvd_pressure < -CONFIG['CVD_PRESSURE_MIN_ABS']:
                 return None, f"BLOCKED (CVD pressure against BUY: {cvd_pressure:.1f})"
-            return "BUY", "BUY ✅" + (f" (confluence {confluence_score:.1f})" if confluence_score is not None else "")
+            return "BUY", "BUY" + (f" (confluence {confluence_score:.1f})" if confluence_score is not None else "")
     if sell_score >= CONFIG['SCORE_THRESHOLD'] and sell_score > buy_score:
-        if (sell_score - buy_score) >= eff_cfg['SCORE_GAP_MIN'] and htf_bias in ("BEARISH", "NEUTRAL"):
+        if (sell_score - buy_score) >= eff_cfg['SCORE_GAP_MIN'] and htf_bias == "BEARISH":
             if cvd_pressure is not None and cvd_pressure > CONFIG['CVD_PRESSURE_MIN_ABS']:
                 return None, f"BLOCKED (CVD pressure against SELL: {cvd_pressure:.1f})"
-            return "SELL", "SELL ✅" + (f" (confluence {confluence_score:.1f})" if confluence_score is not None else "")
-    return None, "WAIT (score/bias aligned nahi)"
+            return "SELL", "SELL" + (f" (confluence {confluence_score:.1f})" if confluence_score is not None else "")
+    return None, f"WAIT (bias {htf_bias} | buy {buy_score} / sell {sell_score})"
 
 
-# IMPROVEMENT #5: Intra-trade early exit — don't blindly hold to SL if the
-# setup that justified the trade has broken down. Call this periodically
-# while a position is open, passing the CURRENT snap and the snap captured
-# AT ENTRY (analyze_timeframe() output for both).
 def should_exit_early(snap_current, snap_entry, direction):
     if direction == "BUY" and snap_current["ema5"] <= snap_current["ema20"]:
         if snap_entry["ema5"] > snap_entry["ema20"]:
@@ -850,8 +910,6 @@ def should_exit_early(snap_current, snap_entry, direction):
     return False, None
 
 
-# IMPROVEMENT #7: Prime trading hours filter — scalping dies during the
-# Asian low-volume window. Blocks trades outside NY/London active hours.
 def is_prime_trading_hours(now_utc=None):
     from datetime import datetime, timezone
     utc_hour = (now_utc or datetime.now(timezone.utc)).hour
@@ -864,13 +922,23 @@ def is_prime_trading_hours(now_utc=None):
         return True, "NY session"
     return False, "After hours"
 
+
+def _px(v):
+    """Significant figures, not decimal places. round(x, 2) is fine for BTC
+    at 63,000 but turns a 0.0568 BANK entry, its 0.0592 target and its 0.0553
+    stop into three identical numbers."""
+    if v is None:
+        return None
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return float(f"{v:.8g}")
+
+
 def calc_tp_sl(direction, price, atr):
     if direction is None or atr is None or pd.isna(atr):
         return None, None
-    # Was round(..., 4). On BANK (price ~0.054) that put a 3.8% error into the
-    # stop distance, and on any sub-0.0001 asset the stop rounded onto the
-    # entry, making the trade impossible to size. _px scales precision to the
-    # magnitude of the number instead.
     sl_dist = CONFIG['SL_ATR_MULT'] * atr
     tp_dist = CONFIG['TP_ATR_MULT'] * atr
     if direction == "BUY":
@@ -878,29 +946,53 @@ def calc_tp_sl(direction, price, atr):
     return _px(price - tp_dist), _px(price + sl_dist)
 
 
-# IMPROVEMENT #1: Slippage-aware TP/SL — real scalping fills are never
-# exactly at the TP/SL price. This pulls TP in and pushes SL out by an
-# assumed slippage amount so backtest results aren't overly optimistic.
 def calc_tp_sl_with_slippage(direction, price, atr, slippage_bps=None):
+    """FIX v3 (F13): now uses _px() like calc_tp_sl(). This function was still
+    on round(x, 4) — and since REALISTIC_BACKTEST is True, this is the one
+    LIVE analyze() actually calls. On BANK (~0.054) that rounding was
+    flattening entry, TP and SL into the same 4-decimal number, making the
+    stop distance meaningless and position sizing impossible."""
     if direction is None or atr is None or pd.isna(atr):
         return None, None
     slippage_bps = slippage_bps if slippage_bps is not None else CONFIG['SLIPPAGE_BPS']
-    sl_dist = round(CONFIG['SL_ATR_MULT'] * atr, 4)
-    tp_dist = round(CONFIG['TP_ATR_MULT'] * atr, 4)
+    sl_dist = CONFIG['SL_ATR_MULT'] * atr
+    tp_dist = CONFIG['TP_ATR_MULT'] * atr
     slippage_amt = price * (slippage_bps / 10000)
 
     if direction == "BUY":
-        tp = round(price + tp_dist - slippage_amt, 4)   # TP pulled back (worse fill)
-        sl = round(price - sl_dist - slippage_amt, 4)   # SL pushed further away (worse fill)
+        tp = _px(price + tp_dist - slippage_amt)   # exit earlier, less profit
+        sl = _px(price - sl_dist - slippage_amt)   # stop further away, bigger loss
     else:
-        tp = round(price - tp_dist + slippage_amt, 4)
-        sl = round(price + sl_dist + slippage_amt, 4)
+        tp = _px(price - tp_dist + slippage_amt)
+        sl = _px(price + sl_dist + slippage_amt)
     return tp, sl
 
 
-# IMPROVEMENT #9: Volume spike / momentum filter — scalpers need genuine
-# participation behind a move. Flags bars where volume is well above its
-# recent rolling average.
+def round_trip_cost_pct():
+    """FIX v3 (F4): single source of truth for transaction cost."""
+    return CONFIG['ROUND_TRIP_COST_PCT']
+
+
+def cost_gate(price, tp):
+    """FIX v3 (F3): reject setups whose gross target is not meaningfully
+    larger than the cost of taking the trade.
+
+    With gross TP of R_tp, gross SL of R_sl and round-trip cost c, expectancy
+    is p*(R_tp - c) - (1-p)*(R_sl + c). As c approaches R_sl the required
+    win rate climbs past anything this strategy has demonstrated. Blocking
+    these setups is not conservatism, it is arithmetic."""
+    if tp is None or price is None:
+        return False
+    try:
+        price = float(price); tp = float(tp)
+    except (TypeError, ValueError):
+        return False
+    if price == 0:
+        return False
+    edge_pct = abs(tp - price) / price * 100.0
+    return edge_pct >= CONFIG['MIN_TP_COST_RATIO'] * round_trip_cost_pct()
+
+
 def detect_volume_spike(df, lookback=None, multiplier=None):
     lookback = lookback or CONFIG['VOLUME_SPIKE_LOOKBACK']
     multiplier = multiplier or CONFIG['VOLUME_SPIKE_MULT']
@@ -909,25 +1001,22 @@ def detect_volume_spike(df, lookback=None, multiplier=None):
     return vol_ratio >= multiplier
 
 
-# IMPROVEMENT #4: Partial profit-taking — instead of one TP, scale out at
-# three levels (50% / 30% / 20%) so gains are locked progressively instead
-# of an all-or-nothing single target.
 def calc_tp_sl_scaled(direction, price, atr):
     if direction is None or atr is None or pd.isna(atr):
         return None
-    sl_dist = round(CONFIG['SL_ATR_MULT'] * atr, 4)
-    tp_base = round(CONFIG['TP_ATR_MULT'] * atr, 4)
+    sl_dist = CONFIG['SL_ATR_MULT'] * atr
+    tp_base = CONFIG['TP_ATR_MULT'] * atr
 
     if direction == "BUY":
-        sl = round(price - sl_dist, 4)
-        tp1 = round(price + tp_base * 0.5, 4)    # 50% closed here
-        tp2 = round(price + tp_base * 0.75, 4)   # 30% closed here
-        tp3 = round(price + tp_base, 4)          # 20% rides to full target
+        sl = _px(price - sl_dist)
+        tp1 = _px(price + tp_base * 0.5)
+        tp2 = _px(price + tp_base * 0.75)
+        tp3 = _px(price + tp_base)
     else:
-        sl = round(price + sl_dist, 4)
-        tp1 = round(price - tp_base * 0.5, 4)
-        tp2 = round(price - tp_base * 0.75, 4)
-        tp3 = round(price - tp_base, 4)
+        sl = _px(price + sl_dist)
+        tp1 = _px(price - tp_base * 0.5)
+        tp2 = _px(price - tp_base * 0.75)
+        tp3 = _px(price - tp_base)
 
     return {"sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
             "tp1_pct": 50, "tp2_pct": 30, "tp3_pct": 20}
@@ -936,7 +1025,8 @@ def calc_tp_sl_scaled(direction, price, atr):
 import time as _time
 
 _HTF_CACHE = {}
-_HTF_CACHE_TTL = 15  # was 30 — tightened to match the 15s dashboard poll cadence so bias doesn't lag price by up to 2 full refreshes
+_HTF_CACHE_TTL = 15
+
 
 def _get_htf_bias_cached(symbol):
     now = _time.time()
@@ -944,30 +1034,27 @@ def _get_htf_bias_cached(symbol):
     if cached and (now - cached["ts"]) < _HTF_CACHE_TTL:
         return cached["bias"]
     htf_bias = "NEUTRAL"
+    eff_cfg = get_effective_config(symbol)
     df_15m, _ = fetch_ohlcv_failover(symbol, "15m", CONFIG['LIMIT'])
     if df_15m is not None:
-        snap_15m = analyze_timeframe(df_15m)
+        # FIX v3 (F2): closed candles only for the bias snapshot too.
+        snap_15m = analyze_timeframe(df_15m, closed_only=True, eff_cfg=eff_cfg)
         htf_bias = get_htf_bias(snap_15m)
     _HTF_CACHE[symbol] = {"bias": htf_bias, "ts": now}
     return htf_bias
 
-_LTF_CACHE = {}
-_SIGNAL_AGE_CACHE = {}  # NEW: tracks how long a signal (same symbol+timeframe+direction) has been continuously active
-_LTF_CACHE_TTL = 10  # was 15 — tightened below the 15s dashboard poll interval so score/signal/regime never lag more than one refresh behind the live price
 
-# BUGFIX: previously every call to analyze() — regardless of the requested
-# entry timeframe — scored off a fixed 1m+5m pair cached PER SYMBOL (not per
-# timeframe). That meant the "15m" and "1h" dashboard cards showed the exact
-# same buy_score/sell_score as the "5m" card, because they all read the same
-# stale symbol-level cache entry. This maps each entry timeframe to its own
-# "confirmation" timeframe one step up, and caches per (symbol, timeframe)
-# so every card genuinely reflects its own timeframe's data.
+_LTF_CACHE = {}
+_SIGNAL_AGE_CACHE = {}
+_LTF_CACHE_TTL = 10
+
 TIMEFRAME_CONFIRM_MAP = {
     "1m": "5m",
     "5m": "15m",
     "15m": "1h",
     "1h": "4h",
 }
+
 
 def _get_ltf_snaps_cached(symbol, timeframe="1m", preloaded_entry_snap=None):
     now = _time.time()
@@ -977,54 +1064,25 @@ def _get_ltf_snaps_cached(symbol, timeframe="1m", preloaded_entry_snap=None):
     if cached and (now - cached["ts"]) < _LTF_CACHE_TTL:
         return cached["snap_entry"], cached["snap_confirm"]
 
-    # If caller already fetched+analyzed the entry timeframe, reuse it
-    # instead of hitting the API again.
+    eff_cfg = get_effective_config(symbol)
+
     if preloaded_entry_snap is not None:
         snap_entry_tf = preloaded_entry_snap
     else:
         df_entry_tf, _ = fetch_ohlcv_failover(symbol, timeframe, CONFIG['LIMIT'])
-        snap_entry_tf = analyze_timeframe(df_entry_tf) if df_entry_tf is not None else None
+        # FIX v3 (F2)
+        snap_entry_tf = (analyze_timeframe(df_entry_tf, closed_only=True, eff_cfg=eff_cfg)
+                         if df_entry_tf is not None else None)
 
     df_confirm, _ = fetch_ohlcv_failover(symbol, confirm_tf, CONFIG['LIMIT'])
-    snap_confirm = analyze_timeframe(df_confirm) if df_confirm is not None else None
+    snap_confirm = (analyze_timeframe(df_confirm, closed_only=True, eff_cfg=eff_cfg)
+                    if df_confirm is not None else None)
 
     _LTF_CACHE[cache_key] = {"snap_entry": snap_entry_tf, "snap_confirm": snap_confirm, "ts": now}
     return snap_entry_tf, snap_confirm
 
 
-def _px(v):
-    """Round a price for display without destroying it.
-
-    round(x, 2) is fine for BTC at 63,000 but turns a 0.0568 BANK entry, its
-    0.0592 target and its 0.0553 stop into three identical "0.06"s, making
-    the backtest trade list unreadable on exactly the assets it matters for.
-    Scale the precision to the price instead.
-    """
-    if v is None:
-        return None
-    try:
-        v = float(v)
-    except (TypeError, ValueError):
-        return None
-    # Significant figures, not decimal places. Fixed decimals quantise a
-    # 0.00023 BANK stop distance into oblivion while leaving BTC untouched.
-    # 8 sig-figs is exact enough that sizing and journal maths are unaffected,
-    # and still renders sanely on screen.
-    return float(f"{v:.8g}")
-
-
 def calc_position_size_for_target(entry_price, tp_price, target_profit_inr=None, usdt_inr_rate=None):
-    """
-    Kitni quantity leni hai taaki TP hit hone par net profit target_profit_inr
-    ke aas-paas rahe. Uses TARGET_PROFIT_INR_MIN as the default target if
-    none is passed — sizes for the LOW end of the range so hitting TP means
-    you're guaranteed at least the minimum, with room to exit anywhere up
-    to TARGET_PROFIT_INR_MAX if price runs further.
-    NOTE: sirf gross price-move par based hai — fees/funding shamil nahi,
-    isliye real fill par milega thoda kam. Entry/exit dono par actual
-    fees alag se ghata lena.
-    Returns None agar entry/tp valid nahi hain (jaise WAIT signal par).
-    """
     if entry_price is None or tp_price is None:
         return None
     target_profit_inr = target_profit_inr if target_profit_inr is not None else CONFIG['TARGET_PROFIT_INR_MIN']
@@ -1037,26 +1095,6 @@ def calc_position_size_for_target(entry_price, tp_price, target_profit_inr=None,
 
 
 def calc_dynamic_trailing_exit(direction, entry_price, current_price, atr, sl, tp, extreme_price=None):
-    """
-    LIVE TRADE MANAGEMENT for an OPEN position — call this repeatedly (e.g. every
-    time the dashboard refreshes) with the latest price. It does two things as the
-    market moves in your favor, and NEVER moves the stop against you:
-
-      1. MIN PROFIT LOCK: once price has moved MIN_PROFIT_LOCK_ATR_MULT * ATR in
-         your favor, the stop-loss is pulled up (BUY) / down (SELL) to guarantee
-         at least that much profit — a real locked-in minimum, not just breakeven.
-      2. TRAIL TOWARD MAX: beyond that, the stop trails behind the best price seen
-         since entry by TRAIL_ATR_MULT * ATR. As the market keeps extending toward
-         `tp` (the max target), the locked-in profit keeps expanding with it; if
-         price pulls back, the stop holds where it is instead of giving profit back.
-
-    entry_price, current_price, sl, tp: your trade's actual numbers.
-    extreme_price: pass the best (highest for BUY / lowest for SELL) price seen
-        since entry if you're tracking it tick-by-tick; otherwise current_price
-        is used (fine if you're only polling occasionally).
-
-    Returns: {"sl": new_sl, "min_profit_locked": bool, "tp_hit": bool, "note": str}
-    """
     if atr is None or atr <= 0 or entry_price is None or current_price is None:
         return {"sl": sl, "min_profit_locked": False, "tp_hit": False, "note": "invalid inputs"}
     if direction not in ("BUY", "SELL"):
@@ -1078,13 +1116,13 @@ def calc_dynamic_trailing_exit(direction, entry_price, current_price, atr, sl, t
             min_profit_locked = True
             note = "minimum profit locked"
         trailing_sl = extreme - trail_dist
-        if trailing_sl > new_sl:
+        if new_sl is None or trailing_sl > new_sl:
             new_sl = trailing_sl
             note = "trailing stop tightened toward max"
         if tp is not None and current_price >= tp:
             tp_hit = True
             note = "target reached — consider closing"
-    else:  # SELL
+    else:
         favorable_move = entry_price - extreme
         if favorable_move >= min_lock_dist:
             locked_sl = entry_price - min_lock_dist
@@ -1092,7 +1130,7 @@ def calc_dynamic_trailing_exit(direction, entry_price, current_price, atr, sl, t
             min_profit_locked = True
             note = "minimum profit locked"
         trailing_sl = extreme + trail_dist
-        if trailing_sl < new_sl:
+        if new_sl is None or trailing_sl < new_sl:
             new_sl = trailing_sl
             note = "trailing stop tightened toward max"
         if tp is not None and current_price <= tp:
@@ -1100,7 +1138,7 @@ def calc_dynamic_trailing_exit(direction, entry_price, current_price, atr, sl, t
             note = "target reached — consider closing"
 
     return {
-        "sl": round(new_sl, 6) if new_sl is not None else None,
+        "sl": _px(new_sl) if new_sl is not None else None,
         "min_profit_locked": min_profit_locked,
         "tp_hit": tp_hit,
         "note": note,
@@ -1108,64 +1146,56 @@ def calc_dynamic_trailing_exit(direction, entry_price, current_price, atr, sl, t
 
 
 def analyze(symbol, timeframe="1m"):
+    eff_cfg = get_effective_config(symbol)
     df_entry, ex_id = fetch_ohlcv_failover(symbol, timeframe, CONFIG['LIMIT'])
-    if df_entry is None:
+    if df_entry is None or len(df_entry) < 3:
         return {"symbol": symbol, "timeframe": timeframe, "error": "no data"}
 
-    snap_entry = analyze_timeframe(df_entry)
+    # FIX v3 (F2): the snapshot the decision is built from must come from a
+    # candle that has finished. df_closed is also what momentum and the
+    # volume-spike filter read, so nothing in the decision path can be
+    # influenced by a bar that is still moving.
+    df_closed = _drop_forming_candle(df_entry)
+
+    snap_entry = analyze_timeframe(df_entry, closed_only=True, eff_cfg=eff_cfg)
     price = float(snap_entry["price"])
     rsi_now = float(snap_entry["rsi"]) if not pd.isna(snap_entry["rsi"]) else None
     atr_now = float(snap_entry["atr"]) if not pd.isna(snap_entry["atr"]) else None
 
-    # NEW: raw momentum — how much price has ACTUALLY moved recently, with
-    # NO filters applied. This is not a trade signal (that's `signal` below,
-    # which stays disciplined/filtered) — it's purely so you can see "market
-    # is moving" even during stretches where no BUY/SELL clears the filters.
-    mom_lookback = min(CONFIG['MOMENTUM_LOOKBACK'], len(df_entry) - 1)
+    # Raw momentum — display only, no filters, so you can see the market is
+    # moving even when nothing clears the entry gates.
+    mom_lookback = min(CONFIG['MOMENTUM_LOOKBACK'], len(df_closed) - 1)
     momentum_pct = None
     if mom_lookback > 0:
-        past_price = float(df_entry["close"].iloc[-1 - mom_lookback])
+        past_price = float(df_closed["close"].iloc[-1 - mom_lookback])
         if past_price:
             momentum_pct = round((price - past_price) / past_price * 100, 3)
     if momentum_pct is None:
         momentum_note = "no data"
     elif abs(momentum_pct) >= 1.0:
-        momentum_note = f"🔥 Strong move ({'up' if momentum_pct > 0 else 'down'})"
+        momentum_note = f"Strong move ({'up' if momentum_pct > 0 else 'down'})"
     elif abs(momentum_pct) >= 0.3:
-        momentum_note = f"📈 Moving {'up' if momentum_pct > 0 else '📉 down'}"
+        momentum_note = f"Moving {'up' if momentum_pct > 0 else 'down'}"
     else:
-        momentum_note = "😴 Quiet / choppy"
+        momentum_note = "Quiet / choppy"
 
-    # NEW: immediate last-candle direction — separate from the 10-candle
-    # momentum window above. The 10-candle number can still read "up" even
-    # while the very last candle just closed red (net effect of an earlier
-    # move that's now reversing) — this makes that visible instead of
-    # confusing the two together.
+    # Last CLOSED candle's own move. This used to read the forming bar, so it
+    # flickered red/green within the same minute.
     last_candle_pct = None
-    last_open = float(df_entry["open"].iloc[-1])
+    last_open = float(df_closed["open"].iloc[-1])
     if last_open:
         last_candle_pct = round((price - last_open) / last_open * 100, 3)
-    last_candle_direction = "🟢 up" if (last_candle_pct or 0) > 0 else ("🔴 down" if (last_candle_pct or 0) < 0 else "➖ flat")
+    last_candle_direction = ("up" if (last_candle_pct or 0) > 0
+                             else ("down" if (last_candle_pct or 0) < 0 else "flat"))
 
     htf_bias = _get_htf_bias_cached(symbol)
 
-    # BUGFIX: pass snap_entry through so we don't re-fetch the entry
-    # timeframe's data, and fetch its own confirmation timeframe (one
-    # step up) instead of always reusing a fixed 1m/5m pair. This makes
-    # each entry timeframe's score genuinely reflect that timeframe.
     snap_entry_tf, snap_confirm = _get_ltf_snaps_cached(
         symbol, timeframe=timeframe, preloaded_entry_snap=snap_entry
     )
     if snap_entry_tf is None: snap_entry_tf = snap_entry
     if snap_confirm is None: snap_confirm = snap_entry
 
-    # IMPROVEMENT #7: skip entries outside prime NY/London hours
-    # UPDATE: made toggleable and OFF by default — crypto trades 24/7 unlike
-    # forex/futures, and this was blocking every signal for ~4 hours every
-    # night (IST 1:30 AM - 5:30 AM gap + Asian session) regardless of actual
-    # market activity. Flip CONFIG['ENABLE_PRIME_HOURS_FILTER'] back to True
-    # if you want this discipline back (e.g. if late-night DEXE signals turn
-    # out to be consistently low quality once you've journaled a few days).
     if CONFIG['ENABLE_PRIME_HOURS_FILTER']:
         prime_ok, prime_reason = is_prime_trading_hours()
         if not prime_ok:
@@ -1175,36 +1205,39 @@ def analyze(symbol, timeframe="1m"):
             }
 
     buy_score, sell_score = get_ltf_scores(snap_entry_tf, snap_confirm)
-    eff_cfg = get_effective_config(symbol)  # NEW: per-asset threshold overrides
     direction, reason = decide_direction(
         buy_score, sell_score, htf_bias, snap_entry["adx"],
         snap_entry_tf["regime"], snap_confirm["regime"], entry_rsi=rsi_now,
-        snap_1m=snap_entry_tf, snap_5m=snap_confirm,  # IMPROVEMENT #3: confluence gate
-        cvd_pressure=snap_entry_tf.get("cvd_pressure"),  # NEW: Fabio-style aggression confirmation
-        eff_cfg=eff_cfg,  # NEW: per-asset overrides (BTC/ETH looser than DEXE-tuned defaults)
+        snap_1m=snap_entry_tf, snap_5m=snap_confirm,
+        cvd_pressure=snap_entry_tf.get("cvd_pressure"),
+        eff_cfg=eff_cfg,
     )
 
-    # NEW: blow-off exhaustion veto. Blocks longs into a parabolic climax, and
-    # blocks shorts until the climax candle's low is actually broken.
-    # Same module + same thresholds as run_backtest() — see blowoff.py.
-    bo = detect_blowoff(df_entry, symbol=symbol)
+    bo = detect_blowoff(df_closed, symbol=symbol)
     bo_ok, bo_reason = blowoff_gate(direction, bo)
     if not bo_ok:
-        # Follow the same pattern as the volume-spike filter below: kill the
-        # direction and fall through, so the dashboard still gets the full
-        # payload (RSI, bias, regime, scores, momentum) instead of a stub.
         direction, reason = None, bo_reason
 
-    # IMPROVEMENT #9: require a volume spike behind the move, not just a low-volume drift.
-    # FIX: was checking ONLY the single most recent candle — a real trending move
-    # often has its volume spike a candle or two before everything else (score,
-    # confluence, regime) finishes aligning. Now accepts a spike anywhere in the
-    # last 3 candles, so a move that already has volume behind it isn't rejected
-    # just because the exact signal candle happened to be quieter.
     if direction is not None:
-        vol_spike_series = detect_volume_spike(df_entry)
+        vol_spike_series = detect_volume_spike(df_closed)
         if not bool(vol_spike_series.tail(3).any()):
             direction, reason = None, f"BLOCKED (No volume spike confirming {reason})"
+
+    if CONFIG['REALISTIC_BACKTEST']:
+        tp, sl = calc_tp_sl_with_slippage(direction, price, atr_now)
+    else:
+        tp, sl = calc_tp_sl(direction, price, atr_now)
+
+    # FIX v3 (F3): the cost gate runs last, after every other filter, so the
+    # reason string tells you plainly when a setup was valid but too small to
+    # be worth its fees. If you see this constantly on a timeframe, that
+    # timeframe is not tradeable at your fee level — move up, don't loosen it.
+    if direction is not None and not cost_gate(price, tp):
+        edge = abs(float(tp) - price) / price * 100 if tp else 0.0
+        direction = None
+        reason = (f"BLOCKED (edge {edge:.3f}% < {CONFIG['MIN_TP_COST_RATIO']}x "
+                  f"round-trip cost {round_trip_cost_pct()}%)")
+        tp, sl = None, None
 
     signal = direction if direction else "WAIT"
     blowoff_info = {
@@ -1212,11 +1245,6 @@ def analyze(symbol, timeframe="1m"):
         "confirmed": bo["confirmed"], "levels": bo.get("levels", {}),
     }
 
-    # NEW: signal freshness tracker — how long has THIS exact signal (same
-    # symbol+timeframe+direction) been continuously active? Resets to 0 the
-    # moment the signal flips (BUY->SELL, BUY->WAIT, etc.), so you know
-    # whether you're looking at a fresh trigger or one that's been sitting
-    # for a while.
     age_key = f"{symbol}:{timeframe}"
     now_ts = _t.time()
     prev = _SIGNAL_AGE_CACHE.get(age_key)
@@ -1229,21 +1257,11 @@ def analyze(symbol, timeframe="1m"):
         _SIGNAL_AGE_CACHE[age_key] = {"signal": signal, "since": now_ts}
         signal_age_seconds = 0.0
 
-    if CONFIG['REALISTIC_BACKTEST']:
-        tp, sl = calc_tp_sl_with_slippage(direction, price, atr_now)  # IMPROVEMENT #1
-    else:
-        tp, sl = calc_tp_sl(direction, price, atr_now)
-    tp_levels = calc_tp_sl_scaled(direction, price, atr_now) if direction else None  # IMPROVEMENT #4
+    tp_levels = calc_tp_sl_scaled(direction, price, atr_now) if direction else None
 
-    # NEW: suggested quantity for the ₹500-1000 target range — sized off the
-    # MIN so hitting TP guarantees at least ₹500; qty_for_max shows what
-    # size would be needed to net ₹1000 at the same TP (for comparison).
     suggested_qty_min = calc_position_size_for_target(price, tp, CONFIG['TARGET_PROFIT_INR_MIN']) if direction else None
     suggested_qty_max = calc_position_size_for_target(price, tp, CONFIG['TARGET_PROFIT_INR_MAX']) if direction else None
 
-    # RISK-FIRST SIZING — this is the number to trade off. The two lines above
-    # size for a fixed rupee PROFIT, which has no upper bound as the stop
-    # tightens; they are kept only so the dashboard can show the contrast.
     risk_size = sizing.calc_risk_based_size(price, sl, tp) if direction else None
     capital_for_target = (sizing.capital_needed_for_profit(
         price, sl, tp, CONFIG['TARGET_PROFIT_INR_MIN']) if direction else None)
@@ -1252,36 +1270,138 @@ def analyze(symbol, timeframe="1m"):
         "symbol": symbol, "timeframe": timeframe, "price": _px(price),
         "rsi": round(rsi_now, 2) if rsi_now is not None else None,
         "signal": signal, "reason": reason,
-        "signal_age_seconds": signal_age_seconds,  # NEW: 0 = just triggered, higher = been active a while
+        "signal_age_seconds": signal_age_seconds,
         "buy_score": buy_score, "sell_score": sell_score, "htf_bias": htf_bias,
         "regime": snap_entry["regime"]["regime"], "structure": snap_entry["structure_event"],
         "exchange": ex_id, "entry": _px(price) if direction else None,
         "tp": tp, "sl": sl, "atr": _px(atr_now) if atr_now else None,
-        "tp_levels": tp_levels,  # IMPROVEMENT #4: partial profit-taking (50/30/20)
-        "risk_size": risk_size,             # THE number to trade off — risk-first
+        "tp_levels": tp_levels,
+        "risk_size": risk_size,
         "capital_needed_for_500": capital_for_target,
-        "suggested_qty_for_min_profit": suggested_qty_min,  # legacy, display-only
-        "suggested_qty_for_max_profit": suggested_qty_max,  # NEW: qty for ~₹1000 net at TP
-        "cvd_pressure": round(snap_entry_tf.get("cvd_pressure", 0.0), 2),  # NEW: Fabio-style aggression proxy (+ve = buy pressure)
-        "blowoff": blowoff_info,  # NEW: parabolic exhaustion state (see blowoff.py)
-        "momentum_pct": momentum_pct,  # NEW: raw % price move, last N candles, NO filters — just "is it moving"
+        "suggested_qty_for_min_profit": suggested_qty_min,
+        "suggested_qty_for_max_profit": suggested_qty_max,
+        "cvd_pressure": round(snap_entry_tf.get("cvd_pressure", 0.0), 2),
+        "blowoff": blowoff_info,
+        "momentum_pct": momentum_pct,
         "momentum_note": momentum_note,
-        "last_candle_pct": last_candle_pct,  # NEW: THIS candle's own move (open to current price)
+        "last_candle_pct": last_candle_pct,
         "last_candle_direction": last_candle_direction,
+        "round_trip_cost_pct": round_trip_cost_pct(),
         "target_profit_range_inr": [CONFIG['TARGET_PROFIT_INR_MIN'], CONFIG['TARGET_PROFIT_INR_MAX']],
         "liquidity": {
             "sweep": snap_entry["sweep"], "fvg": snap_entry["fvg"],
             "dist_to_bull_fvg_pct": round(snap_entry["dist_to_bull_fvg_pct"], 3) if not pd.isna(snap_entry["dist_to_bull_fvg_pct"]) else None,
             "dist_to_bear_fvg_pct": round(snap_entry["dist_to_bear_fvg_pct"], 3) if not pd.isna(snap_entry["dist_to_bear_fvg_pct"]) else None,
-            "bsl_level": round(snap_entry["bsl_level"], 4) if not pd.isna(snap_entry["bsl_level"]) else None,
-            "ssl_level": round(snap_entry["ssl_level"], 4) if not pd.isna(snap_entry["ssl_level"]) else None,
+            "bsl_level": _px(snap_entry["bsl_level"]) if not pd.isna(snap_entry["bsl_level"]) else None,
+            "ssl_level": _px(snap_entry["ssl_level"]) if not pd.isna(snap_entry["ssl_level"]) else None,
             "eq_high_count": snap_entry["eq_high_count"], "eq_low_count": snap_entry["eq_low_count"],
             "inducement": snap_entry["inducement"],
         },
     }
 
 
-def _vectorized_regime(df):
+# ══════════════════════════════════════════════════════════════════════════
+# SHARED BACKTEST EXECUTION + REPORTING
+# ══════════════════════════════════════════════════════════════════════════
+def _simulate_exit(direction, entry, tp, sl, highs, lows, closes, start_j, window, n,
+                   breakeven_dist=None):
+    """FIX v3 (F5, F6): one shared exit simulator, so a fix here applies to
+    every backtest instead of being re-implemented five times with five
+    chances to get it wrong.
+
+    F5 — the STOP is checked before the target. Previously every loop tested
+    TP first, so a candle whose range covered both levels was recorded as a
+    WIN. With TP 2.2 ATR and SL 0.8 ATR the two are only 3 ATR apart, and a
+    single volatile bar spans that regularly. Without knowing the intrabar
+    path the honest assumption is the adverse one.
+
+    F6 — trades that resolve neither way are closed at market on the last bar
+    of the window and returned as TIMEOUT, instead of being dropped. The old
+    `if outcome == "OPEN": continue` deleted precisely the trades that chop
+    sideways and pay the full round-trip fee for nothing.
+    """
+    current_sl = sl
+    sl_moved = False
+    for j in range(start_j, min(start_j + window, n)):
+        fh, fl = highs[j], lows[j]
+
+        if breakeven_dist is not None and not sl_moved:
+            if direction == "BUY" and fh >= entry + breakeven_dist:
+                current_sl = entry; sl_moved = True
+            elif direction == "SELL" and fl <= entry - breakeven_dist:
+                current_sl = entry; sl_moved = True
+
+        if direction == "BUY":
+            if fl <= current_sl:
+                return ("BREAKEVEN" if sl_moved else "LOSS"), current_sl, j
+            if fh >= tp:
+                return "WIN", tp, j
+        else:
+            if fh >= current_sl:
+                return ("BREAKEVEN" if sl_moved else "LOSS"), current_sl, j
+            if fl <= tp:
+                return "WIN", tp, j
+
+    last_j = min(start_j + window, n) - 1
+    return "TIMEOUT", closes[last_j], last_j
+
+
+def _net_pnl_pct(direction, entry, exit_price):
+    """FIX v3 (F4): round-trip cost, not a single-sided fee."""
+    gross = ((exit_price - entry) / entry * 100 if direction == "BUY"
+             else (entry - exit_price) / entry * 100)
+    return gross - round_trip_cost_pct()
+
+
+def _summarize(results, symbol, timeframe, candles, blocked_by_cost=0, extra=None):
+    """FIX v3 (F11, F16): candles is the measured length of the data actually
+    returned, and the number of setups killed by the cost gate is reported so
+    a low trade count is explainable rather than mysterious.
+
+    Wins/losses are classified by net P&L sign, not by the outcome label, so
+    a TIMEOUT that ended slightly green counts as a win and a BREAKEVEN that
+    still paid fees counts as a loss — which is what actually happened to the
+    account."""
+    base = {"symbol": symbol, "timeframe": timeframe, "candles_tested": candles,
+            "blocked_by_cost_gate": blocked_by_cost,
+            "round_trip_cost_pct": round_trip_cost_pct()}
+    if extra:
+        base.update(extra)
+
+    if not results:
+        base.update({"total_trades": 0, "win_rate": 0,
+                     "message": "No signals in this window"})
+        return base
+
+    total = len(results)
+    wins = [r for r in results if r["pnl_pct"] > 0]
+    losses = [r for r in results if r["pnl_pct"] <= 0]
+    timeouts = [r for r in results if r["outcome"] == "TIMEOUT"]
+
+    gross_profit = sum(r["pnl_pct"] for r in wins) if wins else 0.0
+    gross_loss = abs(sum(r["pnl_pct"] for r in losses)) if losses else 0.0
+    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
+    avg_win = round(gross_profit / len(wins), 4) if wins else 0.0
+    avg_loss = round(gross_loss / len(losses), 4) if losses else 0.0
+    win_rate = round(len(wins) / total * 100, 1)
+    expectancy = round(sum(r["pnl_pct"] for r in results) / total, 4)
+
+    base.update({
+        "total_trades": total,
+        "wins": len(wins), "losses": len(losses), "timeouts": len(timeouts),
+        "win_rate": win_rate,
+        "profit_factor": profit_factor,
+        "expectancy_pct": expectancy,
+        "avg_win_pct": avg_win, "avg_loss_pct": avg_loss,
+        "avg_rr": round(avg_win / avg_loss, 2) if avg_loss > 0 else None,
+        "recent_trades": results[-10:],
+    })
+    return base
+
+
+def _vectorized_regime(df, eff_cfg=None):
+    """FIX v3 (F12): honours the per-asset ADX_MIN, same as detect_market_regime."""
+    eff_cfg = eff_cfg if eff_cfg is not None else CONFIG
     atr = calc_atr(df, CONFIG['ATR_PERIOD'])
     atr_ma = atr.rolling(CONFIG['ATR_MA_PERIOD']).mean()
     ci = calc_choppiness_index(df, CONFIG['CHOPPINESS_PERIOD'])
@@ -1289,13 +1409,14 @@ def _vectorized_regime(df):
     atr_ratio = atr / atr_ma.replace(0, np.nan)
     is_compressed = atr_ratio < CONFIG['ATR_COMPRESSION_RATIO']
     is_choppy = ci > CONFIG['CHOPPINESS_TREND_MAX']
-    is_trending = adx >= CONFIG['ADX_MIN']
+    is_trending = adx >= eff_cfg['ADX_MIN']
     regime = pd.Series("RANGING", index=df.index)
     regime[is_trending & ~is_choppy & ~is_compressed] = "TRENDING"
     regime[is_compressed] = "COMPRESSION"
     return regime, ci, adx
 
-def _build_tf_features(df):
+
+def _build_tf_features(df, eff_cfg=None):
     df = add_indicators_vectorized(df)
     df = detect_candle_patterns_vectorized(df)
     df = detect_pro_divergence_vectorized(df)
@@ -1305,9 +1426,10 @@ def _build_tf_features(df):
     df = detect_bsl_ssl_zones(df, CONFIG['BSL_SSL_LOOKBACK'])
     df = calc_equal_level_density(df, CONFIG['BSL_SSL_LOOKBACK'], CONFIG['EQUAL_LEVEL_TOLERANCE_PCT'])
     df = detect_inducement(df, CONFIG['INDUCEMENT_MINOR_LOOKBACK'])
-    regime, ci, adx_full = _vectorized_regime(df)
+    regime, ci, adx_full = _vectorized_regime(df, eff_cfg=eff_cfg)
     df["regime_label"] = regime
     return df
+
 
 def _htf_bias_series_single(df15):
     weight = 1.0
@@ -1317,18 +1439,27 @@ def _htf_bias_series_single(df15):
     s += np.where(df15["rsi"] > 55, weight * 0.3, np.where(df15["rsi"] < 45, -weight * 0.3, 0.0))
     s += np.where(df15["sweep_v"] == "EQUAL_LOW_SWEEP", 0.5, np.where(df15["sweep_v"] == "EQUAL_HIGH_SWEEP", -0.5, 0.0))
     s += np.where(df15["inducement"] == "BULL_INDUCEMENT", 0.3, np.where(df15["inducement"] == "BEAR_INDUCEMENT", -0.3, 0.0))
+
+    # FIX v3 (F10): shift by one bar before this series is merged onto a
+    # faster timeframe. The DataFrame index is the candle's OPEN time, but
+    # every value on that row (ema5, rsi, structure_trend, sweep) is computed
+    # through the candle's CLOSE. merge_asof(direction="backward") matches a
+    # 5m bar at 10:05 to the 15m row labelled 10:00 — whose contents do not
+    # exist until 10:15. That is ten minutes of future information feeding
+    # the entry decision, and it is why backtest results looked usable while
+    # live did not. Shifting means each bar only ever sees the last fully
+    # completed 15m candle.
+    s = s.shift(1)
+
     bias = np.where(s >= 0.9, "BULLISH", np.where(s <= -0.9, "BEARISH", "NEUTRAL"))
     return pd.Series(bias, index=df15.index, name="bias")
 
-# FIX #4 applied here too: removed RSI mean-reversion bonus from vectorized scorer
+
 def _ltf_score_series(df1m, df5m):
     def score_component(df, w):
         buy = pd.Series(0.0, index=df.index); sell = pd.Series(0.0, index=df.index)
         buy += np.where(df["pat_sig"] == "BUY", 2 * w, 0.0)
         sell += np.where(df["pat_sig"] == "SELL", 2 * w, 0.0)
-        # Same regime discount as get_ltf_scores() and run_backtest(). This
-        # path is used by run_backtest_full(); leaving it undiscounted would
-        # reintroduce a live-vs-backtest scoring mismatch.
         _dw = np.where(df["regime_label"] == "TRENDING",
                        CONFIG['DIV_TRENDING_WEIGHT'], CONFIG['DIV_RANGING_WEIGHT']) \
               if "regime_label" in df.columns else 1.0
@@ -1345,24 +1476,35 @@ def _ltf_score_series(df1m, df5m):
         sell += np.where(df["close"] <= df["vwap"], 0.5 * w, 0.0)
         buy += np.where(df["ema5"] > df["ema20"], 0.5 * w, 0.0)
         sell += np.where(df["ema5"] <= df["ema20"], 0.5 * w, 0.0)
-        # RSI mean-reversion bonus removed (FIX #4)
         liq_b, liq_s = _liquidity_score_vectorized(df, w)
         buy += liq_b; sell += liq_s
         return buy, sell
 
     b1, s1 = score_component(df1m, 1.0)
     b5, s5 = score_component(df5m, 1.2)
+
+    # FIX v3 (F10): same open-time / close-value mismatch as the bias series.
+    # The 5m contribution is shifted so a 1m bar never reads a 5m candle that
+    # has not finished forming.
+    b5, s5 = b5.shift(1), s5.shift(1)
+
     out1m = pd.DataFrame({"time": df1m.index, "b1": b1.values, "s1": s1.values})
     out5m = pd.DataFrame({"time": df5m.index, "b5": b5.values, "s5": s5.values})
     merged = pd.merge_asof(out1m.sort_values("time"), out5m.sort_values("time"), on="time", direction="backward")
-    merged["buy_score"] = round((merged["b1"] + merged["b5"]), 2)
-    merged["sell_score"] = round((merged["s1"] + merged["s5"]), 2)
+    merged["buy_score"] = (merged["b1"] + merged["b5"].fillna(0)).round(2)
+    merged["sell_score"] = (merged["s1"] + merged["s5"].fillna(0)).round(2)
     merged = merged.set_index("time")
     return merged[["buy_score", "sell_score"]]
 
-# FIX #2: this now genuinely mirrors decide_direction() — both 1m AND 5m
-# regime must be TRENDING (COMPRESSION and RANGING both block), matching live.
+
 def run_backtest_full(symbol, entry_timeframe="5m"):
+    """Multi-timeframe backtest.
+
+    STILL NOT AT FULL LIVE PARITY: the confluence gate, the CVD check and the
+    blow-off veto that live analyze() applies are not replicated here, so this
+    remains more permissive than live. run_backtest() below is the closer
+    proxy. Do not treat these numbers as a live forecast."""
+    eff_cfg = get_effective_config(symbol)
     limit = CONFIG['BACKTEST_CANDLES']
     df_entry, ex_id = fetch_ohlcv_failover(symbol, entry_timeframe, limit)
     df_1m, _ = fetch_ohlcv_failover(symbol, "1m", limit)
@@ -1371,23 +1513,28 @@ def run_backtest_full(symbol, entry_timeframe="5m"):
     if any(x is None for x in [df_entry, df_1m, df_5m, df_15m]):
         return {"error": "insufficient data across timeframes (need 1m/5m/15m)"}
 
-    df_entry = _build_tf_features(df_entry)
-    df_1m = _build_tf_features(df_1m)
-    df_5m = _build_tf_features(df_5m)
-    df_15m = _build_tf_features(df_15m)
+    df_entry = _build_tf_features(df_entry, eff_cfg=eff_cfg)
+    df_1m = _build_tf_features(df_1m, eff_cfg=eff_cfg)
+    df_5m = _build_tf_features(df_5m, eff_cfg=eff_cfg)
+    df_15m = _build_tf_features(df_15m, eff_cfg=eff_cfg)
 
     bias_series = _htf_bias_series_single(df_15m)
     score_df = _ltf_score_series(df_1m, df_5m)
 
-    # FIX #2: align BOTH 1m and 5m regime labels onto entry timeframe index
     regime_1m_series = df_1m[["regime_label"]].rename(columns={"regime_label": "regime_1m"})
     regime_5m_series = df_5m[["regime_label"]].rename(columns={"regime_label": "regime_5m"})
 
     entry_times = pd.DataFrame({"time": df_entry.index})
-    bias_aligned = pd.merge_asof(entry_times, bias_series.rename("bias").reset_index(), on="time", direction="backward")
-    score_aligned = pd.merge_asof(entry_times, score_df.reset_index(), on="time", direction="backward")
-    regime1_aligned = pd.merge_asof(entry_times, regime_1m_series.reset_index().rename(columns={"timestamp": "time"}), on="time", direction="backward")
-    regime5_aligned = pd.merge_asof(entry_times, regime_5m_series.reset_index().rename(columns={"timestamp": "time"}), on="time", direction="backward")
+
+    def _asof(right_df):
+        r = right_df.reset_index()
+        r.columns = ["time"] + list(r.columns[1:])
+        return pd.merge_asof(entry_times, r.sort_values("time"), on="time", direction="backward")
+
+    bias_aligned = _asof(bias_series.rename("bias").to_frame())
+    score_aligned = _asof(score_df)
+    regime1_aligned = _asof(regime_1m_series)
+    regime5_aligned = _asof(regime_5m_series)
 
     df_entry = df_entry.reset_index()
     df_entry["bias"] = bias_aligned["bias"]
@@ -1396,94 +1543,70 @@ def run_backtest_full(symbol, entry_timeframe="5m"):
     df_entry["regime_1m"] = regime1_aligned["regime_1m"]
     df_entry["regime_5m"] = regime5_aligned["regime_5m"]
 
+    opens = df_entry["open"].values
     closes = df_entry["close"].values
     highs = df_entry["high"].values
     lows = df_entry["low"].values
     n = len(df_entry)
     WINDOW = CONFIG['BACKTEST_OUTCOME_WINDOW']
     results = []
+    blocked_by_cost = 0
 
-    for i in range(60, n - WINDOW):
+    # FIX v3 (F7): stop one bar earlier because the entry now happens on bar i+1.
+    for i in range(60, n - WINDOW - 1):
         row = df_entry.iloc[i]
         rsi, adx, atr = row["rsi"], row["adx"], row["atr"]
-        if pd.isna(adx) or adx < CONFIG['ADX_MIN']: continue
+        if pd.isna(adx) or adx < eff_cfg['ADX_MIN']: continue
         if pd.isna(rsi): continue
         if pd.isna(atr): continue
 
         buy_score, sell_score = row["buy_score"], row["sell_score"]
         if pd.isna(buy_score) or pd.isna(sell_score): continue
-        # FIX: matches decide_direction() — only block the entry that would be
-        # CHASING the RSI extreme, not both directions uniformly.
         if rsi > CONFIG['RSI_OVERBOUGHT'] and buy_score >= sell_score: continue
         if rsi < CONFIG['RSI_OVERSOLD'] and sell_score >= buy_score: continue
         gap = abs(buy_score - sell_score)
-        if gap < CONFIG['SCORE_GAP_MIN']: continue
+        if gap < eff_cfg['SCORE_GAP_MIN']: continue
 
-        # FIX #2: both timeframes must be TRENDING, exactly like decide_direction()
         if row["regime_1m"] != "TRENDING" or row["regime_5m"] != "TRENDING":
             continue
 
         bias = row["bias"]
         direction = None
-        if buy_score >= CONFIG['SCORE_THRESHOLD'] and buy_score > sell_score and bias in ("BULLISH", "NEUTRAL"):
+        # FIX v3 (F8): NEUTRAL no longer authorises both sides, matching live.
+        if buy_score >= CONFIG['SCORE_THRESHOLD'] and buy_score > sell_score and bias == "BULLISH":
             direction = "BUY"
-        elif sell_score >= CONFIG['SCORE_THRESHOLD'] and sell_score > buy_score and bias in ("BEARISH", "NEUTRAL"):
+        elif sell_score >= CONFIG['SCORE_THRESHOLD'] and sell_score > buy_score and bias == "BEARISH":
             direction = "SELL"
         if direction is None: continue
 
-        price = closes[i]
-        tp, sl = calc_tp_sl(direction, price, atr)
+        # FIX v3 (F7): fill at the next bar's open. The close of the signal
+        # bar is not knowable until that bar has ended.
+        entry = opens[i + 1]
+        tp, sl = calc_tp_sl(direction, entry, atr)
         if tp is None: continue
 
-        outcome, exit_price = "OPEN", None
-        for j in range(i + 1, min(i + WINDOW + 1, n)):
-            fh, fl = highs[j], lows[j]
-            if direction == "BUY":
-                if fh >= tp: outcome, exit_price = "WIN", tp; break
-                if fl <= sl: outcome, exit_price = "LOSS", sl; break
-            else:
-                if fl <= tp: outcome, exit_price = "WIN", tp; break
-                if fh >= sl: outcome, exit_price = "LOSS", sl; break
-        if outcome == "OPEN": continue
+        if not cost_gate(entry, tp):
+            blocked_by_cost += 1
+            continue
 
-        pnl_pct = ((exit_price - price) / price * 100 if direction == "BUY"
-                   else (price - exit_price) / price * 100) - CONFIG['FEE_PCT']
+        outcome, exit_price, _j = _simulate_exit(
+            direction, entry, tp, sl, highs, lows, closes, i + 1, WINDOW, n)
+
         results.append({
             "time": row["timestamp"].strftime("%m-%d %H:%M") if "timestamp" in row else str(row.name),
-            "direction": direction, "entry": _px(price), "tp": _px(tp), "sl": _px(sl),
-            "outcome": outcome, "pnl_pct": round(pnl_pct, 4),
+            "direction": direction, "entry": _px(entry), "tp": _px(tp), "sl": _px(sl),
+            "outcome": outcome, "pnl_pct": round(_net_pnl_pct(direction, entry, exit_price), 4),
         })
 
-    if not results:
-        return {"symbol": symbol, "timeframe": entry_timeframe, "total_trades": 0,
-                "win_rate": 0, "message": "No signals in this window"}
-
-    wins = [r for r in results if r["outcome"] == "WIN"]
-    losses = [r for r in results if r["outcome"] == "LOSS"]
-    total = len(wins) + len(losses)
-    gross_profit = sum(r["pnl_pct"] for r in wins) if wins else 0.0
-    gross_loss = abs(sum(r["pnl_pct"] for r in losses)) if losses else 0.0
-    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
-    avg_win = round(gross_profit / len(wins), 4) if wins else 0.0
-    avg_loss = round(gross_loss / len(losses), 4) if losses else 0.0
-    win_rate = round(len(wins) / total * 100, 1) if total > 0 else 0
-    expectancy = round((win_rate / 100 * avg_win) - ((1 - win_rate / 100) * avg_loss), 4)
-    avg_rr = round(avg_win / avg_loss, 2) if avg_loss > 0 else None
-
-    return {
-        "symbol": symbol, "timeframe": entry_timeframe, "candles_tested": limit,
-        "total_trades": total, "wins": len(wins), "losses": len(losses),
-        "win_rate": win_rate, "profit_factor": profit_factor,
-        "expectancy_pct": expectancy, "avg_rr": avg_rr,
-        "recent_trades": results[-10:],
-        "note": "FIXED v2: now requires BOTH 1m and 5m regime==TRENDING, matching live decide_direction() exactly.",
-    }
+    return _summarize(results, symbol, entry_timeframe, len(df_entry),
+                      blocked_by_cost=blocked_by_cost,
+                      extra={"note": "v3: SL-first fills, next-bar-open entry, timeout trades counted, "
+                                     "round-trip cost, HTF lookahead removed. Confluence/CVD/blowoff "
+                                     "gates still NOT replicated here — see docstring."})
 
 
-# FIX #1: run_backtest() (fast single-timeframe) now applies the regime
-# filter so it's no longer looser than live. Previously only ADX+RSI gated it.
 def run_backtest(symbol, timeframe="5m"):
-    eff_cfg = get_effective_config(symbol)  # NEW: per-asset threshold overrides, kept in sync with live analyze()
+    eff_cfg = get_effective_config(symbol)
     df, ex_id = fetch_ohlcv_failover(symbol, timeframe, CONFIG['BACKTEST_CANDLES'])
     if df is None:
         return {"error": "no data"}
@@ -1493,20 +1616,10 @@ def run_backtest(symbol, timeframe="5m"):
     df = detect_pro_divergence_vectorized(df)
     df = detect_structure_live_pro(df, CONFIG['SWING_LOOKBACK'])
     df["sweep_v"] = detect_liquidity_sweep_vectorized(df, CONFIG['LIQUIDITY_SWEEP_LOOKBACK'])
-    bo_df = blowoff_series(df, symbol=symbol)  # NEW: causal, computed once, no lookahead
+    bo_df = blowoff_series(df, symbol=symbol)
     df = compute_active_fvg_series(df, CONFIG['FVG_MIN_GAP_PCT'])
     df = calc_equal_level_density(df, CONFIG['BSL_SSL_LOOKBACK'], CONFIG['EQUAL_LEVEL_TOLERANCE_PCT'])
-    # FIX (live/backtest parity): the confluence gate awards +1.5 when the
-    # entry timeframe's EMA trend AGREES with the confirmation timeframe's.
-    # This loop only ever had ONE timeframe and passed the same snapshot in
-    # twice -- so the comparison was always "equal to itself" and the +1.5 was
-    # granted on EVERY bar. Live only grants it when the two timeframes really
-    # agree, so the backtest was systematically 1.5 points more permissive and
-    # took setups that live blocks.
-    #
-    # Build the confirmation timeframe by resampling (no extra network call),
-    # then shift(1) so each bar only ever sees the last COMPLETED higher
-    # timeframe candle. Without the shift this would leak future closes.
+
     _confirm_tf = TIMEFRAME_CONFIRM_MAP.get(timeframe)
     _confirm_rule = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}.get(_confirm_tf)
     if _confirm_rule:
@@ -1517,55 +1630,53 @@ def run_backtest(symbol, timeframe="5m"):
         df["htf_ema5"] = df["ema5"]
         df["htf_ema20"] = df["ema20"]
     df = detect_inducement(df, CONFIG['INDUCEMENT_MINOR_LOOKBACK'])
-    regime_series, _, _ = _vectorized_regime(df)  # FIX #1
+    regime_series, _, _ = _vectorized_regime(df, eff_cfg=eff_cfg)   # FIX v3 (F12)
     df["regime_label"] = regime_series
     liq_buy_s, liq_sell_s = _liquidity_score_vectorized(df, w=1.0)
     df["liq_buy"] = liq_buy_s
     df["liq_sell"] = liq_sell_s
-    cvd_pressure_series = calc_recent_cvd_pressure(df)  # NEW: sync with live CVD confirmation
-    df["sweep"] = df["sweep_v"]  # calc_confluence_score expects this key name
+    cvd_pressure_series = calc_recent_cvd_pressure(df)
+    df["sweep"] = df["sweep_v"]
 
+    opens = df["open"].values
     closes = df["close"].values
     highs = df["high"].values
     lows = df["low"].values
     n = len(df)
     results = []
+    blocked_by_cost = 0
     WINDOW = CONFIG['BACKTEST_OUTCOME_WINDOW']
 
-    for i in range(60, n - WINDOW):
+    for i in range(60, n - WINDOW - 1):
         rsi = df["rsi"].iloc[i]; adx = df["adx"].iloc[i]; atr = df["atr"].iloc[i]
         ema5 = df["ema5"].iloc[i]; ema20 = df["ema20"].iloc[i]; vwap = df["vwap"].iloc[i]
         pat = df["pat_sig"].iloc[i]; div = df["divergence"].iloc[i]; struct = df["structure_event"].iloc[i]
-        price = closes[i]
+        price_sig = closes[i]
 
         if pd.isna(adx) or adx < eff_cfg['ADX_MIN']: continue
         if pd.isna(rsi): continue
         if pd.isna(atr): continue
-        if df["regime_label"].iloc[i] != "TRENDING": continue  # FIX #1
+        if df["regime_label"].iloc[i] != "TRENDING": continue
 
         buy_score, sell_score = 0.0, 0.0
         if pat == "BUY": buy_score += 2
         elif pat == "SELL": sell_score += 2
-        # Mirrors the regime discount applied in get_ltf_scores(). Kept
-        # identical on purpose — divergence weighting drifting between the
-        # live and backtest paths is exactly the class of bug fixed before.
         dw = divergence_weight(df["regime_label"].iloc[i])
         if div == "BULL_DIV": buy_score += 3 * dw
         elif div == "BEAR_DIV": sell_score += 3 * dw
         if struct in ("BOS_BULL", "CHoCH_BULL"): buy_score += 2
         elif struct in ("BOS_BEAR", "CHoCH_BEAR"): sell_score += 2
         if not pd.isna(vwap):
-            if price > vwap: buy_score += 0.5
+            if price_sig > vwap: buy_score += 0.5
             else: sell_score += 0.5
-        if ema5 > ema20: buy_score += 0.5
-        else: sell_score += 0.5
-        # RSI mean-reversion bonus removed (FIX #4)
+        # FIX v3 (F9): NaN EMA no longer defaults to a sell vote.
+        if pd.notna(ema5) and pd.notna(ema20):
+            if ema5 > ema20: buy_score += 0.5
+            else: sell_score += 0.5
 
         buy_score += df["liq_buy"].iloc[i]
         sell_score += df["liq_sell"].iloc[i]
 
-        # FIX: matches decide_direction() — only block the entry that would be
-        # CHASING the RSI extreme, not both directions uniformly.
         if rsi > CONFIG['RSI_OVERBOUGHT'] and buy_score >= sell_score: continue
         if rsi < CONFIG['RSI_OVERSOLD'] and sell_score >= buy_score: continue
 
@@ -1577,16 +1688,9 @@ def run_backtest(symbol, timeframe="5m"):
         elif sell_score >= CONFIG['SCORE_THRESHOLD'] and sell_score > buy_score: direction = "SELL"
         if direction is None: continue
 
-        # NEW: blow-off veto — MATCHES live analyze(). Precomputed above.
         if not blowoff_gate_row(direction, bo_df, i)[0]:
             continue
 
-        # NEW: confluence gate — MATCHES live decide_direction(), which was
-        # missing here entirely. This was the single biggest live-vs-backtest
-        # mismatch: live blocks ~most setups on "Low confluence", but this
-        # backtest was scoring EVERY setup that passed score/gap, regardless
-        # of confluence — so backtest results didn't reflect what live signals
-        # actually looked like.
         snap_i = {
             "pattern": pat, "structure_event": struct, "divergence": div,
             "sweep": df["sweep"].iloc[i],
@@ -1597,12 +1701,11 @@ def run_backtest(symbol, timeframe="5m"):
         _h5 = df["htf_ema5"].iloc[i]
         _h20 = df["htf_ema20"].iloc[i]
         if pd.isna(_h5) or pd.isna(_h20):
-            _h5, _h20 = ema5, ema20     # not enough history yet -- fall back
+            _h5, _h20 = ema5, ema20
         confluence_score = calc_confluence_score(snap_i, {"ema5": _h5, "ema20": _h20})
         if confluence_score < eff_cfg['MIN_CONFLUENCE_SCORE']:
             continue
 
-        # NEW: CVD confirmation — matches live decide_direction().
         cvd_val = cvd_pressure_series.iloc[i]
         if not pd.isna(cvd_val):
             if direction == "BUY" and cvd_val < -CONFIG['CVD_PRESSURE_MIN_ABS']:
@@ -1610,56 +1713,38 @@ def run_backtest(symbol, timeframe="5m"):
             if direction == "SELL" and cvd_val > CONFIG['CVD_PRESSURE_MIN_ABS']:
                 continue
 
-        tp, sl = calc_tp_sl(direction, price, atr)
+        entry = opens[i + 1]                       # FIX v3 (F7)
+        tp, sl = calc_tp_sl(direction, entry, atr)
         if tp is None: continue
 
-        outcome, exit_price = "OPEN", None
-        for j in range(i + 1, min(i + WINDOW + 1, n)):
-            fh, fl = highs[j], lows[j]
-            if direction == "BUY":
-                if fh >= tp: outcome, exit_price = "WIN", tp; break
-                if fl <= sl: outcome, exit_price = "LOSS", sl; break
-            else:
-                if fl <= tp: outcome, exit_price = "WIN", tp; break
-                if fh >= sl: outcome, exit_price = "LOSS", sl; break
-        if outcome == "OPEN": continue
+        if not cost_gate(entry, tp):               # FIX v3 (F3)
+            blocked_by_cost += 1
+            continue
 
-        pnl_pct = ((exit_price - price) / price * 100 if direction == "BUY"
-                   else (price - exit_price) / price * 100) - CONFIG['FEE_PCT']
+        outcome, exit_price, _j = _simulate_exit(
+            direction, entry, tp, sl, highs, lows, closes, i + 1, WINDOW, n)
+
         results.append({
             "time": df.index[i].strftime("%m-%d %H:%M"),
-            "direction": direction, "entry": _px(price), "tp": _px(tp), "sl": _px(sl),
-            "outcome": outcome, "pnl_pct": round(pnl_pct, 4),
+            "direction": direction, "entry": _px(entry), "tp": _px(tp), "sl": _px(sl),
+            "outcome": outcome, "pnl_pct": round(_net_pnl_pct(direction, entry, exit_price), 4),
         })
 
-    if not results:
-        return {"symbol": symbol, "timeframe": timeframe, "total_trades": 0,
-                "win_rate": 0, "message": "No signals in this window"}
-
-    wins = [r for r in results if r["outcome"] == "WIN"]
-    losses = [r for r in results if r["outcome"] == "LOSS"]
-    total = len(wins) + len(losses)
-    gross_profit = sum(r["pnl_pct"] for r in wins) if wins else 0.0
-    gross_loss = abs(sum(r["pnl_pct"] for r in losses)) if losses else 0.0
-    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
-    avg_win = round(gross_profit / len(wins), 4) if wins else 0.0
-    avg_loss = round(gross_loss / len(losses), 4) if losses else 0.0
-    win_rate = round(len(wins) / total * 100, 1) if total > 0 else 0
-    expectancy = round((win_rate / 100 * avg_win) - ((1 - win_rate / 100) * avg_loss), 4)
-    avg_rr = round(avg_win / avg_loss, 2) if avg_loss > 0 else None
-
-    return {
-        "symbol": symbol, "timeframe": timeframe, "candles_tested": CONFIG['BACKTEST_CANDLES'],
-        "total_trades": total, "wins": len(wins), "losses": len(losses),
-        "win_rate": win_rate, "profit_factor": profit_factor,
-        "expectancy_pct": expectancy, "avg_rr": avg_rr,
-        "recent_trades": results[-10:],
-        "note": "FIXED v2: now requires regime==TRENDING, matching live filter (was missing in v1).",
-    }
+    return _summarize(results, symbol, timeframe, len(df),
+                      blocked_by_cost=blocked_by_cost,
+                      extra={"note": "v3: closest proxy for live. SL-first fills, next-bar-open "
+                                     "entry, timeouts counted, round-trip cost, cost gate."})
 
 
-# ── Factor isolation backtest — includes Equal-Level Density (FIX #3) ─
 def run_factor_backtest(symbol, timeframe="5m"):
+    """Which single factors actually carry edge on their own.
+
+    With v3's honest fills (stop first, next-bar entry, timeouts counted,
+    real cost) expect these numbers to be materially worse than before. That
+    difference was never edge — it was measurement error. Keep only factors
+    that clear profit factor 1.2 on a decent sample and drop the rest from
+    the composite score."""
+    eff_cfg = get_effective_config(symbol)
     limit = CONFIG['BACKTEST_CANDLES']
     df, ex_id = fetch_ohlcv_failover(symbol, timeframe, limit)
     if df is None:
@@ -1672,49 +1757,48 @@ def run_factor_backtest(symbol, timeframe="5m"):
     df["sweep_v"] = detect_liquidity_sweep_vectorized(df, CONFIG['LIQUIDITY_SWEEP_LOOKBACK'])
     df = compute_active_fvg_series(df, CONFIG['FVG_MIN_GAP_PCT'])
     df = detect_inducement(df, CONFIG['INDUCEMENT_MINOR_LOOKBACK'])
-    df = calc_equal_level_density(df, CONFIG['BSL_SSL_LOOKBACK'], CONFIG['EQUAL_LEVEL_TOLERANCE_PCT'])  # FIX #3
+    df = calc_equal_level_density(df, CONFIG['BSL_SSL_LOOKBACK'], CONFIG['EQUAL_LEVEL_TOLERANCE_PCT'])
 
-    closes = df["close"].values; highs = df["high"].values; lows = df["low"].values
+    opens = df["open"].values
+    closes = df["close"].values
+    highs = df["high"].values
+    lows = df["low"].values
     n = len(df); WINDOW = CONFIG['BACKTEST_OUTCOME_WINDOW']
 
     def simulate(direction_fn, label):
         results = []
-        for i in range(60, n - WINDOW):
+        blocked = 0
+        for i in range(60, n - WINDOW - 1):
             atr = df["atr"].iloc[i]
             if pd.isna(atr): continue
             direction = direction_fn(i)
             if direction is None: continue
-            price = closes[i]
-            tp, sl = calc_tp_sl(direction, price, atr)
+            entry = opens[i + 1]                   # FIX v3 (F7)
+            tp, sl = calc_tp_sl(direction, entry, atr)
             if tp is None: continue
-            outcome, exit_price = "OPEN", None
-            for j in range(i + 1, min(i + WINDOW + 1, n)):
-                fh, fl = highs[j], lows[j]
-                if direction == "BUY":
-                    if fh >= tp: outcome, exit_price = "WIN", tp; break
-                    if fl <= sl: outcome, exit_price = "LOSS", sl; break
-                else:
-                    if fl <= tp: outcome, exit_price = "WIN", tp; break
-                    if fh >= sl: outcome, exit_price = "LOSS", sl; break
-            if outcome == "OPEN": continue
-            pnl_pct = ((exit_price - price) / price * 100 if direction == "BUY"
-                       else (price - exit_price) / price * 100) - CONFIG['FEE_PCT']
-            results.append({"outcome": outcome, "pnl_pct": pnl_pct})
+            if not cost_gate(entry, tp):           # FIX v3 (F3)
+                blocked += 1
+                continue
+            outcome, exit_price, _j = _simulate_exit(
+                direction, entry, tp, sl, highs, lows, closes, i + 1, WINDOW, n)
+            results.append({"outcome": outcome,
+                            "pnl_pct": _net_pnl_pct(direction, entry, exit_price)})
 
-        wins = [r for r in results if r["outcome"] == "WIN"]
-        losses = [r for r in results if r["outcome"] == "LOSS"]
-        total = len(wins) + len(losses)
-        if total == 0:
-            return {"label": label, "total_trades": 0, "note": "no signals"}
+        if not results:
+            return {"label": label, "total_trades": 0, "blocked_by_cost_gate": blocked,
+                    "note": "no signals"}
+
+        total = len(results)
+        wins = [r for r in results if r["pnl_pct"] > 0]
+        losses = [r for r in results if r["pnl_pct"] <= 0]
         gross_profit = sum(r["pnl_pct"] for r in wins) if wins else 0.0
         gross_loss = abs(sum(r["pnl_pct"] for r in losses)) if losses else 0.0
         profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
         win_rate = round(len(wins) / total * 100, 1)
-        avg_win = round(gross_profit / len(wins), 4) if wins else 0.0
-        avg_loss = round(gross_loss / len(losses), 4) if losses else 0.0
-        expectancy = round((win_rate / 100 * avg_win) - ((1 - win_rate / 100) * avg_loss), 4)
+        expectancy = round(sum(r["pnl_pct"] for r in results) / total, 4)
         return {"label": label, "total_trades": total, "wins": len(wins), "losses": len(losses),
-                "win_rate": win_rate, "profit_factor": profit_factor, "expectancy_pct": expectancy}
+                "win_rate": win_rate, "profit_factor": profit_factor,
+                "expectancy_pct": expectancy, "blocked_by_cost_gate": blocked}
 
     def f_sweep(i):
         s = df["sweep_v"].iloc[i]
@@ -1760,8 +1844,6 @@ def run_factor_backtest(symbol, timeframe="5m"):
         if ind == "BEAR_INDUCEMENT": return "SELL"
         return None
 
-    # FIX #3: new standalone factor — crowded equal-high/low pool without a
-    # sweep signal itself; tests whether density alone (not the sweep) has edge.
     def f_equal_level_density(i):
         eqh = df["eq_high_count"].iloc[i] or 0
         eql = df["eq_low_count"].iloc[i] or 0
@@ -1771,7 +1853,8 @@ def run_factor_backtest(symbol, timeframe="5m"):
         return None
 
     return {
-        "symbol": symbol, "timeframe": timeframe, "candles_tested": limit,
+        "symbol": symbol, "timeframe": timeframe, "candles_tested": len(df),
+        "round_trip_cost_pct": round_trip_cost_pct(),
         "factors": [
             simulate(f_sweep, "1. Liquidity Sweep (BSL/SSL) only"),
             simulate(f_structure, "2. Structure Break (BOS/CHoCH) only"),
@@ -1780,7 +1863,7 @@ def run_factor_backtest(symbol, timeframe="5m"):
             simulate(f_ema_baseline, "5. EMA Crossover (baseline)"),
             simulate(f_fvg, "6. Fair Value Gap (FVG) proximity only"),
             simulate(f_inducement, "7. Inducement wick-trap only"),
-            simulate(f_equal_level_density, "8. Equal-Level Density only (NEW)"),
+            simulate(f_equal_level_density, "8. Equal-Level Density only"),
         ]
     }
 
@@ -1789,46 +1872,48 @@ def run_factor_backtest(symbol, timeframe="5m"):
 # RISK MANAGEMENT MODULE
 # ══════════════════════════════════════════════════════════════════════════
 class RiskManager:
-    """
-    Tracks daily P&L in-memory and enforces:
-      - position sizing based on a fixed % risk per trade
-      - a daily loss circuit breaker (stop suggesting new trades for the day)
-      - a leverage sanity cap
-      - a max concurrent positions cap
-    This does NOT place orders — it only computes sizes and yes/no gates.
-    You still execute manually (or wire this into your own order logic).
-    """
+    """Computes sizes and yes/no gates. Does NOT place orders."""
+
     def __init__(self, account_capital_usdt):
         self.capital = account_capital_usdt
         self.daily_pnl_pct = 0.0
         self.trades_today = []
         self.open_positions = 0
+        self.consecutive_losses = 0   # FIX v3 (F15)
 
     def reset_day(self):
         self.daily_pnl_pct = 0.0
         self.trades_today = []
+        self.consecutive_losses = 0
 
     def record_trade_result(self, pnl_pct_of_capital):
-        """Call after a trade closes. pnl_pct_of_capital = pnl in % of total account capital."""
         self.daily_pnl_pct += pnl_pct_of_capital
         self.trades_today.append(pnl_pct_of_capital)
+        # FIX v3 (F15): MAX_CONSECUTIVE_LOSSES was declared in CONFIG and
+        # referenced nowhere in the entire file. Tilt after a losing streak is
+        # the most expensive failure mode in discretionary scalping, and the
+        # guard that was supposed to catch it did not exist.
+        if pnl_pct_of_capital <= 0:
+            self.consecutive_losses += 1
+        else:
+            self.consecutive_losses = 0
 
     def circuit_breaker_tripped(self):
         return self.daily_pnl_pct <= -abs(CONFIG['MAX_DAILY_LOSS_PCT'])
 
     def can_open_new_position(self):
         if self.circuit_breaker_tripped():
-            return False, f"Daily loss limit hit ({self.daily_pnl_pct:.2f}% <= -{CONFIG['MAX_DAILY_LOSS_PCT']}%). No more trades today."
+            return False, (f"Daily loss limit hit ({self.daily_pnl_pct:.2f}% <= "
+                           f"-{CONFIG['MAX_DAILY_LOSS_PCT']}%). No more trades today.")
+        if self.consecutive_losses >= CONFIG['MAX_CONSECUTIVE_LOSSES']:
+            return False, (f"{self.consecutive_losses} losses in a row "
+                           f"(limit {CONFIG['MAX_CONSECUTIVE_LOSSES']}). Stop and review "
+                           f"before the next entry.")
         if self.open_positions >= CONFIG['MAX_CONCURRENT_POSITIONS']:
             return False, f"Max concurrent positions ({CONFIG['MAX_CONCURRENT_POSITIONS']}) already open."
         return True, "OK"
 
     def position_size(self, entry_price, sl_price, leverage=1):
-        """
-        Returns qty (in base asset units, e.g. BTC) sized so that if SL hits,
-        loss = RISK_PCT_PER_TRADE % of account capital. Ignores fees/slippage
-        (add a buffer yourself, e.g. size slightly smaller than this).
-        """
         leverage = min(leverage, CONFIG['MAX_LEVERAGE'])
         risk_amount_usdt = self.capital * (CONFIG['RISK_PCT_PER_TRADE'] / 100)
         sl_distance = abs(entry_price - sl_price)
@@ -1847,10 +1932,6 @@ class RiskManager:
         }
 
     def evaluate_signal(self, signal_dict, leverage=1):
-        """
-        Convenience wrapper: takes the dict returned by analyze() and returns
-        whether to take it + suggested sizing, respecting the circuit breaker.
-        """
         ok, reason = self.can_open_new_position()
         if not ok:
             return {"take_trade": False, "reason": reason}
@@ -1859,43 +1940,20 @@ class RiskManager:
         entry = signal_dict.get("entry"); sl = signal_dict.get("sl")
         if entry is None or sl is None:
             return {"take_trade": False, "reason": "Missing entry/SL in signal."}
-        sizing = self.position_size(entry, sl, leverage=leverage)
-        return {"take_trade": True, "sizing": sizing, "signal": signal_dict}
+        size = self.position_size(entry, sl, leverage=leverage)
+        return {"take_trade": True, "sizing": size, "signal": signal_dict}
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# ORDER FLOW PROXY MODULE — Fabio Valentino style (approximated from OHLCV)
+# ORDER FLOW PROXY MODULE — approximated from OHLCV
 # ══════════════════════════════════════════════════════════════════════════
-# ⚠️ See CONFIG note above: this is an OHLCV-based approximation of order
-# flow concepts (CVD, absorption/aggression, LVN retest, squeeze), built
-# because fetch_ohlcv() has no real bid/ask tape or footprint data. Use it
-# as a research proxy, not a substitute for an actual order-flow platform.
-
 def calc_recent_cvd_pressure(df, lookback=None):
-    """
-    Short-window CVD pressure proxy — inspired by Fabio Valentino's use of
-    CVD as a leading pressure indicator to confirm entries and breakeven
-    moves. NOT real tape/Level-2 data (that can't be reconstructed from
-    OHLCV candles) — this sums the shape-based delta_proxy (Chaikin-style
-    close-location-within-range * volume) over the last `lookback` candles.
-    Positive = net buy-side pressure recently, negative = net sell-side
-    pressure. Treat as an approximation, not the real thing.
-    """
     lookback = lookback or CONFIG['CVD_PRESSURE_LOOKBACK']
     df = calc_candle_delta_proxy(df)
     return df["delta_proxy"].rolling(lookback).sum()
 
 
 def calc_candle_delta_proxy(df):
-    """
-    Proxy for per-candle buy/sell aggression ('delta') using the classic
-    Chaikin Money-Flow-Multiplier idea:
-        mfm = ((close - low) - (high - close)) / (high - low)
-        delta_proxy = mfm * volume
-    mfm is +1 when the candle closes at its high (all buy aggression),
-    -1 when it closes at its low (all sell aggression), 0 if it closes
-    mid-range. This is NOT real tape delta, just a shape-based estimate.
-    """
     df = df.copy()
     rng = (df["high"] - df["low"]).replace(0, np.nan)
     mfm = ((df["close"] - df["low"]) - (df["high"] - df["close"])) / rng
@@ -1903,24 +1961,15 @@ def calc_candle_delta_proxy(df):
     df["delta_proxy"] = mfm * df["volume"]
     return df
 
+
 def calc_cvd_proxy(df):
-    """Session-reset cumulative delta proxy (like session VWAP, but for delta)."""
     df = calc_candle_delta_proxy(df)
     day = df.index.date
     df["cvd_proxy"] = pd.Series(df["delta_proxy"].values, index=df.index).groupby(day).cumsum()
     return df
 
+
 def detect_absorption_proxy(df, vol_mult=None, body_max_pct=None):
-    """
-    Absorption proxy: unusually large volume but a small real body relative
-    to the candle's range = "punching a wall" (aggression got absorbed by
-    resting limit orders instead of pushing price further).
-    Returns a Series of '' / 'BULL_ABSORPTION' / 'BEAR_ABSORPTION'.
-    BULL_ABSORPTION: heavy volume, small body, closes in upper half -> sellers
-      tried to push down and got absorbed (potential bullish reversal/hold).
-    BEAR_ABSORPTION: heavy volume, small body, closes in lower half -> buyers
-      tried to push up and got absorbed.
-    """
     vol_mult = vol_mult or CONFIG['OF_ABSORPTION_VOL_MULT']
     body_max_pct = body_max_pct or CONFIG['OF_ABSORPTION_BODY_MAX_PCT']
     df = df.copy()
@@ -1936,13 +1985,8 @@ def detect_absorption_proxy(df, vol_mult=None, body_max_pct=None):
     sig[is_big_vol & is_small_body & closes_lower] = 'BEAR_ABSORPTION'
     return sig
 
+
 def build_volume_profile_nodes(df, lookback=None, bins=None, lvn_pctl=None, hvn_pctl=None):
-    """
-    Builds a volume profile over the lookback window and classifies bins as
-    POC / HVN (High Volume Node) / LVN (Low Volume Node) based on percentile
-    thresholds of volume-per-bin. Returns dict with poc, hvn_levels, lvn_levels
-    (each level = midpoint price of that bin).
-    """
     lookback = lookback or CONFIG['OF_VP_LOOKBACK']
     bins = bins or CONFIG['OF_VP_BINS']
     lvn_pctl = lvn_pctl if lvn_pctl is not None else CONFIG['OF_LVN_PCTL']
@@ -1969,31 +2013,28 @@ def build_volume_profile_nodes(df, lookback=None, bins=None, lvn_pctl=None, hvn_
         return {"poc": None, "hvn_levels": [], "lvn_levels": []}
 
     poc_idx = int(np.argmax(vol_per_bin))
-    poc_price = round(float(bin_mid[poc_idx]), 4)
+    poc_price = _px(bin_mid[poc_idx])
 
     vols_nonzero = vol_per_bin[nonzero_mask]
     lvn_thresh = np.percentile(vols_nonzero, lvn_pctl)
     hvn_thresh = np.percentile(vols_nonzero, hvn_pctl)
 
-    lvn_levels = sorted(round(float(p), 4) for p, v in zip(bin_mid, vol_per_bin)
-                         if 0 < v <= lvn_thresh)
-    hvn_levels = sorted(round(float(p), 4) for p, v in zip(bin_mid, vol_per_bin)
-                         if v >= hvn_thresh)
+    lvn_levels = sorted(_px(p) for p, v in zip(bin_mid, vol_per_bin)
+                        if 0 < v <= lvn_thresh)
+    hvn_levels = sorted(_px(p) for p, v in zip(bin_mid, vol_per_bin)
+                        if v >= hvn_thresh)
 
     return {"poc": poc_price, "hvn_levels": hvn_levels, "lvn_levels": lvn_levels}
 
+
 def in_session(ts):
-    """
-    Fabio trades New York + London high-volatility sessions only.
-    ts: pandas Timestamp (assumed UTC-naive from exchange data, treated as UTC).
-    """
     hour = ts.hour
     ny = CONFIG['OF_SESSION_NY_START_UTC'] <= hour < CONFIG['OF_SESSION_NY_END_UTC']
     ldn = CONFIG['OF_SESSION_LDN_START_UTC'] <= hour < CONFIG['OF_SESSION_LDN_END_UTC']
     return ny or ldn, ("NY" if ny else ("LDN" if ldn else None))
 
+
 def _nearest_level(price, levels, tol_pct):
-    """Return nearest level within tol_pct of price, else None."""
     if not levels:
         return None
     for lvl in levels:
@@ -2003,17 +2044,8 @@ def _nearest_level(price, levels, tol_pct):
             return lvl
     return None
 
+
 def detect_second_drive_setup(df, vp_nodes, breakout_lookback=None, max_bars=None, tol_pct=None):
-    """
-    Fabio's 'wait for breakout, don't chase first drive, enter on retest of
-    LVN with fresh aggression' pattern, approximated on OHLCV:
-      1. Detect a breakout of the recent balance range (prior N-bar high/low).
-      2. Within max_bars afterwards, look for the price coming back to
-         retest a nearby LVN level (support/resistance handoff zone).
-      3. Confirm with delta_proxy aggression in the breakout direction AND
-         rising volume on the retest bar (bubbles-like confirmation).
-    Returns (direction, reason) or (None, reason).
-    """
     breakout_lookback = breakout_lookback or CONFIG['OF_BREAKOUT_LOOKBACK']
     max_bars = max_bars or CONFIG['OF_SECOND_DRIVE_MAX_BARS']
     tol_pct = tol_pct or CONFIG['OF_RETEST_TOL_PCT']
@@ -2060,13 +2092,8 @@ def detect_second_drive_setup(df, vp_nodes, breakout_lookback=None, max_bars=Non
         return breakout_dir, f"SECOND DRIVE {breakout_dir} @ LVN retest {nearest_lvn}"
     return None, "Retest found but aggression/delta not confirming yet"
 
+
 def detect_squeeze_proxy(df, atr_series):
-    """
-    Squeeze model proxy: trapped side gets forced out -> a sudden
-    range-expansion candle (range >> ATR) with volume spike, in the
-    direction that breaks a recent swing level. Approximates the
-    "acceleration" Fabio describes when stops from the losing side cluster.
-    """
     if len(df) < 25 or atr_series is None or len(atr_series) < 25:
         return None, "Not enough data for squeeze scan"
 
@@ -2093,31 +2120,22 @@ def detect_squeeze_proxy(df, atr_series):
         return "SELL", f"SQUEEZE SHORT — range {candle_range:.4f} >= {CONFIG['OF_SQUEEZE_ATR_MULT']}x ATR, vol spike"
     return None, "Expansion bar but no clean break of prior swing level"
 
+
 def calc_orderflow_sl(direction, df, atr):
-    """
-    SL placed just beyond the recent swing high/low (proxy for 'aggression
-    bubble + 1-2 ticks'), buffered by OF_SL_BUFFER_TICKS_PCT to avoid getting
-    clipped by slippage on the acceleration move.
-    """
     lookback = df.tail(10)
     buffer_pct = CONFIG['OF_SL_BUFFER_TICKS_PCT'] / 100
     if direction == "BUY":
         swing_low = lookback["low"].min()
-        return round(swing_low * (1 - buffer_pct), 4)
+        return _px(swing_low * (1 - buffer_pct))
     if direction == "SELL":
         swing_high = lookback["high"].max()
-        return round(swing_high * (1 + buffer_pct), 4)
+        return _px(swing_high * (1 + buffer_pct))
     return None
 
+
 def apply_breakeven_trigger(direction, entry_price, current_high, current_low, atr, sl, cvd_pressure=None):
-    """
-    Once price has moved OF_BREAKEVEN_TRIGGER_ATR_MULT * ATR in favor,
-    move SL to break-even (entry_price). Returns the (possibly) updated SL.
-    """
     trigger_dist = atr * CONFIG['OF_BREAKEVEN_TRIGGER_ATR_MULT']
     if direction == "BUY" and current_high >= entry_price + trigger_dist:
-        # NEW: matches Fabio's rule — only go risk-free once CVD pressure also
-        # confirms the move (price distance alone can be a fake-out wick).
         if cvd_pressure is None or cvd_pressure >= -CONFIG['CVD_PRESSURE_MIN_ABS']:
             return max(sl, entry_price)
     if direction == "SELL" and current_low <= entry_price - trigger_dist:
@@ -2127,12 +2145,6 @@ def apply_breakeven_trigger(direction, entry_price, current_high, current_low, a
 
 
 class OrderFlowRiskManager(RiskManager):
-    """
-    Extends RiskManager with Fabio's "risk the house money, not the original
-    equity" idea: base risk stays small (0.25%) on the account's core capital;
-    once the day is in profit, size the NEXT trade's risk off the larger
-    house-money percentage instead, while the core capital risk stays capped.
-    """
     def __init__(self, account_capital_usdt):
         super().__init__(account_capital_usdt)
 
@@ -2163,16 +2175,16 @@ class OrderFlowRiskManager(RiskManager):
 
 
 def analyze_orderflow(symbol, entry_timeframe="1m", structure_timeframe="5m"):
-    """
-    Main live entry point for the Fabio-style order-flow-proxy strategy.
-    Combines: session filter -> balance/consolidation via volume profile ->
-    second-drive retest OR squeeze trigger -> delta/absorption confirmation
-    -> SL beyond swing level -> TP at POC / prior balance area.
-    """
     df_entry, ex_id = fetch_ohlcv_failover(symbol, entry_timeframe, CONFIG['LIMIT'])
     df_5m, _ = fetch_ohlcv_failover(symbol, structure_timeframe, CONFIG['LIMIT'])
     if df_entry is None or df_5m is None:
         return {"symbol": symbol, "error": "no data"}
+
+    # FIX v3 (F2): closed candles only, same rule as analyze().
+    df_entry = _drop_forming_candle(df_entry)
+    df_5m = _drop_forming_candle(df_5m)
+    if df_entry is None or len(df_entry) < 30:
+        return {"symbol": symbol, "error": "not enough closed candles"}
 
     now_ts = df_entry.index[-1]
     session_ok, session_name = in_session(now_ts)
@@ -2187,8 +2199,8 @@ def analyze_orderflow(symbol, entry_timeframe="1m", structure_timeframe="5m"):
     if not session_ok:
         return {
             "symbol": symbol, "timeframe": entry_timeframe, "signal": "WAIT",
-            "reason": "Outside NY/London high-volatility session — Fabio skips this",
-            "session": session_name, "price": round(float(df_entry["close"].iloc[-1]), 4),
+            "reason": "Outside NY/London high-volatility session",
+            "session": session_name, "price": _px(df_entry["close"].iloc[-1]),
         }
 
     price = float(df_entry["close"].iloc[-1])
@@ -2215,26 +2227,40 @@ def analyze_orderflow(symbol, entry_timeframe="1m", structure_timeframe="5m"):
     else:
         tp, _ = calc_tp_sl(direction, price, atr_now)
 
+    # FIX v3 (F3): POC can sit on the wrong side of price, or close enough to
+    # it that the trade cannot pay its own fees. Both were being returned as
+    # live signals.
+    if tp is None or (direction == "BUY" and tp <= price) or (direction == "SELL" and tp >= price):
+        return {
+            "symbol": symbol, "timeframe": entry_timeframe, "signal": "WAIT",
+            "reason": "Target (POC) is on the wrong side of price",
+            "session": session_name, "price": _px(price), "vp_nodes": vp_nodes,
+        }
+    if not cost_gate(price, tp):
+        edge = abs(tp - price) / price * 100
+        return {
+            "symbol": symbol, "timeframe": entry_timeframe, "signal": "WAIT",
+            "reason": (f"BLOCKED (edge {edge:.3f}% < {CONFIG['MIN_TP_COST_RATIO']}x "
+                       f"round-trip cost {round_trip_cost_pct()}%)"),
+            "session": session_name, "price": _px(price), "vp_nodes": vp_nodes,
+        }
+
     return {
         "symbol": symbol, "timeframe": entry_timeframe, "signal": direction,
         "setup_type": setup_type, "reason": reason, "session": session_name,
         "price": _px(price), "entry": _px(price),
-        "sl": sl, "tp": round(tp, 4) if tp is not None else None,
+        "sl": sl, "tp": _px(tp),
         "atr": _px(atr_now),
         "cvd_proxy": round(float(df_entry["cvd_proxy"].iloc[-1]), 2),
         "absorption": df_entry["absorption"].iloc[-1] or None,
         "vp_nodes": vp_nodes,
         "exchange": ex_id,
-        "note": "OHLCV-based order-flow PROXY — not real tape/footprint data. Forward-test on paper first.",
+        "round_trip_cost_pct": round_trip_cost_pct(),
+        "note": "OHLCV-based order-flow PROXY — not real tape/footprint data. Paper trade first.",
     }
 
 
 def run_orderflow_backtest(symbol, entry_timeframe="1m", structure_timeframe="5m"):
-    """
-    Backtests the order-flow proxy strategy (second-drive + squeeze),
-    with session filtering and break-even management, mirroring
-    analyze_orderflow()'s logic bar-by-bar.
-    """
     limit = CONFIG['BACKTEST_CANDLES']
     df_entry, ex_id = fetch_ohlcv_failover(symbol, entry_timeframe, limit)
     df_5m, _ = fetch_ohlcv_failover(symbol, structure_timeframe, limit)
@@ -2244,8 +2270,9 @@ def run_orderflow_backtest(symbol, entry_timeframe="1m", structure_timeframe="5m
     df_entry = add_indicators_vectorized(df_entry)
     df_entry = calc_cvd_proxy(df_entry)
     atr_series = calc_atr(df_entry, CONFIG['ATR_PERIOD'])
-    cvd_pressure_series = calc_recent_cvd_pressure(df_entry)  # NEW: for breakeven CVD confirmation
+    cvd_pressure_series = calc_recent_cvd_pressure(df_entry)
 
+    opens = df_entry["open"].values
     closes = df_entry["close"].values
     highs = df_entry["high"].values
     lows = df_entry["low"].values
@@ -2253,8 +2280,9 @@ def run_orderflow_backtest(symbol, entry_timeframe="1m", structure_timeframe="5m
     WINDOW = CONFIG['BACKTEST_OUTCOME_WINDOW']
     min_lookback = CONFIG['OF_BREAKOUT_LOOKBACK'] + CONFIG['OF_SECOND_DRIVE_MAX_BARS'] + 25
     results = []
+    blocked_by_cost = 0
 
-    for i in range(min_lookback, n - WINDOW):
+    for i in range(min_lookback, n - WINDOW - 1):
         ts = df_entry.index[i]
         session_ok, session_name = in_session(ts)
         if not session_ok:
@@ -2278,61 +2306,51 @@ def run_orderflow_backtest(symbol, entry_timeframe="1m", structure_timeframe="5m
         if pd.isna(atr_now) or atr_now <= 0:
             continue
 
-        price = closes[i]
+        entry = opens[i + 1]                       # FIX v3 (F7)
         sl = calc_orderflow_sl(direction, sub_df, atr_now)
         poc = vp_nodes.get("poc")
-        tp = poc if poc is not None else (price + atr_now * CONFIG['TP_ATR_MULT'] if direction == "BUY"
-                                           else price - atr_now * CONFIG['TP_ATR_MULT'])
+        tp = poc if poc is not None else (entry + atr_now * CONFIG['TP_ATR_MULT'] if direction == "BUY"
+                                          else entry - atr_now * CONFIG['TP_ATR_MULT'])
         if sl is None or tp is None:
             continue
-        # Sanity: TP must be on the correct side of entry
-        if direction == "BUY" and tp <= price:
+        if direction == "BUY" and (tp <= entry or sl >= entry):
             continue
-        if direction == "SELL" and tp >= price:
+        if direction == "SELL" and (tp >= entry or sl <= entry):
+            continue
+        if not cost_gate(entry, tp):               # FIX v3 (F3)
+            blocked_by_cost += 1
             continue
 
+        # Breakeven management, then the shared SL-first exit simulator.
         current_sl = sl
-        outcome, exit_price = "OPEN", None
-        for j in range(i + 1, min(i + WINDOW + 1, n)):
+        outcome, exit_price, _j = None, None, None
+        for j in range(i + 1, min(i + 1 + WINDOW, n)):
             fh, fl = highs[j], lows[j]
-            current_sl = apply_breakeven_trigger(direction, price, fh, fl, atr_now, current_sl,
-                                                  cvd_pressure=cvd_pressure_series.iloc[j])
+            current_sl = apply_breakeven_trigger(direction, entry, fh, fl, atr_now, current_sl,
+                                                 cvd_pressure=cvd_pressure_series.iloc[j])
+            # FIX v3 (F5): stop first.
             if direction == "BUY":
-                if fh >= tp: outcome, exit_price = "WIN", tp; break
                 if fl <= current_sl:
-                    outcome = "BREAKEVEN" if current_sl >= price else "LOSS"
+                    outcome = "BREAKEVEN" if current_sl >= entry else "LOSS"
                     exit_price = current_sl; break
+                if fh >= tp:
+                    outcome, exit_price = "WIN", tp; break
             else:
-                if fl <= tp: outcome, exit_price = "WIN", tp; break
                 if fh >= current_sl:
-                    outcome = "BREAKEVEN" if current_sl <= price else "LOSS"
+                    outcome = "BREAKEVEN" if current_sl <= entry else "LOSS"
                     exit_price = current_sl; break
-        if outcome == "OPEN":
-            continue
+                if fl <= tp:
+                    outcome, exit_price = "WIN", tp; break
+        if outcome is None:                        # FIX v3 (F6)
+            outcome = "TIMEOUT"
+            exit_price = closes[min(i + WINDOW, n - 1)]
 
-        pnl_pct = ((exit_price - price) / price * 100 if direction == "BUY"
-                   else (price - exit_price) / price * 100) - CONFIG['FEE_PCT']
         results.append({
             "time": df_entry.index[i].strftime("%m-%d %H:%M"), "session": session_name,
             "setup": setup_type, "direction": direction,
-            "entry": _px(price), "tp": _px(tp), "sl": _px(sl),
-            "outcome": outcome, "pnl_pct": round(pnl_pct, 4),
+            "entry": _px(entry), "tp": _px(tp), "sl": _px(sl),
+            "outcome": outcome, "pnl_pct": round(_net_pnl_pct(direction, entry, exit_price), 4),
         })
-
-    if not results:
-        return {"symbol": symbol, "timeframe": entry_timeframe, "total_trades": 0,
-                "win_rate": 0, "message": "No order-flow-proxy signals in this window"}
-
-    wins = [r for r in results if r["outcome"] in ("WIN", "BREAKEVEN") and r["pnl_pct"] > 0]
-    losses = [r for r in results if r["pnl_pct"] <= 0]
-    total = len(results)
-    gross_profit = sum(r["pnl_pct"] for r in wins) if wins else 0.0
-    gross_loss = abs(sum(r["pnl_pct"] for r in losses)) if losses else 0.0
-    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
-    win_rate = round(len(wins) / total * 100, 1) if total > 0 else 0
-    avg_win = round(gross_profit / len(wins), 4) if wins else 0.0
-    avg_loss = round(gross_loss / len(losses), 4) if losses else 0.0
-    expectancy = round((win_rate / 100 * avg_win) - ((1 - win_rate / 100) * avg_loss), 4)
 
     by_setup = {}
     for r in results:
@@ -2340,29 +2358,16 @@ def run_orderflow_backtest(symbol, entry_timeframe="1m", structure_timeframe="5m
     setup_breakdown = {}
     for k, rs in by_setup.items():
         w = [r for r in rs if r["pnl_pct"] > 0]
-        setup_breakdown[k] = {
-            "trades": len(rs),
-            "win_rate": round(len(w) / len(rs) * 100, 1) if rs else 0,
-        }
+        setup_breakdown[k] = {"trades": len(rs),
+                              "win_rate": round(len(w) / len(rs) * 100, 1) if rs else 0}
 
-    return {
-        "symbol": symbol, "timeframe": entry_timeframe, "candles_tested": limit,
-        "total_trades": total, "wins": len(wins), "losses": len(losses),
-        "win_rate": win_rate, "profit_factor": profit_factor,
-        "expectancy_pct": expectancy, "setup_breakdown": setup_breakdown,
-        "recent_trades": results[-10:],
-        "note": "OHLCV-based order-flow PROXY backtest — no real tape/footprint data was used. "
-                "Treat results as directional research, not a guarantee.",
-    }
+    return _summarize(results, symbol, entry_timeframe, len(df_entry),
+                      blocked_by_cost=blocked_by_cost,
+                      extra={"setup_breakdown": setup_breakdown,
+                             "note": "OHLCV-based order-flow PROXY backtest — no real tape data."})
 
 
-# ── COMBINED FACTOR BACKTEST (votes include FVG + Inducement) ─
 def run_combined_backtest(symbol, timeframe="5m", min_agree=2, strong_adx=25, use_breakeven=True):
-    """
-    Trade only when >= min_agree factors agree on direction, AND adx >= strong_adx.
-    Factors voting: Liquidity Sweep, Structure Break, Divergence, Candle Pattern,
-    EMA crossover, FVG proximity, Inducement.
-    """
     limit = CONFIG['BACKTEST_CANDLES']
     df, ex_id = fetch_ohlcv_failover(symbol, timeframe, limit)
     if df is None:
@@ -2376,12 +2381,14 @@ def run_combined_backtest(symbol, timeframe="5m", min_agree=2, strong_adx=25, us
     df = compute_active_fvg_series(df, CONFIG['FVG_MIN_GAP_PCT'])
     df = detect_inducement(df, CONFIG['INDUCEMENT_MINOR_LOOKBACK'])
 
+    opens = df["open"].values
     closes = df["close"].values
     highs = df["high"].values
     lows = df["low"].values
     n = len(df)
     WINDOW = CONFIG['BACKTEST_OUTCOME_WINDOW']
     results = []
+    blocked_by_cost = 0
 
     def get_factor_votes(i):
         votes = []
@@ -2411,7 +2418,7 @@ def run_combined_backtest(symbol, timeframe="5m", min_agree=2, strong_adx=25, us
         elif ind == "BEAR_INDUCEMENT": votes.append("SELL")
         return votes
 
-    for i in range(60, n - WINDOW):
+    for i in range(60, n - WINDOW - 1):
         adx = df["adx"].iloc[i]
         atr = df["atr"].iloc[i]
         if pd.isna(adx) or pd.isna(atr): continue
@@ -2428,65 +2435,29 @@ def run_combined_backtest(symbol, timeframe="5m", min_agree=2, strong_adx=25, us
             direction = "SELL"
         if direction is None: continue
 
-        price = closes[i]
-        tp, sl = calc_tp_sl(direction, price, atr)
+        entry = opens[i + 1]                       # FIX v3 (F7)
+        tp, sl = calc_tp_sl(direction, entry, atr)
         if tp is None: continue
+        if not cost_gate(entry, tp):               # FIX v3 (F3)
+            blocked_by_cost += 1
+            continue
 
-        breakeven_dist = atr * 0.5
-        sl_moved = False
-        current_sl = sl
+        breakeven_dist = (atr * 0.5) if use_breakeven else None
+        outcome, exit_price, _j = _simulate_exit(
+            direction, entry, tp, sl, highs, lows, closes, i + 1, WINDOW, n,
+            breakeven_dist=breakeven_dist)
 
-        outcome, exit_price = "OPEN", None
-        for j in range(i + 1, min(i + WINDOW + 1, n)):
-            fh, fl = highs[j], lows[j]
-            if use_breakeven and not sl_moved:
-                if direction == "BUY" and fh >= price + breakeven_dist:
-                    current_sl = price; sl_moved = True
-                elif direction == "SELL" and fl <= price - breakeven_dist:
-                    current_sl = price; sl_moved = True
-            if direction == "BUY":
-                if fh >= tp: outcome, exit_price = "WIN", tp; break
-                if fl <= current_sl:
-                    outcome = "BREAKEVEN" if sl_moved else "LOSS"
-                    exit_price = current_sl; break
-            else:
-                if fl <= tp: outcome, exit_price = "WIN", tp; break
-                if fh >= current_sl:
-                    outcome = "BREAKEVEN" if sl_moved else "LOSS"
-                    exit_price = current_sl; break
-        if outcome == "OPEN": continue
-
-        pnl_pct = ((exit_price - price) / price * 100 if direction == "BUY"
-                   else (price - exit_price) / price * 100) - CONFIG['FEE_PCT']
         results.append({
             "time": df.index[i].strftime("%m-%d %H:%M"),
-            "direction": direction, "entry": _px(price), "tp": _px(tp), "sl": _px(sl),
-            "outcome": outcome, "pnl_pct": round(pnl_pct, 4), "votes": votes,
+            "direction": direction, "entry": _px(entry), "tp": _px(tp), "sl": _px(sl),
+            "outcome": outcome, "pnl_pct": round(_net_pnl_pct(direction, entry, exit_price), 4),
+            "votes": votes,
         })
 
-    if not results:
-        return {"symbol": symbol, "timeframe": timeframe, "total_trades": 0,
-                "win_rate": 0, "message": "No signals — try lowering min_agree or strong_adx"}
-
-    wins = [r for r in results if r["outcome"] in ("WIN", "BREAKEVEN") and r["pnl_pct"] > 0]
-    losses = [r for r in results if r["pnl_pct"] <= 0]
-    total = len(results)
-    gross_profit = sum(r["pnl_pct"] for r in wins) if wins else 0.0
-    gross_loss = abs(sum(r["pnl_pct"] for r in losses)) if losses else 0.0
-    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
-    win_rate = round(len(wins) / total * 100, 1) if total > 0 else 0
-    avg_win = round(gross_profit / len(wins), 4) if wins else 0.0
-    avg_loss = round(gross_loss / len(losses), 4) if losses else 0.0
-    expectancy = round((win_rate / 100 * avg_win) - ((1 - win_rate / 100) * avg_loss), 4)
-
-    return {
-        "symbol": symbol, "timeframe": timeframe, "candles_tested": limit,
-        "min_agree": min_agree, "strong_adx": strong_adx, "use_breakeven": use_breakeven,
-        "total_trades": total, "wins": len(wins), "losses": len(losses),
-        "win_rate": win_rate, "profit_factor": profit_factor,
-        "expectancy_pct": expectancy,
-        "recent_trades": results[-10:],
-    }
+    return _summarize(results, symbol, timeframe, len(df),
+                      blocked_by_cost=blocked_by_cost,
+                      extra={"min_agree": min_agree, "strong_adx": strong_adx,
+                             "use_breakeven": use_breakeven})
 
 
 # ── FUNDING RATE FACTOR ──────────────────────────────────────
@@ -2497,6 +2468,7 @@ try:
     _funding_exchange = _ccxt_funding.okx({'enableRateLimit': True, 'timeout': 15000})
 except Exception:
     _funding_exchange = None
+
 
 def fetch_funding_rate_history(symbol="BTC/USDT:USDT", limit=500):
     if _funding_exchange is None:
@@ -2524,11 +2496,13 @@ def fetch_funding_rate_history(symbol="BTC/USDT:USDT", limit=500):
 
 
 def run_funding_rate_backtest(symbol="BTC/USDT:USDT", price_timeframe="15m", funding_symbol="BTC/USDT:USDT"):
-    """
-    Isolated test: does extreme funding rate predict mean-reversion?
-    SELL when funding is extremely positive (crowded longs), BUY when extremely negative.
-    Uses percentile-based thresholds (top/bottom 15% of funding rate distribution).
-    """
+    """Does extreme funding predict mean reversion?
+
+    NOTE ON A REMAINING BIAS: the percentile thresholds are computed from the
+    WHOLE sample, including bars in the future relative to each trade. That is
+    a mild look-ahead — at bar i you could not have known the eventual 85th
+    percentile. For a rough factor probe it is acceptable; if this factor ever
+    graduates into the live score, switch to an expanding-window quantile."""
     limit = CONFIG['BACKTEST_CANDLES']
     price_df, ex_id = fetch_ohlcv_failover(symbol, price_timeframe, limit)
     if price_df is None:
@@ -2543,7 +2517,7 @@ def run_funding_rate_backtest(symbol="BTC/USDT:USDT", price_timeframe="15m", fun
     price_times = pd.DataFrame({"time": price_df.index})
     funding_reset = funding_df.reset_index().rename(columns={"timestamp": "time"})
     merged = pd.merge_asof(price_times.sort_values("time"), funding_reset.sort_values("time"),
-                            on="time", direction="backward")
+                           on="time", direction="backward")
     merged = merged.set_index("time")
 
     price_df = price_df.copy()
@@ -2556,6 +2530,7 @@ def run_funding_rate_backtest(symbol="BTC/USDT:USDT", price_timeframe="15m", fun
     high_thresh = valid_fr.quantile(0.85)
     low_thresh = valid_fr.quantile(0.15)
 
+    opens = price_df["open"].values
     closes = price_df["close"].values
     highs = price_df["high"].values
     lows = price_df["low"].values
@@ -2564,8 +2539,9 @@ def run_funding_rate_backtest(symbol="BTC/USDT:USDT", price_timeframe="15m", fun
     n = len(price_df)
     WINDOW = CONFIG['BACKTEST_OUTCOME_WINDOW']
     results = []
+    blocked_by_cost = 0
 
-    for i in range(60, n - WINDOW):
+    for i in range(60, n - WINDOW - 1):
         fr = funding_vals[i]
         atr = atrs[i]
         if pd.isna(fr) or pd.isna(atr): continue
@@ -2575,59 +2551,71 @@ def run_funding_rate_backtest(symbol="BTC/USDT:USDT", price_timeframe="15m", fun
         elif fr <= low_thresh: direction = "BUY"
         if direction is None: continue
 
-        price = closes[i]
-        tp, sl = calc_tp_sl(direction, price, atr)
+        entry = opens[i + 1]                       # FIX v3 (F7)
+        tp, sl = calc_tp_sl(direction, entry, atr)
         if tp is None: continue
+        if not cost_gate(entry, tp):               # FIX v3 (F3)
+            blocked_by_cost += 1
+            continue
 
-        outcome, exit_price = "OPEN", None
-        for j in range(i + 1, min(i + WINDOW + 1, n)):
-            fh, fl = highs[j], lows[j]
-            if direction == "BUY":
-                if fh >= tp: outcome, exit_price = "WIN", tp; break
-                if fl <= sl: outcome, exit_price = "LOSS", sl; break
-            else:
-                if fl <= tp: outcome, exit_price = "WIN", tp; break
-                if fh >= sl: outcome, exit_price = "LOSS", sl; break
-        if outcome == "OPEN": continue
+        outcome, exit_price, _j = _simulate_exit(
+            direction, entry, tp, sl, highs, lows, closes, i + 1, WINDOW, n)
 
-        pnl_pct = ((exit_price - price) / price * 100 if direction == "BUY"
-                   else (price - exit_price) / price * 100) - CONFIG['FEE_PCT']
         results.append({
             "time": price_df.index[i].strftime("%m-%d %H:%M"),
-            "direction": direction, "entry": _px(price),
+            "direction": direction, "entry": _px(entry),
             "funding_rate": round(float(fr), 6),
-            "outcome": outcome, "pnl_pct": round(pnl_pct, 4),
+            "outcome": outcome, "pnl_pct": round(_net_pnl_pct(direction, entry, exit_price), 4),
         })
 
-    if not results:
-        return {"symbol": symbol, "total_trades": 0, "message": "No extreme funding signals found"}
-
-    wins = [r for r in results if r["outcome"] == "WIN"]
-    losses = [r for r in results if r["outcome"] == "LOSS"]
-    total = len(wins) + len(losses)
-    gross_profit = sum(r["pnl_pct"] for r in wins) if wins else 0.0
-    gross_loss = abs(sum(r["pnl_pct"] for r in losses)) if losses else 0.0
-    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
-    win_rate = round(len(wins) / total * 100, 1) if total > 0 else 0
-    avg_win = round(gross_profit / len(wins), 4) if wins else 0.0
-    avg_loss = round(gross_loss / len(losses), 4) if losses else 0.0
-    expectancy = round((win_rate / 100 * avg_win) - ((1 - win_rate / 100) * avg_loss), 4)
-
-    return {
-        "symbol": symbol, "timeframe": price_timeframe, "candles_tested": limit,
-        "high_funding_threshold": round(float(high_thresh), 6),
-        "low_funding_threshold": round(float(low_thresh), 6),
-        "total_trades": total, "wins": len(wins), "losses": len(losses),
-        "win_rate": win_rate, "profit_factor": profit_factor,
-        "expectancy_pct": expectancy,
-        "recent_trades": results[-10:],
-        "note": "Tests funding-rate mean-reversion in isolation.",
-    }
+    return _summarize(results, symbol, price_timeframe, len(price_df),
+                      blocked_by_cost=blocked_by_cost,
+                      extra={"high_funding_threshold": round(float(high_thresh), 6),
+                             "low_funding_threshold": round(float(low_thresh), 6),
+                             "note": "Tests funding-rate mean-reversion in isolation."})
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# TUNING TOOLS — NOTE: step2_grid_search() calls run_backtest(), which
-# applies the regime filter (FIX #1) — so grid search results are trustworthy.
+# COST REALITY CHECK — run this before anything else
+# ══════════════════════════════════════════════════════════════════════════
+def cost_reality_check(symbol="BTC/USDT:USDT", timeframes=("1m", "5m", "15m", "1h")):
+    """FIX v3 (F3): the single most useful number in this file.
+
+    For each timeframe it reports the median ATR as a percentage of price, the
+    gross take-profit that TP_ATR_MULT implies, and how many multiples of your
+    round-trip cost that target represents. Any timeframe below
+    MIN_TP_COST_RATIO is not tradeable at your fee level — no signal quality
+    fixes that, because the target is smaller than the toll."""
+    out = []
+    cost = round_trip_cost_pct()
+    for tf in timeframes:
+        df, src = fetch_ohlcv_failover(symbol, tf, 500)
+        if df is None or len(df) < 50:
+            out.append({"timeframe": tf, "error": "no data"})
+            continue
+        atr_pct = float((calc_atr(df, CONFIG['ATR_PERIOD']) / df["close"] * 100).median())
+        tp_pct = CONFIG['TP_ATR_MULT'] * atr_pct
+        sl_pct = CONFIG['SL_ATR_MULT'] * atr_pct
+        ratio = tp_pct / cost if cost > 0 else None
+        # Breakeven win rate with gross TP, gross SL and round-trip cost c:
+        #   p*(TP - c) = (1-p)*(SL + c)  ->  p = (SL + c) / (TP + SL)
+        breakeven_wr = (sl_pct + cost) / (tp_pct + sl_pct) * 100 if (tp_pct + sl_pct) > 0 else None
+        out.append({
+            "timeframe": tf, "source": src,
+            "median_atr_pct": round(atr_pct, 4),
+            "gross_tp_pct": round(tp_pct, 4),
+            "gross_sl_pct": round(sl_pct, 4),
+            "round_trip_cost_pct": cost,
+            "tp_to_cost_ratio": round(ratio, 2) if ratio else None,
+            "breakeven_win_rate_pct": round(breakeven_wr, 1) if breakeven_wr else None,
+            "verdict": ("TRADEABLE" if ratio and ratio >= CONFIG['MIN_TP_COST_RATIO']
+                        else "TOO SMALL — fees eat the target"),
+        })
+    return {"symbol": symbol, "results": out}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TUNING TOOLS
 # ══════════════════════════════════════════════════════════════════════════
 import copy as _copy
 
@@ -2652,9 +2640,9 @@ def step1_factor_report():
             continue
         pf = f.get("profit_factor")
         wr = f.get("win_rate")
-        n = f.get("total_trades")
+        nn = f.get("total_trades")
         verdict = "KEEP" if (pf is not None and pf >= 1.2) else "WEAK/DROP"
-        print(f"  {f['label']:<45} trades={n:<4} win_rate={wr:<6} pf={pf}  {verdict}")
+        print(f"  {f['label']:<45} trades={nn:<4} win_rate={wr:<6} pf={pf}  {verdict}")
         if pf is not None and pf >= 1.2:
             good_factors.append(f['label'])
         else:
@@ -2667,8 +2655,11 @@ def step1_factor_report():
 
 
 def step2_grid_search():
+    """WARNING: this mutates the global CONFIG while it runs. Never call it in
+    the same process as a live scanner — every analyze() during the sweep would
+    be using whatever combination the loop happens to be on."""
     print("\n" + "=" * 70)
-    print(f"STEP 2: Grid search — TP/SL multipliers, ADX_MIN, SCORE_THRESHOLD")
+    print("STEP 2: Grid search — TP/SL multipliers, ADX_MIN, SCORE_THRESHOLD")
     print("=" * 70)
 
     tp_mults = [1.5, 2.0, 2.5, 3.0]
@@ -2682,37 +2673,38 @@ def step2_grid_search():
     total_runs = len(tp_mults) * len(sl_mults) * len(adx_mins) * len(score_thresholds)
     run_count = 0
 
-    for tp in tp_mults:
-        for sl in sl_mults:
-            for adx in adx_mins:
-                for thresh in score_thresholds:
-                    run_count += 1
-                    CONFIG['TP_ATR_MULT'] = tp
-                    CONFIG['SL_ATR_MULT'] = sl
-                    CONFIG['ADX_MIN'] = adx
-                    CONFIG['SCORE_THRESHOLD'] = thresh
-                    CONFIG['SCORE_GAP_MIN'] = round(thresh * 0.6, 1)
+    try:
+        for tp in tp_mults:
+            for sl in sl_mults:
+                for adx in adx_mins:
+                    for thresh in score_thresholds:
+                        run_count += 1
+                        CONFIG['TP_ATR_MULT'] = tp
+                        CONFIG['SL_ATR_MULT'] = sl
+                        CONFIG['ADX_MIN'] = adx
+                        CONFIG['SCORE_THRESHOLD'] = thresh
+                        CONFIG['SCORE_GAP_MIN'] = round(thresh * 0.6, 1)
 
-                    res = run_backtest(TUNE_SYMBOL, timeframe=TUNE_ENTRY_TF)
+                        res = run_backtest(TUNE_SYMBOL, timeframe=TUNE_ENTRY_TF)
 
-                    if res.get("total_trades", 0) < 8:
-                        continue
+                        if res.get("total_trades", 0) < 8:
+                            continue
 
-                    results.append({
-                        "tp_mult": tp, "sl_mult": sl, "adx_min": adx,
-                        "score_threshold": thresh,
-                        "total_trades": res["total_trades"],
-                        "win_rate": res["win_rate"],
-                        "profit_factor": res.get("profit_factor"),
-                        "expectancy_pct": res.get("expectancy_pct"),
-                        "avg_rr": res.get("avg_rr"),
-                    })
+                        results.append({
+                            "tp_mult": tp, "sl_mult": sl, "adx_min": adx,
+                            "score_threshold": thresh,
+                            "total_trades": res["total_trades"],
+                            "win_rate": res["win_rate"],
+                            "profit_factor": res.get("profit_factor"),
+                            "expectancy_pct": res.get("expectancy_pct"),
+                            "avg_rr": res.get("avg_rr"),
+                        })
 
-                    if run_count % 20 == 0:
-                        print(f"  ...{run_count}/{total_runs} combos tested")
-
-    CONFIG.clear()
-    CONFIG.update(original_config)
+                        if run_count % 20 == 0:
+                            print(f"  ...{run_count}/{total_runs} combos tested")
+    finally:
+        CONFIG.clear()
+        CONFIG.update(original_config)
 
     if not results:
         print("\nNo config produced >=8 trades.")
@@ -2721,7 +2713,7 @@ def step2_grid_search():
     results_sorted = sorted(
         results,
         key=lambda r: (r["profit_factor"] if r["profit_factor"] is not None else -999,
-                        r["expectancy_pct"]),
+                       r["expectancy_pct"]),
         reverse=True
     )
 
@@ -2732,6 +2724,10 @@ def step2_grid_search():
               f"{r['total_trades']:<8}{r['win_rate']:<9}{r['profit_factor']:<8}"
               f"{r['expectancy_pct']:<10}{r['avg_rr']:<7}")
 
+    print("\nREMINDER: this is an in-sample sweep over the most recent candles.")
+    print("The top row is the combination that best fits noise you already have.")
+    print("Re-run on a different window before believing any of it.")
+
     return results_sorted
 
 
@@ -2740,7 +2736,7 @@ def step3_apply_best(results_sorted):
         return
     best = results_sorted[0]
     print("\n" + "=" * 70)
-    print("STEP 3: Best config found — paste this into CONFIG at the top of scanner_v2.py")
+    print("STEP 3: Best config found")
     print("=" * 70)
     print(f"""
     'TP_ATR_MULT': {best['tp_mult']},
@@ -2755,16 +2751,20 @@ def step3_apply_best(results_sorted):
 
     if best['profit_factor'] is None or best['profit_factor'] < 1.2:
         print("\nEven the best combo found here is weak (pf < 1.2).")
-        print("That means the current signal factors don't have real edge on this")
-        print("symbol/timeframe/window — tuning TP/SL alone won't fix it.")
+        print("The current signal factors do not have real edge on this")
+        print("symbol/timeframe/window — tuning TP/SL alone will not fix it.")
 
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "live":
+    if len(sys.argv) > 1 and sys.argv[1] == "cost":
+        print("Cost reality check — run this FIRST:")
+        import json as _json
+        print(_json.dumps(cost_reality_check("BTC/USDT:USDT"), indent=2))
+    elif len(sys.argv) > 1 and sys.argv[1] == "live":
         SYMBOL = "BTC/USDT:USDT"
         print(f"Live signal for {SYMBOL}:")
-        sig = analyze(SYMBOL, timeframe="1m")
+        sig = analyze(SYMBOL, timeframe="5m")
         print(sig)
         print("\nRisk-sized example (assume 10,000 USDT capital, 3x leverage):")
         rm = RiskManager(account_capital_usdt=10000)
