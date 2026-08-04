@@ -9,6 +9,8 @@ from scanner import analyze, run_backtest, run_backtest_full, run_factor_backtes
 # new realistic backtest import
 from scanner_fixed import improved_run_backtest
 import math
+import gc
+import os
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "https://niteshmalusare822-coder.github.io"}})
@@ -42,7 +44,19 @@ def home():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok"})
+    """Keepalive target. Also revives the scanner if its thread has died,
+    so an external cron ping is enough to keep the whole thing healthy."""
+    _ensure_scanner()
+    with _DASH_LOCK:
+        return jsonify({
+            "status": "ok",
+            "scanner_alive": _scanner_thread is not None and _scanner_thread.is_alive(),
+            "passes": _DASH["passes"],
+            "last_pass_seconds": _DASH["last_pass_seconds"],
+            "progress": _DASH["progress"],
+            "data_age_seconds": round(time.time() - _DASH["ts"], 1) if _DASH["ts"] else None,
+            "error": _DASH["error"],
+        })
 
 # ── Background dashboard builder ─────────────────────────────
 # Publishes each symbol AS SOON as it finishes instead of waiting for all
@@ -57,9 +71,28 @@ TICKERS = {
     "bank": "BANK/USDT:USDT",
 }
 
-_DASH = {"data": None, "ts": 0.0, "error": None, "progress": "not started", "passes": 0}
+_DASH = {"data": None, "ts": 0.0, "error": None, "progress": "not started",
+         "passes": 0, "last_pass_seconds": None, "thread_alive": False}
 _DASH_LOCK = threading.Lock()
-_SCAN_INTERVAL = 10          # seconds to wait between full passes
+
+# Render's free tier gives 0.1 CPU. A full pass over 4 tickers x 2 timeframes
+# takes minutes there. Sleeping only 10s meant the loop was effectively running
+# back-to-back forever: CPU stayed pinned, Render throttled the container, and
+# the /api/dashboard request itself became slow enough for the browser to time
+# out. Rest is proportional to how long the pass actually took, with a floor.
+_MIN_REST = int(os.environ.get("SCAN_MIN_REST", 60))   # never rest less than this
+_REST_RATIO = 1.0                                      # rest ≈ as long as the pass ran
+_MAX_REST = 300
+
+
+def _pending(tick, tf):
+    """Placeholder so every ticker exists in the payload from the first byte."""
+    return {"symbol": tick, "timeframe": tf, "pending": True}
+
+
+def _blank_dashboard():
+    return {key: {tf: _pending(tick, tf) for tf in ("1m", "5m")}
+            for key, tick in TICKERS.items()}
 
 
 def _log(msg):
@@ -69,7 +102,9 @@ def _log(msg):
 def _publish(key, payload):
     with _DASH_LOCK:
         if _DASH["data"] is None:
-            _DASH["data"] = {}
+            # Seed every ticker so the frontend never receives a payload that
+            # is missing eth/dexe/bank just because btc finished first.
+            _DASH["data"] = _blank_dashboard()
         _DASH["data"][key] = payload
         _DASH["ts"] = time.time()
         _DASH["progress"] = f"{key} updated"
@@ -78,13 +113,21 @@ def _publish(key, payload):
 def _build_dashboard():
     for key, tick in TICKERS.items():
         t0 = time.time()
-        payload = {}
-        for tf in ("1m", "5m"):
-            t1 = time.time()
-            payload[tf] = safe_analyze(tick, tf)
-            _log(f"{key} {tf} took {time.time() - t1:.1f}s")
-        _publish(key, payload)
-        _log(f"{key} published in {time.time() - t0:.1f}s")
+        try:
+            payload = {}
+            for tf in ("1m", "5m"):
+                t1 = time.time()
+                payload[tf] = safe_analyze(tick, tf)
+                _log(f"{key} {tf} took {time.time() - t1:.1f}s")
+            _publish(key, payload)
+            _log(f"{key} published in {time.time() - t0:.1f}s")
+        except Exception as e:
+            # One bad ticker (rate limit, delisted contract, exchange hiccup)
+            # must not take the other three down with it.
+            _log(f"{key} FAILED: {e}")
+            _publish(key, {tf: {"symbol": tick, "timeframe": tf, "error": str(e)}
+                           for tf in ("1m", "5m")})
+            continue
 
         try:
             for tf, p in payload.items():
@@ -95,32 +138,57 @@ def _build_dashboard():
 
 def _refresh_loop():
     _log("background scanner thread started")
+    with _DASH_LOCK:
+        _DASH["thread_alive"] = True
     while True:
         t0 = time.time()
         try:
             _build_dashboard()
+            elapsed = time.time() - t0
             with _DASH_LOCK:
                 _DASH["error"] = None
                 _DASH["passes"] += 1
-            _log(f"full pass complete in {time.time() - t0:.1f}s")
+                _DASH["last_pass_seconds"] = round(elapsed, 1)
+            _log(f"full pass complete in {elapsed:.1f}s")
         except Exception as e:
+            elapsed = time.time() - t0
             with _DASH_LOCK:
                 _DASH["error"] = str(e)
-            _log(f"pass FAILED: {e}")
-        time.sleep(_SCAN_INTERVAL)
+            _log(f"pass FAILED after {elapsed:.1f}s: {e}")
+
+        # pandas frames from the pass are dead by now; hand the memory back
+        # before sleeping. 512 MB on the free tier goes fast otherwise.
+        gc.collect()
+
+        rest = min(_MAX_REST, max(_MIN_REST, elapsed * _REST_RATIO))
+        _log(f"resting {rest:.0f}s before next pass")
+        time.sleep(rest)
 
 
-_scanner_started = False
+_scanner_thread = None
 _START_LOCK = threading.Lock()
 
 
 def _ensure_scanner():
-    global _scanner_started
+    """Start the scanner, or restart it if the thread has died.
+
+    This used to fire only inside /api/dashboard, which meant a keepalive
+    pinging /health kept the instance awake without ever starting a scan.
+    It now runs at import time as well, and re-checks liveness on each call.
+    """
+    global _scanner_thread
     with _START_LOCK:
-        if _scanner_started:
+        if _scanner_thread is not None and _scanner_thread.is_alive():
             return
-        _scanner_started = True
-        threading.Thread(target=_refresh_loop, daemon=True).start()
+        if _scanner_thread is not None:
+            _log("scanner thread was dead — restarting")
+        _scanner_thread = threading.Thread(target=_refresh_loop, daemon=True)
+        _scanner_thread.start()
+
+
+# Start immediately on import so gunicorn boots a working scanner without
+# needing a browser to hit /api/dashboard first.
+_ensure_scanner()
 
 
 @app.route("/api/dashboard")
@@ -278,10 +346,6 @@ def funding_backtest(symbol, timeframe):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
-
-
 @app.route("/api/journal/stats")
 def journal_stats():
     """Is the scanner actually profitable? This is the number that matters."""
@@ -306,3 +370,31 @@ def journal_list():
 def journal_resolve():
     n = signal_log.resolve_open(fetch_ohlcv_failover)
     return jsonify({"resolved": n})
+
+
+@app.route("/api/scanner-status")
+def scanner_status():
+    """Plain-language view of what the background thread is doing right now."""
+    with _DASH_LOCK:
+        seeded = _DASH["data"] is not None
+        pending = []
+        if seeded:
+            for key, tfs in _DASH["data"].items():
+                for tf, p in tfs.items():
+                    if isinstance(p, dict) and p.get("pending"):
+                        pending.append(f"{key}/{tf}")
+        return jsonify({
+            "scanner_alive": _scanner_thread is not None and _scanner_thread.is_alive(),
+            "passes_completed": _DASH["passes"],
+            "last_pass_seconds": _DASH["last_pass_seconds"],
+            "min_rest_seconds": _MIN_REST,
+            "progress": _DASH["progress"],
+            "still_pending": pending,
+            "error": _DASH["error"],
+        })
+
+
+if __name__ == "__main__":
+    # Kept at the very bottom on purpose: routes defined below an app.run()
+    # call never get registered when running locally with `python app.py`.
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
