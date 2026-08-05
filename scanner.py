@@ -181,7 +181,15 @@ CONFIG = {
     'TRAIL_ATR_MULT': 0.6,
 
     'CVD_PRESSURE_LOOKBACK': 10,
-    'CVD_PRESSURE_MIN_ABS': 0,
+    'CVD_PRESSURE_MIN_ABS': 0,   # legacy raw-sum threshold, no longer gated on
+    # FIX v4 (F17): the raw delta sum scales with the asset's volume, so
+    # comparing it against 0 meant ANY negative reading vetoed a BUY. On BTC
+    # that value swings by tens of units candle to candle, so roughly half of
+    # otherwise-valid setups were being killed at random. Gate on the
+    # volume-normalised fraction instead: -1.0 = every candle in the window
+    # closed on its low, +1.0 = every candle closed on its high. 0.12 means
+    # "at least 12% of the window's volume leaned against the trade".
+    'CVD_PRESSURE_MIN_FRAC': 0.12,
 
     'MOMENTUM_LOOKBACK': 10,
     'ENABLE_PRIME_HOURS_FILTER': False,
@@ -707,10 +715,14 @@ def analyze_timeframe(df, closed_only=False, eff_cfg=None):
     vp = calc_volume_profile(df, CONFIG['VOLUME_PROFILE_LOOKBACK'], CONFIG['VOLUME_PROFILE_BINS'])
     regime = detect_market_regime(df, eff_cfg=eff_cfg)   # FIX v3 (F12)
     cvd_pressure_series = calc_recent_cvd_pressure(df)
+    # FIX v4 (F17): computed once. Calling calc_cvd_pressure_norm() twice —
+    # once for the isna() check and once for the value — doubles a full-frame
+    # rolling computation on every snapshot, and a scan pass builds eight.
+    cvd_norm_series = calc_cvd_pressure_norm(df)
+    _cvd_norm = cvd_norm_series.iloc[-1]
     last = df.iloc[-1]
     return {
-        "cvd_pressure_norm": float(calc_cvd_pressure_norm(df).iloc[-1])
-                             if not pd.isna(calc_cvd_pressure_norm(df).iloc[-1]) else 0.0,
+        "cvd_pressure_norm": float(_cvd_norm) if not pd.isna(_cvd_norm) else 0.0,
         "structure_event": last["structure_event"], "structure_trend": last["structure_trend"],
         "adx": last["adx"], "price": last["close"], "vwap": last["vwap"],
         "volume": last["volume"],
@@ -855,11 +867,11 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regi
     if is_5m_comp and not is_1m_comp and entry_adx > eff_cfg['ADX_MIN']:
         if (buy_score >= CONFIG['SCORE_THRESHOLD'] + 0.5 and buy_score > sell_score
                 and htf_bias == "BULLISH"):
-            if cvd_pressure is None or cvd_pressure >= -CONFIG['CVD_PRESSURE_MIN_ABS']:
+            if cvd_pressure is None or cvd_pressure >= -CONFIG['CVD_PRESSURE_MIN_FRAC']:
                 return "BUY", "COMPRESSION BREAKOUT LONG"
         if (sell_score >= CONFIG['SCORE_THRESHOLD'] + 0.5 and sell_score > buy_score
                 and htf_bias == "BEARISH"):
-            if cvd_pressure is None or cvd_pressure <= CONFIG['CVD_PRESSURE_MIN_ABS']:
+            if cvd_pressure is None or cvd_pressure <= CONFIG['CVD_PRESSURE_MIN_FRAC']:
                 return "SELL", "COMPRESSION BREAKOUT SHORT"
 
     if is_1m_comp and is_5m_comp:
@@ -882,13 +894,13 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regi
     # licence to trade either way.
     if buy_score >= CONFIG['SCORE_THRESHOLD'] and buy_score > sell_score:
         if (buy_score - sell_score) >= eff_cfg['SCORE_GAP_MIN'] and htf_bias == "BULLISH":
-            if cvd_pressure is not None and cvd_pressure < -CONFIG['CVD_PRESSURE_MIN_ABS']:
-                return None, f"BLOCKED (CVD pressure against BUY: {cvd_pressure:.1f})"
+            if cvd_pressure is not None and cvd_pressure < -CONFIG['CVD_PRESSURE_MIN_FRAC']:
+                return None, f"BLOCKED (CVD pressure against BUY: {cvd_pressure:.2f})"
             return "BUY", "BUY" + (f" (confluence {confluence_score:.1f})" if confluence_score is not None else "")
     if sell_score >= CONFIG['SCORE_THRESHOLD'] and sell_score > buy_score:
         if (sell_score - buy_score) >= eff_cfg['SCORE_GAP_MIN'] and htf_bias == "BEARISH":
-            if cvd_pressure is not None and cvd_pressure > CONFIG['CVD_PRESSURE_MIN_ABS']:
-                return None, f"BLOCKED (CVD pressure against SELL: {cvd_pressure:.1f})"
+            if cvd_pressure is not None and cvd_pressure > CONFIG['CVD_PRESSURE_MIN_FRAC']:
+                return None, f"BLOCKED (CVD pressure against SELL: {cvd_pressure:.2f})"
             return "SELL", "SELL" + (f" (confluence {confluence_score:.1f})" if confluence_score is not None else "")
     return None, f"WAIT (bias {htf_bias} | buy {buy_score} / sell {sell_score})"
 
@@ -1211,7 +1223,7 @@ def analyze(symbol, timeframe="1m"):
         buy_score, sell_score, htf_bias, snap_entry["adx"],
         snap_entry_tf["regime"], snap_confirm["regime"], entry_rsi=rsi_now,
         snap_1m=snap_entry_tf, snap_5m=snap_confirm,
-        cvd_pressure=snap_entry_tf.get("cvd_pressure"),
+        cvd_pressure=snap_entry_tf.get("cvd_pressure_norm"),   # FIX v4 (F17)
         eff_cfg=eff_cfg,
     )
 
@@ -1275,6 +1287,14 @@ def analyze(symbol, timeframe="1m"):
         "signal_age_seconds": signal_age_seconds,
         "buy_score": buy_score, "sell_score": sell_score, "htf_bias": htf_bias,
         "regime": snap_entry["regime"]["regime"], "structure": snap_entry["structure_event"],
+        # FIX v4 (F18): the card showed only the entry timeframe's regime, so
+        # "Regime: TRENDING" sat next to "BLOCKED (Choppy Flat Zones)" and
+        # looked like a contradiction. decide_direction() requires BOTH the
+        # entry and the confirmation timeframe to be TRENDING — the confirm
+        # frame was the one blocking, and it was invisible.
+        "regime_entry": snap_entry_tf["regime"]["regime"],
+        "regime_confirm": snap_confirm["regime"]["regime"],
+        "confirm_timeframe": TIMEFRAME_CONFIRM_MAP.get(timeframe, "5m"),
         "exchange": ex_id, "entry": _px(price) if direction else None,
         "tp": tp, "sl": sl, "atr": _px(atr_now) if atr_now else None,
         "tp_levels": tp_levels,
@@ -1283,6 +1303,8 @@ def analyze(symbol, timeframe="1m"):
         "suggested_qty_for_min_profit": suggested_qty_min,
         "suggested_qty_for_max_profit": suggested_qty_max,
         "cvd_pressure": round(snap_entry_tf.get("cvd_pressure", 0.0), 2),
+        "cvd_pressure_norm": round(snap_entry_tf.get("cvd_pressure_norm", 0.0), 3),
+        "cvd_gate_threshold": CONFIG['CVD_PRESSURE_MIN_FRAC'],
         "blowoff": blowoff_info,
         "momentum_pct": momentum_pct,
         "momentum_note": momentum_note,
@@ -1637,7 +1659,9 @@ def run_backtest(symbol, timeframe="5m"):
     liq_buy_s, liq_sell_s = _liquidity_score_vectorized(df, w=1.0)
     df["liq_buy"] = liq_buy_s
     df["liq_sell"] = liq_sell_s
-    cvd_pressure_series = calc_recent_cvd_pressure(df)
+    # FIX v4 (F17): backtest must gate on the same normalised value as live,
+    # otherwise the two diverge again the moment the threshold changes.
+    cvd_pressure_series = calc_cvd_pressure_norm(df)
     df["sweep"] = df["sweep_v"]
 
     opens = df["open"].values
@@ -1710,9 +1734,9 @@ def run_backtest(symbol, timeframe="5m"):
 
         cvd_val = cvd_pressure_series.iloc[i]
         if not pd.isna(cvd_val):
-            if direction == "BUY" and cvd_val < -CONFIG['CVD_PRESSURE_MIN_ABS']:
+            if direction == "BUY" and cvd_val < -CONFIG['CVD_PRESSURE_MIN_FRAC']:
                 continue
-            if direction == "SELL" and cvd_val > CONFIG['CVD_PRESSURE_MIN_ABS']:
+            if direction == "SELL" and cvd_val > CONFIG['CVD_PRESSURE_MIN_FRAC']:
                 continue
 
         entry = opens[i + 1]                       # FIX v3 (F7)
@@ -1949,11 +1973,21 @@ class RiskManager:
 # ══════════════════════════════════════════════════════════════════════════
 # ORDER FLOW PROXY MODULE — approximated from OHLCV
 # ══════════════════════════════════════════════════════════════════════════
+def calc_recent_cvd_pressure(df, lookback=None):
+    lookback = lookback or CONFIG['CVD_PRESSURE_LOOKBACK']
+    df = calc_candle_delta_proxy(df)
+    return df["delta_proxy"].rolling(lookback).sum()
+
+
 def calc_cvd_pressure_norm(df, lookback=None):
-    """Raw delta sum ka scale asset aur volume ke saath badalta hai, isliye
-    usse 0 se compare karna arbitrary hai. Isko window ke total volume se
-    normalize karo — result -1..+1 mein aata hai aur assets ke beech tulnaa
-    ke layak hota hai."""
+    """FIX v4 (F17): volume-normalised CVD pressure, range roughly -1..+1.
+
+    calc_recent_cvd_pressure() returns a raw sum of (close-location * volume).
+    Its magnitude therefore depends entirely on how much the asset trades —
+    -76 is enormous on one symbol and noise on another — which makes any fixed
+    threshold meaningless and makes comparing across BTC/ETH/DEXE/BANK
+    impossible. Dividing by the window's total volume removes the scale, so a
+    single threshold works everywhere."""
     lookback = lookback or CONFIG['CVD_PRESSURE_LOOKBACK']
     d = calc_candle_delta_proxy(df)
     delta_sum = d["delta_proxy"].rolling(lookback).sum()
@@ -2144,10 +2178,10 @@ def calc_orderflow_sl(direction, df, atr):
 def apply_breakeven_trigger(direction, entry_price, current_high, current_low, atr, sl, cvd_pressure=None):
     trigger_dist = atr * CONFIG['OF_BREAKEVEN_TRIGGER_ATR_MULT']
     if direction == "BUY" and current_high >= entry_price + trigger_dist:
-        if cvd_pressure is None or cvd_pressure >= -CONFIG['CVD_PRESSURE_MIN_ABS']:
+        if cvd_pressure is None or cvd_pressure >= -CONFIG['CVD_PRESSURE_MIN_FRAC']:
             return max(sl, entry_price)
     if direction == "SELL" and current_low <= entry_price - trigger_dist:
-        if cvd_pressure is None or cvd_pressure <= CONFIG['CVD_PRESSURE_MIN_ABS']:
+        if cvd_pressure is None or cvd_pressure <= CONFIG['CVD_PRESSURE_MIN_FRAC']:
             return min(sl, entry_price)
     return sl
 
@@ -2278,7 +2312,7 @@ def run_orderflow_backtest(symbol, entry_timeframe="1m", structure_timeframe="5m
     df_entry = add_indicators_vectorized(df_entry)
     df_entry = calc_cvd_proxy(df_entry)
     atr_series = calc_atr(df_entry, CONFIG['ATR_PERIOD'])
-    cvd_pressure_series = calc_recent_cvd_pressure(df_entry)
+    cvd_pressure_series = calc_cvd_pressure_norm(df_entry)   # FIX v4 (F17)
 
     opens = df_entry["open"].values
     closes = df_entry["close"].values
