@@ -84,6 +84,8 @@ PARAMS = {
 
     # ── from the sources ──
     "MIN_RR": 1.5,            # NB3: 1.5R to 2R
+    "OTE_RETRACE": 0.70,      # NB3: enter on the 70-80% retracement
+    "FILL_MAX_BARS": 12,      # invented: how long a limit order stays live
     "RISK_PCT": 1.0,          # NB2 and NB3: 1% of capital
     "ROUND_TRIP_COST_PCT": 0.10,   # taker both sides + spread. VERIFY on CoinDCX.
 }
@@ -188,6 +190,45 @@ def swing_points(df, lb):
             low.where(is_l).shift(lb).ffill())
 
 
+def swing_lists(df, lb):
+    """Every confirmed swing, as (bar_it_became_knowable, price).
+
+    swing_points() only ever hands back the MOST RECENT swing. That is not
+    enough to pick a target: after price closes above the last swing high,
+    that high is behind us, and aiming at it means aiming below the entry.
+    The target has to be the next pool of liquidity that has NOT been taken
+    yet, which means searching further back through the confirmed swings.
+    """
+    high, low = df["high"], df["low"]
+    win = lb * 2 + 1
+    is_h = (high == high.rolling(win, center=True).max()).fillna(False)
+    is_l = (low == low.rolling(win, center=True).min()).fillna(False)
+
+    hs, ls = [], []
+    hv, lv = high.values, low.values
+    for k in range(len(df)):
+        if is_h.iloc[k]:
+            hs.append((k + lb, float(hv[k])))     # knowable lb bars later
+        if is_l.iloc[k]:
+            ls.append((k + lb, float(lv[k])))
+    return hs, ls
+
+
+def _next_liquidity_above(swing_highs, bar, price):
+    """Nearest confirmed swing high sitting ABOVE price. None if there is
+    no untaken liquidity overhead — which is itself a reason not to trade:
+    'if the price has no purpose to move up or down why would you even
+    trade' (NB3)."""
+    cands = [v for (b, v) in swing_highs if b <= bar and v > price]
+    return min(cands) if cands else None
+
+
+def _next_liquidity_below(swing_lows, bar, price):
+    """Mirror image: nearest confirmed swing low below price."""
+    cands = [v for (b, v) in swing_lows if b <= bar and v < price]
+    return max(cands) if cands else None
+
+
 def sweeps(df, sh, sl):
     """Wick through a prior swing, close back inside it."""
     psh, psl = sh.shift(1), sl.shift(1)
@@ -227,8 +268,9 @@ def find_setups(df, p):
     hi_sw, lo_sw = sweeps(df, sh, sl)
     up, dn = shifts(df, sh, sl)
     flat = is_consolidation(df, lb, p["RANGE_MIN_PCT"])
+    swing_highs, swing_lows = swing_lists(df, lb)
 
-    highs, lows = df["high"].values, df["low"].values
+    highs, lows, closes = df["high"].values, df["low"].values, df["close"].values
     buf = p["SL_BUFFER_PCT"] / 100.0
     n = len(df)
 
@@ -250,20 +292,49 @@ def find_setups(df, p):
             continue
 
         if pend_long and up.iloc[i] and i > pend_long[0]:
-            tgt = sh.iloc[i]
-            if pd.notna(tgt):
+            # The shift bar closed ABOVE the last swing high, so that high is
+            # already taken. Aim at the next one that is not.
+            tgt = _next_liquidity_above(swing_highs, i, closes[i])
+            leg_low = pend_long[1]
+            leg_high = float(highs[pend_long[0]:i + 1].max())
+            if tgt is not None and leg_high > leg_low:
                 out.append({"bar": i, "dir": "BUY", "sweep_bar": pend_long[0],
-                            "stop": pend_long[1] * (1 - buf), "target": float(tgt)})
+                            "stop": leg_low * (1 - buf), "target": tgt,
+                            "leg_low": leg_low, "leg_high": leg_high})
             pend_long = None
 
         if pend_short and dn.iloc[i] and i > pend_short[0]:
-            tgt = sl.iloc[i]
-            if pd.notna(tgt):
+            tgt = _next_liquidity_below(swing_lows, i, closes[i])
+            leg_high = pend_short[1]
+            leg_low = float(lows[pend_short[0]:i + 1].min())
+            if tgt is not None and leg_high > leg_low:
                 out.append({"bar": i, "dir": "SELL", "sweep_bar": pend_short[0],
-                            "stop": pend_short[1] * (1 + buf), "target": float(tgt)})
+                            "stop": leg_high * (1 + buf), "target": tgt,
+                            "leg_low": leg_low, "leg_high": leg_high})
             pend_short = None
 
     return out
+
+
+def entry_level(setup, p):
+    """Where the limit order goes — the OTE retracement, not the break.
+
+    NB3 states this outright: enter on the 70-80% Fibonacci retracement of
+    the impulse leg. Every setup in that course is a RETEST entry, never a
+    market fill on the break bar.
+
+    This is not a detail. Filling at the shift bar puts the entry at the far
+    end of the leg from the stop, which is why the first version of this
+    file produced R:R between 0.02 and 0.9 and took zero trades. Waiting for
+    the pullback cuts the risk to roughly a third of the leg while leaving
+    the target untouched.
+    """
+    lo, hi = setup["leg_low"], setup["leg_high"]
+    span = hi - lo
+    if span <= 0:
+        return None
+    r = p["OTE_RETRACE"]
+    return hi - r * span if setup["dir"] == "BUY" else lo + r * span
 
 
 def _validate(entry, stop, target, direction, p):
@@ -355,7 +426,12 @@ def signal(symbol, timeframe="15m", params=None):
         return base
 
     s = setups[-1]
-    entry, stop, target = price, s["stop"], s["target"]
+    stop, target = s["stop"], s["target"]
+    entry = entry_level(s, p)
+    if entry is None:
+        base.update({"signal": "WAIT", "reason": "no measurable impulse leg"})
+        return base
+
     ok, rr, why = _validate(entry, stop, target, s["dir"], p)
     if not ok:
         base.update({"signal": "WAIT", "reason": why})
@@ -367,10 +443,15 @@ def signal(symbol, timeframe="15m", params=None):
         "sl": round(stop, 8),
         "tp": round(target, 8),
         "rr": round(rr, 2),
+        "entry_type": "LIMIT",
+        "distance_to_entry_pct": round((entry - price) / price * 100, 3),
         "risk_pct_of_price": round(abs(entry - stop) / entry * 100, 3),
         "sizing": size(entry, stop),
-        "reason": f"{s['dir']} — swept at bar {s['sweep_bar']}, structure shifted at {s['bar']}",
-        "note": "Enter at market on the next bar's open, not at this close.",
+        "reason": (f"{s['dir']} — swept at bar {s['sweep_bar']}, shift at {s['bar']}, "
+                   f"limit at the {int(p['OTE_RETRACE']*100)}% retracement"),
+        "note": ("Place a LIMIT order at 'entry'. Do NOT chase at market. "
+                 f"If it has not filled within {p['FILL_MAX_BARS']} bars, or the "
+                 "stop is reached first, the setup is dead — skip it."),
     })
     return base
 
@@ -394,23 +475,46 @@ def backtest(symbol, timeframe="15m", candles=3000, params=None):
     n = len(df)
     cost = p["ROUND_TRIP_COST_PCT"]
 
-    trades, skipped, last_exit = [], 0, -1
+    trades, skipped, unfilled, last_exit = [], 0, 0, -1
 
-    for s in setups:
-        i = s["bar"]
+    for s_ in setups:
+        i = s_["bar"]
         if i + 1 >= n or i <= last_exit:      # one position at a time
             continue
 
-        entry = float(opens[i + 1])
-        stop, target, d = float(s["stop"]), float(s["target"]), s["dir"]
+        entry = entry_level(s_, p)
+        if entry is None:
+            continue
+        stop, target, d = float(s_["stop"]), float(s_["target"]), s_["dir"]
 
         ok, rr, _ = _validate(entry, stop, target, d, p)
         if not ok:
             skipped += 1
             continue
 
+        # Wait for the limit to fill. If the stop is reached before the entry
+        # is, the setup is dead and was never a trade — counting it as a loss
+        # would invent trades that could not have been taken.
+        fill_bar = None
+        for j in range(i + 1, min(i + 1 + p["FILL_MAX_BARS"], n)):
+            if d == "BUY":
+                if lows[j] <= stop:
+                    break
+                if lows[j] <= entry:
+                    fill_bar = j
+                    break
+            else:
+                if highs[j] >= stop:
+                    break
+                if highs[j] >= entry:
+                    fill_bar = j
+                    break
+        if fill_bar is None:
+            unfilled += 1
+            continue
+
         outcome = exit_px = exit_bar = None
-        for j in range(i + 1, min(i + 1 + p["TIMEOUT_BARS"], n)):
+        for j in range(fill_bar, min(fill_bar + p["TIMEOUT_BARS"], n)):
             if d == "BUY":
                 if lows[j] <= stop:
                     outcome, exit_px, exit_bar = "LOSS", stop, j; break
@@ -423,7 +527,7 @@ def backtest(symbol, timeframe="15m", candles=3000, params=None):
                     outcome, exit_px, exit_bar = "WIN", target, j; break
 
         if outcome is None:
-            exit_bar = min(i + p["TIMEOUT_BARS"], n - 1)
+            exit_bar = min(fill_bar + p["TIMEOUT_BARS"], n - 1)
             outcome, exit_px = "TIMEOUT", float(closes[exit_bar])
 
         gross = ((exit_px - entry) / entry * 100 if d == "BUY"
@@ -437,14 +541,14 @@ def backtest(symbol, timeframe="15m", candles=3000, params=None):
             "pnl_pct": round(gross - cost, 4), "bars": exit_bar - i,
         })
 
-    return _report(trades, symbol, timeframe, len(df), src, p, skipped)
+    return _report(trades, symbol, timeframe, len(df), src, p, skipped, unfilled)
 
 
-def _report(trades, symbol, timeframe, candles, src, p, skipped):
+def _report(trades, symbol, timeframe, candles, src, p, skipped, unfilled=0):
     days = candles * TF_SECONDS.get(timeframe, 900) / 86400.0
     out = {"symbol": symbol, "timeframe": timeframe, "source": src,
            "candles_tested": candles, "days_covered": round(days, 1),
-           "params": p, "skipped_setups": skipped}
+           "params": p, "skipped_low_rr": skipped, "never_filled": unfilled}
 
     if not trades:
         out.update({"total_trades": 0, "verdict": "NO SETUPS — nothing to judge"})
