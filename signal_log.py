@@ -1,5 +1,5 @@
 """
-signal_log.py — Automatic signal journal.
+signal_log.py — Automatic signal journal.  (v2 — RESOLUTION FIXES)
 
 Answers the one question the scanner has never been asked:
 does it actually make money?
@@ -11,6 +11,34 @@ How it works:
      each open signal WIN (TP first) or LOSS (SL first).
   3. /api/journal/stats gives win rate, expectancy and profit factor from
      what the scanner ACTUALLY said, not from a backtest.
+
+WHAT CHANGED IN v2 — every edit is tagged "# FIX v2:" inline.
+
+  J1  ENTRY INDEX WAS ALWAYS ZERO. resolve_open() looked for a "timestamp"
+      COLUMN, but fetch_ohlcv_failover() sets timestamp as the INDEX
+      (df.set_index("timestamp", inplace=True)). The lookup therefore always
+      returned None, `start` stayed 0, and every signal was resolved by
+      walking the candle window from its OLDEST bar — including hours of
+      price action that happened BEFORE the signal existed. A 10:00 signal
+      was being marked WIN or LOSS by what price did at 06:00. Every
+      outcome in the journal so far is meaningless, not merely noisy.
+
+  J2  FEES WERE NEVER DEDUCTED. Every backtest path runs P&L through
+      _net_pnl_pct(), which subtracts round_trip_cost_pct(). The journal
+      did not, so it reported ~0.10% more per trade than the account would
+      ever see — and viability.py builds its entire verdict on these rows.
+      The journal was the most optimistic number in the whole system while
+      being presented as the most honest one.
+
+  J3  SIGNALS WITH NO FORWARD CANDLES ARE NOW SKIPPED, not resolved. If the
+      fetched window does not reach the signal time, there is nothing to
+      resolve yet; the row stays OPEN and is retried on the next call.
+
+⚠️  Journal rows written before this fix were produced by the broken
+    resolver. They cannot be repaired after the fact — the candle data they
+    were scored against is not recorded. Clear the signals table once after
+    deploying this, or every honest row from now on will be averaged in with
+    rows that were effectively random.
 
 PERSISTENCE
   Set DATABASE_URL to a Postgres connection string and the journal lives
@@ -32,6 +60,12 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DB_PATH = os.environ.get("JOURNAL_DB", "/tmp/signal_journal.db")
 USING_POSTGRES = bool(DATABASE_URL)
 
+# FIX v2 (J2): the journal must charge the same round trip the backtests
+# charge, or the two disagree by exactly the amount that decides whether the
+# strategy is viable. Keep this in step with CONFIG['ROUND_TRIP_COST_PCT']
+# in scanner.py — same number, same meaning: (taker_fee * 2) + spread.
+ROUND_TRIP_COST_PCT = float(os.environ.get("ROUND_TRIP_COST_PCT", 0.10))
+
 if USING_POSTGRES:
     import psycopg2
     import psycopg2.extras
@@ -44,6 +78,7 @@ def backend():
         "backend": "postgres" if USING_POSTGRES else "sqlite",
         "ephemeral": not USING_POSTGRES,
         "location": "DATABASE_URL" if USING_POSTGRES else DB_PATH,
+        "round_trip_cost_pct": ROUND_TRIP_COST_PCT,
         "warning": None if USING_POSTGRES else
                    "SQLite on Render free tier is wiped on every restart. "
                    "Set DATABASE_URL to keep journal history.",
@@ -157,6 +192,37 @@ def log_signal(symbol, timeframe, payload):
     return True
 
 
+def _entry_index(df, logged_at):
+    """FIX v2 (J1): position of the first candle at or after the signal.
+
+    The old code searched for a "timestamp" COLUMN. fetch_ohlcv_failover()
+    puts timestamp in the INDEX, so that branch never ran and `start`
+    silently defaulted to 0 — resolving every signal against the entire
+    fetched window, most of which predates the signal.
+
+    Returns None when the window does not reach the signal yet, so the row
+    stays OPEN and gets retried instead of being scored on stale bars.
+    """
+    try:
+        t0 = datetime.fromisoformat(logged_at)
+    except (TypeError, ValueError):
+        return None
+
+    # Rows are logged with an aware UTC timestamp; the candle index is naive
+    # UTC. Compare like with like rather than letting pandas raise.
+    if t0.tzinfo is not None:
+        t0 = t0.astimezone(timezone.utc).replace(tzinfo=None)
+
+    try:
+        pos = int(df.index.searchsorted(t0, side="left"))
+    except Exception:
+        return None
+
+    if pos >= len(df.index):
+        return None
+    return pos
+
+
 def resolve_open(fetch_fn, limit=300):
     """Walk candles forward from each open signal and mark WIN/LOSS.
     fetch_fn(symbol, timeframe, limit) -> (df, source)"""
@@ -177,22 +243,16 @@ def resolve_open(fetch_fn, limit=300):
             continue
         if df is None or len(df) == 0:
             continue
-        ts = df["timestamp"] if "timestamp" in df.columns else None
 
         for r in group:
             tp, sl = r["tp"], r["sl"]
             if tp is None or sl is None:
                 continue
-            start = 0
-            if ts is not None:
-                try:
-                    t0 = datetime.fromisoformat(r["logged_at"]).timestamp() * 1000
-                    later = [i for i, v in enumerate(ts) if float(v) >= t0]
-                    if not later:
-                        continue
-                    start = later[0]
-                except Exception:
-                    start = 0
+
+            # FIX v2 (J1, J3): start at the signal, or leave it OPEN.
+            start = _entry_index(df, r["logged_at"])
+            if start is None:
+                continue
 
             outcome = exit_px = bars = None
             for j in range(start, len(df)):
@@ -215,6 +275,9 @@ def resolve_open(fetch_fn, limit=300):
             pnl = (exit_px - r["entry"]) / r["entry"] * 100
             if r["direction"] == "SELL":
                 pnl = -pnl
+            # FIX v2 (J2): charge the round trip, same as every backtest path.
+            pnl -= ROUND_TRIP_COST_PCT
+
             with _Conn() as c:
                 c.execute("UPDATE signals SET outcome=?,resolved_at=?,exit_price=?,"
                           "pnl_pct=?,bars_held=? WHERE id=?",
@@ -246,8 +309,11 @@ def stats(symbol=None, timeframe=None):
                 "note": "no resolved signals yet — needs time to accumulate",
                 "storage": store}
 
-    wins = [r for r in rows if r["outcome"] == "WIN"]
-    losses = [r for r in rows if r["outcome"] == "LOSS"]
+    # FIX v2 (J2): pnl_pct is now net of fees, so a WIN that only just
+    # reached its target can still be a losing row. Classify by the money,
+    # not by the label, exactly as _summarize() does in scanner.py.
+    wins = [r for r in rows if (r["pnl_pct"] or 0) > 0]
+    losses = [r for r in rows if (r["pnl_pct"] or 0) <= 0]
     gp = sum(r["pnl_pct"] for r in wins)
     gl = abs(sum(r["pnl_pct"] for r in losses))
     exp = sum(r["pnl_pct"] for r in rows) / len(rows)
@@ -268,6 +334,7 @@ def stats(symbol=None, timeframe=None):
         "expectancy_pct": round(exp, 3),
         "total_pct": round(sum(r["pnl_pct"] for r in rows), 2),
         "profit_factor": round(gp / gl, 2) if gl > 0 else None,
+        "round_trip_cost_pct": ROUND_TRIP_COST_PCT,
         "verdict": verdict,
         "storage": store,
     }
