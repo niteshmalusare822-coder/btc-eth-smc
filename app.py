@@ -9,6 +9,10 @@ from sma_strategy_test import backtest_sma
 from scanner import analyze, run_backtest, run_backtest_full, run_factor_backtest, run_combined_backtest, run_funding_rate_backtest, calc_dynamic_trailing_exit
 # new realistic backtest import
 from scanner_fixed import improved_run_backtest
+# Standalone sweep->shift strategy. Imports nothing from scanner.py, so its
+# numbers are independent of the multi-factor engine and can be compared
+# against it rather than being contaminated by it.
+from smc import backtest as smc_backtest, signal as smc_signal
 import math
 import gc
 import os
@@ -415,6 +419,59 @@ def scanner_status():
             "still_pending": pending,
             "error": _DASH["error"],
         })
+
+
+# ── Sweep -> Shift strategy (smc.py) ─────────────────────────
+# Separate from every other endpoint on purpose. This is the strategy built
+# from the three price-action courses: structural stops and targets, no
+# composite score, no ATR multiples. Judge it on its own numbers.
+
+_SMC_SYMBOLS = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT",
+                "DEXE": "DEXE/USDT:USDT", "BANK": "BANK/USDT:USDT"}
+
+
+@app.route("/api/smc/<symbol>/<timeframe>")
+def smc_backtest_route(symbol, timeframe):
+    """Backtest. 15m is the timeframe the sources actually teach on.
+
+    `candles` is a query param because Render's free tier is slow: if 3000
+    bars times out, drop it rather than silently getting no answer.
+    """
+    full = _SMC_SYMBOLS.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
+    try:
+        candles = int(request.args.get("candles", 3000))
+    except ValueError:
+        candles = 3000
+    try:
+        return jsonify(sanitize(smc_backtest(full, timeframe, candles=candles)))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/smc-live/<symbol>/<timeframe>")
+def smc_live_route(symbol, timeframe):
+    """Setup on the last CLOSED bar, with entry, SL, TP and 1%-risk size."""
+    full = _SMC_SYMBOLS.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
+    try:
+        return jsonify(sanitize(smc_signal(full, timeframe)))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/smc-all/<timeframe>")
+def smc_all_route(timeframe):
+    """All four symbols in one call, so you can see which ones even produce
+    setups before deciding where to spend attention."""
+    out = {}
+    for name, ticker in _SMC_SYMBOLS.items():
+        try:
+            r = smc_backtest(ticker, timeframe, candles=1500)
+            r.pop("recent_trades", None)
+            r.pop("params", None)
+            out[name] = r
+        except Exception as e:
+            out[name] = {"error": str(e)}
+    return jsonify(out)
 
 
 if __name__ == "__main__":
