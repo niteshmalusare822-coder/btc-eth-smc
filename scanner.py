@@ -261,6 +261,46 @@ CONFIG = {
 
     'MIN_CONFLUENCE_SCORE': 3.0,
 
+    # ── FIX v6 (F24): confluence weights are data, not code ─────────────
+    # These used to be hardcoded inside calc_confluence_score(), which meant
+    # changing one required editing a function and hoping nothing else read
+    # it. They are here so that after run_factor_backtest() tells you which
+    # factors actually clear profit factor 1.2, you set the failures to 0.0
+    # in ONE place and the whole engine follows.
+    #
+    # fvg_proximity and inducement are 0.0 ON PURPOSE. They contribute to
+    # buy_score/sell_score already but were never part of confluence. Giving
+    # them weight now would LOOSEN the gate before anything has been
+    # measured, which is backwards. Turn them on only if the factor report
+    # shows they carry edge.
+    #
+    # A weight of 0.0 disables a component without removing it, so the
+    # breakdown still reports whether it fired. That is what lets you tell
+    # "this factor never triggers" apart from "this factor triggers and
+    # loses money" — two very different problems with the same symptom.
+    'CONFLUENCE_WEIGHTS': {
+        'candle_pattern': 2.0,
+        'structure_break': 3.0,
+        'divergence': 2.5,
+        'sweep_with_equal_levels': 3.0,
+        'fvg_proximity': 0.0,       # measured? no. weight stays 0.
+        'inducement': 0.0,          # measured? no. weight stays 0.
+        'htf_ema_alignment': 1.5,
+    },
+
+    # ── FIX v6 (F25): the acceleration boost double-counted trend ───────
+    # get_ltf_scores() awarded 0.5 for price>vwap, 0.5 for ema5>ema20, and
+    # then a further 1.0 for BOTH being true — scoring the same two
+    # conditions twice. Across the entry and confirm snapshots that is 2.2
+    # points a plain trending bar collects with no setup present at all.
+    #
+    # This is why a card could read "Score: BUY 10.6 / SELL 2.1" and be
+    # blocked at "Low confluence 1.5" in the same breath. The 10.6 was
+    # measuring trend; the 1.5 was measuring setup. Both were right.
+    #
+    # Off by default. Set True to restore the old scores exactly.
+    'ENABLE_ACCELERATION_BOOST': False,
+
     'PRIME_HOURS_ASIAN_DEAD_START': 0,
     'PRIME_HOURS_ASIAN_DEAD_END': 8,
     'PRIME_HOURS_OVERLAP_START': 8,
@@ -874,45 +914,95 @@ def get_ltf_scores(snap_entry, snap_confirm):
         buy_score += liq_buy * w
         sell_score += liq_sell * w
 
-        # Scalper acceleration boost. NOTE: this re-scores the same two
-        # conditions (price vs vwap, ema5 vs ema20) that were already scored
-        # above, so a plain trending bar collects 2.0 per snapshot from
-        # trend alone with no actual setup present. Left in place because
-        # the confluence gate is what stops a no-setup trade, but be aware
-        # it is why scores drift high in strong trends.
-        if "volume" in snap and not pd.isna(snap["vwap"]):
-            if pd.notna(e5) and pd.notna(e20):
-                if snap["price"] > snap["vwap"] and e5 > e20:
-                    buy_score += 1.0 * w
-                elif snap["price"] <= snap["vwap"] and e5 <= e20:
-                    sell_score += 1.0 * w
+        # FIX v6 (F25): this re-scores the same two conditions (price vs
+        # vwap, ema5 vs ema20) that were already scored above, so a plain
+        # trending bar collects 2.2 across both snapshots from trend alone
+        # with no actual setup present. Now off by default — see
+        # ENABLE_ACCELERATION_BOOST in CONFIG for the full reasoning.
+        if CONFIG['ENABLE_ACCELERATION_BOOST']:
+            if "volume" in snap and not pd.isna(snap["vwap"]):
+                if pd.notna(e5) and pd.notna(e20):
+                    if snap["price"] > snap["vwap"] and e5 > e20:
+                        buy_score += 1.0 * w
+                    elif snap["price"] <= snap["vwap"] and e5 <= e20:
+                        sell_score += 1.0 * w
 
     return round(buy_score, 2), round(sell_score, 2)
 
 
-def calc_confluence_score(snap_entry, snap_confirm):
-    """FIX v5 (F22): renamed from snap_1m/snap_5m. Same scoring."""
-    confluence = 0.0
+def calc_confluence_score(snap_entry, snap_confirm, weights=None, breakdown=False):
+    """How many INDEPENDENT structural reasons exist to take this trade.
 
-    if snap_entry["pattern"] == "BUY" or snap_entry["pattern"] == "SELL":
-        confluence += 2
+    FIX v6 (F24): weights come from CONFIG['CONFLUENCE_WEIGHTS'] instead of
+    being hardcoded, and the function can return a per-component breakdown.
 
-    if snap_entry["structure_event"] in ("CHoCH_BULL", "BOS_BULL", "CHoCH_BEAR", "BOS_BEAR"):
-        confluence += 3
+    The breakdown matters more than the total. A score of 1.5 tells you the
+    trade was rejected; the breakdown tells you it was rejected because the
+    ONLY thing agreeing was EMA alignment, which is trend, not setup. That
+    distinction is what stops you from lowering MIN_CONFLUENCE_SCORE to
+    "fix" a card that was correctly rejected.
 
-    if snap_entry["divergence"] in ("BULL_DIV", "BEAR_DIV"):
-        confluence += 2.5
+    Every field is read with .get() so a partial snapshot (run_backtest
+    passes a small dict for snap_confirm) cannot raise. A missing field
+    counts as "did not fire", which is the honest default.
+    """
+    w = weights if weights is not None else CONFIG['CONFLUENCE_WEIGHTS']
+    fired = {}
 
-    if (snap_entry["sweep"] == "EQUAL_LOW_SWEEP" and (snap_entry.get("eq_low_count") or 0) >= 3) or \
-       (snap_entry["sweep"] == "EQUAL_HIGH_SWEEP" and (snap_entry.get("eq_high_count") or 0) >= 3):
-        confluence += 3
+    fired['candle_pattern'] = snap_entry.get("pattern") in ("BUY", "SELL")
 
-    ema_entry_up = snap_entry["ema5"] > snap_entry["ema20"]
-    ema_confirm_up = snap_confirm["ema5"] > snap_confirm["ema20"]
-    if ema_entry_up == ema_confirm_up:
-        confluence += 1.5
+    fired['structure_break'] = snap_entry.get("structure_event") in (
+        "CHoCH_BULL", "BOS_BULL", "CHoCH_BEAR", "BOS_BEAR")
 
-    return round(confluence, 2)
+    fired['divergence'] = snap_entry.get("divergence") in ("BULL_DIV", "BEAR_DIV")
+
+    sweep = snap_entry.get("sweep")
+    eql = snap_entry.get("eq_low_count") or 0
+    eqh = snap_entry.get("eq_high_count") or 0
+    fired['sweep_with_equal_levels'] = (
+        (sweep == "EQUAL_LOW_SWEEP" and eql >= CONFIG['EQUAL_LEVEL_MIN_COUNT']) or
+        (sweep == "EQUAL_HIGH_SWEEP" and eqh >= CONFIG['EQUAL_LEVEL_MIN_COUNT'])
+    )
+
+    # FIX v6 (F24): these two feed buy_score/sell_score but were never part
+    # of confluence. They are counted here so the breakdown is honest about
+    # what the bar contains, but their default weight is 0.0 so nothing
+    # changes until the factor report justifies turning them on.
+    dbull = snap_entry.get("dist_to_bull_fvg_pct")
+    dbear = snap_entry.get("dist_to_bear_fvg_pct")
+    near_fvg = False
+    for d in (dbull, dbear):
+        if d is not None and not pd.isna(d) and 0 <= d <= CONFIG['FVG_PROXIMITY_PCT']:
+            near_fvg = True
+    fired['fvg_proximity'] = near_fvg
+
+    fired['inducement'] = snap_entry.get("inducement") in (
+        "BULL_INDUCEMENT", "BEAR_INDUCEMENT")
+
+    e5, e20 = snap_entry.get("ema5"), snap_entry.get("ema20")
+    c5, c20 = snap_confirm.get("ema5"), snap_confirm.get("ema20")
+    if all(pd.notna(x) for x in (e5, e20, c5, c20)):
+        fired['htf_ema_alignment'] = (e5 > e20) == (c5 > c20)
+    else:
+        # FIX v3 (F9) applies here too: missing data is not agreement.
+        fired['htf_ema_alignment'] = False
+
+    score = round(sum(w.get(k, 0.0) for k, hit in fired.items() if hit), 2)
+
+    if breakdown:
+        detail = {k: {"fired": bool(hit), "weight": w.get(k, 0.0),
+                      "contributed": w.get(k, 0.0) if hit else 0.0}
+                  for k, hit in fired.items()}
+        return score, detail
+    return score
+
+
+# FIX v6 (F24): decide_direction() returns (direction, reason) and changing
+# that signature would break every caller. This one-slot list carries the
+# confluence breakdown out to analyze() without touching the contract.
+# Single-threaded per request in practice; it is read immediately after the
+# call that writes it, never held across one.
+_last_confluence_detail = [None]
 
 
 def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_entry, regime_confirm,
@@ -955,10 +1045,21 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_entry, r
         return None, "BLOCKED (Not Dynamic Trending Structure)"
 
     confluence_score = None
+    confluence_detail = None
     if snap_entry is not None and snap_confirm is not None:
-        confluence_score = calc_confluence_score(snap_entry, snap_confirm)
+        confluence_score, confluence_detail = calc_confluence_score(
+            snap_entry, snap_confirm, breakdown=True)
         if confluence_score < eff_cfg['MIN_CONFLUENCE_SCORE']:
-            return None, f"BLOCKED (Low confluence {confluence_score:.1f} < {eff_cfg['MIN_CONFLUENCE_SCORE']})"
+            # FIX v6 (F24): name what DID fire. "Low confluence 1.5 < 2.0" on
+            # its own invites lowering the threshold; "only htf_ema_alignment"
+            # makes it obvious the bar had trend and no setup, which is
+            # exactly what this gate exists to reject.
+            hits = [k for k, v in confluence_detail.items() if v["fired"]]
+            _last_confluence_detail[0] = confluence_detail
+            return None, (f"BLOCKED (Low confluence {confluence_score:.1f} < "
+                          f"{eff_cfg['MIN_CONFLUENCE_SCORE']} — fired: "
+                          f"{', '.join(hits) if hits else 'nothing'})")
+    _last_confluence_detail[0] = confluence_detail
 
     # FIX v3 (F8): NEUTRAL now blocks BOTH sides instead of permitting both.
     # A higher timeframe with no opinion is a reason to stand down, not a
@@ -1309,7 +1410,7 @@ def analyze(symbol, timeframe="5m"):
         cvd_pressure=snap_entry_tf.get("cvd_pressure_norm"),   # FIX v4 (F17)
         eff_cfg=eff_cfg,
     )
-
+    confluence_detail = _last_confluence_detail[0]
     bo = detect_blowoff(df_closed, symbol=symbol)
     bo_ok, bo_reason = blowoff_gate(direction, bo)
     if not bo_ok:
@@ -1388,6 +1489,13 @@ def analyze(symbol, timeframe="5m"):
         "cvd_pressure": round(snap_entry_tf.get("cvd_pressure", 0.0), 2),
         "cvd_pressure_norm": round(snap_entry_tf.get("cvd_pressure_norm", 0.0), 3),
         "cvd_gate_threshold": CONFIG['CVD_PRESSURE_MIN_FRAC'],
+        # FIX v6 (F24): which structural components actually fired, and what
+        # each was worth. A component with weight 0.0 still reports whether
+        # it fired, so "never triggers" is distinguishable from "triggers and
+        # is switched off".
+        "confluence_detail": confluence_detail,
+        "confluence_threshold": eff_cfg['MIN_CONFLUENCE_SCORE'],
+        "acceleration_boost_enabled": CONFIG['ENABLE_ACCELERATION_BOOST'],
         "blowoff": blowoff_info,
         "momentum_pct": momentum_pct,
         "momentum_note": momentum_note,
@@ -1814,11 +1922,19 @@ def run_backtest(symbol, timeframe="5m"):
         if not blowoff_gate_row(direction, bo_df, i)[0]:
             continue
 
+        # FIX v6 (F24): live analyze() passes a full snapshot to confluence.
+        # This dict must carry the same fields or the two paths score the
+        # same bar differently — the exact parity drift F17 was about. fvg
+        # and inducement are included even though their default weight is
+        # 0.0, so flipping a weight later changes live and backtest together.
         snap_i = {
             "pattern": pat, "structure_event": struct, "divergence": div,
             "sweep": df["sweep"].iloc[i],
             "eq_low_count": df["eq_low_count"].iloc[i] if "eq_low_count" in df.columns else 0,
             "eq_high_count": df["eq_high_count"].iloc[i] if "eq_high_count" in df.columns else 0,
+            "dist_to_bull_fvg_pct": df["dist_to_bull_fvg_pct"].iloc[i] if "dist_to_bull_fvg_pct" in df.columns else np.nan,
+            "dist_to_bear_fvg_pct": df["dist_to_bear_fvg_pct"].iloc[i] if "dist_to_bear_fvg_pct" in df.columns else np.nan,
+            "inducement": df["inducement"].iloc[i] if "inducement" in df.columns else "",
             "ema5": ema5, "ema20": ema20,
         }
         _h5 = df["htf_ema5"].iloc[i]
