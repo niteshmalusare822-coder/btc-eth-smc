@@ -246,7 +246,25 @@ CONFIG = {
     'BSL_SSL_LOOKBACK': 20,
     'EQUAL_LEVEL_TOLERANCE_PCT': 0.05,
     'INDUCEMENT_MINOR_LOOKBACK': 2,
-    'FVG_PROXIMITY_PCT': 0.3,
+
+    # ── FIX v6 (F32): FVG proximity is now measured in ATR, not percent ──
+    # FVG_PROXIMITY_PCT was a flat 0.3% of price for every asset. Measured
+    # on one live scan:
+    #     BTC 5m  ATR 0.021% -> 0.3% is ~14 ATR -> fires on essentially
+    #                           every bar (observed dist: 0.069%)
+    #     BANK 15m ATR 2.04% -> 0.3% is ~0.15 ATR -> almost never fires
+    #                           (observed dist: 8.09%)
+    # So the same setting meant "always true" on BTC and "always false" on
+    # BANK. That is why FVG Proximity showed a tick on nearly every BTC and
+    # ETH card while contributing nothing, and why the factor scored z=-2.75
+    # on ETH but z=+2.57 on BANK — the two runs were not testing the same
+    # condition.
+    #
+    # 0.5 ATR means the same thing everywhere: price sits within half a
+    # typical bar's range of the gap. FVG_PROXIMITY_PCT is kept only as a
+    # floor for assets whose ATR briefly collapses to near zero.
+    'FVG_PROXIMITY_ATR': 0.5,
+    'FVG_PROXIMITY_PCT': 0.05,   # floor only; the ATR rule normally governs
     'EQUAL_LEVEL_MIN_COUNT': 3,
 
     'TARGET_PROFIT_INR_MIN': 500,
@@ -769,6 +787,24 @@ def detect_inducement(df, minor_lookback=2):
     return df
 
 
+def fvg_proximity_threshold(atr_pct):
+    """FIX v6 (F32): how close is 'close to an FVG', in percent of price.
+
+    Derived from the bar's own ATR so the rule transfers across assets. The
+    flat percentage floor only takes over when ATR collapses, which would
+    otherwise make the threshold zero and the condition unreachable.
+
+    atr_pct: ATR as a percentage of price. Pass NaN and you get the floor.
+    """
+    try:
+        a = float(atr_pct)
+    except (TypeError, ValueError):
+        return CONFIG['FVG_PROXIMITY_PCT']
+    if a != a or a <= 0:                     # NaN or nonsense
+        return CONFIG['FVG_PROXIMITY_PCT']
+    return max(CONFIG['FVG_PROXIMITY_PCT'], CONFIG['FVG_PROXIMITY_ATR'] * a)
+
+
 def calc_liquidity_score(snap):
     buy, sell = 0.0, 0.0
     if snap.get("sweep") == "EQUAL_LOW_SWEEP": buy += 2.5
@@ -776,8 +812,14 @@ def calc_liquidity_score(snap):
     if snap.get("inducement") == "BULL_INDUCEMENT": buy += 2.0
     elif snap.get("inducement") == "BEAR_INDUCEMENT": sell += 2.0
     dbull = snap.get("dist_to_bull_fvg_pct"); dbear = snap.get("dist_to_bear_fvg_pct")
-    if dbull is not None and not pd.isna(dbull) and 0 <= dbull <= CONFIG['FVG_PROXIMITY_PCT']: buy += 1.5
-    if dbear is not None and not pd.isna(dbear) and 0 <= dbear <= CONFIG['FVG_PROXIMITY_PCT']: sell += 1.5
+    # FIX v6 (F32): threshold from this bar's ATR, not a flat percentage.
+    _atr = snap.get("atr"); _px_now = snap.get("price")
+    _atr_pct = (float(_atr) / float(_px_now) * 100
+                if _atr is not None and _px_now not in (None, 0) and not pd.isna(_atr)
+                else float("nan"))
+    _thr = fvg_proximity_threshold(_atr_pct)
+    if dbull is not None and not pd.isna(dbull) and 0 <= dbull <= _thr: buy += 1.5
+    if dbear is not None and not pd.isna(dbear) and 0 <= dbear <= _thr: sell += 1.5
     eqh = snap.get("eq_high_count") or 0; eql = snap.get("eq_low_count") or 0
     if snap.get("sweep") == "EQUAL_LOW_SWEEP" and eql >= CONFIG['EQUAL_LEVEL_MIN_COUNT']: buy += 1.0
     if snap.get("sweep") == "EQUAL_HIGH_SWEEP" and eqh >= CONFIG['EQUAL_LEVEL_MIN_COUNT']: sell += 1.0
@@ -791,8 +833,12 @@ def _liquidity_score_vectorized(df, w=1.0):
     buy += np.where(df["inducement"] == "BULL_INDUCEMENT", 2.0 * w, 0.0)
     sell += np.where(df["inducement"] == "BEAR_INDUCEMENT", 2.0 * w, 0.0)
     dbull = df["dist_to_bull_fvg_pct"]; dbear = df["dist_to_bear_fvg_pct"]
-    buy += np.where((dbull >= 0) & (dbull <= CONFIG['FVG_PROXIMITY_PCT']), 1.5 * w, 0.0)
-    sell += np.where((dbear >= 0) & (dbear <= CONFIG['FVG_PROXIMITY_PCT']), 1.5 * w, 0.0)
+    # FIX v6 (F32): per-bar ATR threshold, so this matches the live path.
+    _atr_pct = (df["atr"] / df["close"] * 100) if "atr" in df.columns else None
+    _thr = (np.maximum(CONFIG['FVG_PROXIMITY_PCT'], CONFIG['FVG_PROXIMITY_ATR'] * _atr_pct)
+            if _atr_pct is not None else CONFIG['FVG_PROXIMITY_PCT'])
+    buy += np.where((dbull >= 0) & (dbull <= _thr), 1.5 * w, 0.0)
+    sell += np.where((dbear >= 0) & (dbear <= _thr), 1.5 * w, 0.0)
     eqh = df["eq_high_count"].fillna(0); eql = df["eq_low_count"].fillna(0)
     buy += np.where((df["sweep_v"] == "EQUAL_LOW_SWEEP") & (eql >= CONFIG['EQUAL_LEVEL_MIN_COUNT']), 1.0 * w, 0.0)
     sell += np.where((df["sweep_v"] == "EQUAL_HIGH_SWEEP") & (eqh >= CONFIG['EQUAL_LEVEL_MIN_COUNT']), 1.0 * w, 0.0)
@@ -993,9 +1039,15 @@ def calc_confluence_score(snap_entry, snap_confirm, weights=None, breakdown=Fals
     # changes until the factor report justifies turning them on.
     dbull = snap_entry.get("dist_to_bull_fvg_pct")
     dbear = snap_entry.get("dist_to_bear_fvg_pct")
+    # FIX v6 (F32): ATR-relative threshold, same rule as the scoring paths.
+    _atr = snap_entry.get("atr"); _px_now = snap_entry.get("price")
+    _atr_pct = (float(_atr) / float(_px_now) * 100
+                if _atr is not None and _px_now not in (None, 0) and not pd.isna(_atr)
+                else float("nan"))
+    _thr = fvg_proximity_threshold(_atr_pct)
     near_fvg = False
     for d in (dbull, dbear):
-        if d is not None and not pd.isna(d) and 0 <= d <= CONFIG['FVG_PROXIMITY_PCT']:
+        if d is not None and not pd.isna(d) and 0 <= d <= _thr:
             near_fvg = True
     fired['fvg_proximity'] = near_fvg
 
@@ -2056,8 +2108,15 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
     a_ind = df["inducement"].values
     a_eqh = df["eq_high_count"].values
     a_eql = df["eq_low_count"].values
+    # FIX v6 (F33): volume relative to its own 20-bar average, so the same
+    # multiplier means the same thing on BTC and on a thin altcoin.
+    a_volratio = (df["volume"] /
+                  (df["volume"].rolling(CONFIG['VOLUME_SPIKE_LOOKBACK']).mean() + 1e-10)).values
 
-    fvg_prox = CONFIG['FVG_PROXIMITY_PCT']
+    # FIX v6 (F32): per-bar threshold array rather than one flat number.
+    _atr_pct_arr = (a_atr / closes * 100)
+    fvg_prox_arr = np.maximum(CONFIG['FVG_PROXIMITY_PCT'],
+                              CONFIG['FVG_PROXIMITY_ATR'] * _atr_pct_arr)
     eq_min = CONFIG['EQUAL_LEVEL_MIN_COUNT']
 
     # FIX v6 (F28): the no-edge baseline, derived rather than guessed.
@@ -2079,12 +2138,36 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
     def simulate(direction_fn, label, fade=False):
         results = []
         blocked = 0
+        overlapping_skipped = 0
+        last_exit = -1
         flip = {"BUY": "SELL", "SELL": "BUY"}
         for i in range(60, n - WINDOW - 1):
             atr = a_atr[i]
             if np.isnan(atr): continue
             direction = direction_fn(i)
             if direction is None: continue
+
+            # FIX v6 (F31): ONE POSITION AT A TIME.
+            #
+            # Without this, every bar that meets the condition opened a trade,
+            # so a single large move produced dozens of overlapping positions
+            # that all won or all lost together. Statistically that is ONE
+            # observation, not dozens — but the z-score counted every one of
+            # them, inflating confidence by roughly the square root of the
+            # overlap factor.
+            #
+            # That is how the same factor scored z=+3.09 on BANK 5m and
+            # z=-2.87 on BANK 15m: both were measuring a handful of moves
+            # while reporting hundreds of trades. smc.backtest() has always
+            # enforced this with its own last_exit guard; this file did not.
+            #
+            # Trade counts will drop sharply. The smaller number is the real
+            # one, and the wider error bars that come with it are the honest
+            # ones.
+            if i <= last_exit:
+                overlapping_skipped += 1
+                continue
+
             if fade:
                 direction = flip[direction]
             entry = opens[i + 1]                   # FIX v3 (F7)
@@ -2093,13 +2176,16 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
             if not cost_gate(entry, tp):           # FIX v3 (F3)
                 blocked += 1
                 continue
-            outcome, exit_price, _j = _simulate_exit(
+            outcome, exit_price, exit_bar = _simulate_exit(
                 direction, entry, tp, sl, highs, lows, closes, i + 1, WINDOW, n)
+            last_exit = exit_bar
             results.append({"outcome": outcome,
                             "pnl_pct": _net_pnl_pct(direction, entry, exit_price)})
 
         if not results:
-            return {"label": label, "total_trades": 0, "blocked_by_cost_gate": blocked,
+            return {"label": label, "direction": "fade" if fade else "follow",
+                    "total_trades": 0, "blocked_by_cost_gate": blocked,
+                    "overlapping_skipped": overlapping_skipped,
                     "outcome_window_bars": WINDOW, "note": "no signals"}
 
         total = len(results)
@@ -2134,6 +2220,7 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
                 "avg_win_pct": round(gross_profit / len(wins), 4) if wins else 0.0,
                 "avg_loss_pct": round(gross_loss / len(losses), 4) if losses else 0.0,
                 "blocked_by_cost_gate": blocked,
+                "overlapping_skipped": overlapping_skipped,
                 "outcome_window_bars": WINDOW}
 
     def f_sweep(i):
@@ -2167,9 +2254,10 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
         return None
 
     def f_fvg(i):
-        dbull = a_dbull[i]; dbear = a_dbear[i]
-        if not np.isnan(dbull) and 0 <= dbull <= fvg_prox: return "BUY"
-        if not np.isnan(dbear) and 0 <= dbear <= fvg_prox: return "SELL"
+        dbull = a_dbull[i]; dbear = a_dbear[i]; thr = fvg_prox_arr[i]
+        if np.isnan(thr): thr = CONFIG['FVG_PROXIMITY_PCT']
+        if not np.isnan(dbull) and 0 <= dbull <= thr: return "BUY"
+        if not np.isnan(dbear) and 0 <= dbear <= thr: return "SELL"
         return None
 
     def f_inducement(i):
@@ -2185,6 +2273,24 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
         if eqh >= eq_min and eqh > eql: return "SELL"
         return None
 
+    # FIX v6 (F33): the volume-spike gate, finally measurable.
+    #
+    # analyze() vetoes any signal without a volume spike in the last three
+    # bars, and on quiet days that veto blocked BTC repeatedly while every
+    # other gate had already passed. It was never in this report, so nobody
+    # knew whether it helps or just costs trades.
+    #
+    # Standalone it answers a narrower question than the gate does — "does a
+    # volume spike predict direction" rather than "does requiring one improve
+    # the other factors" — but a gate whose standalone signal is at the null
+    # is a gate that needs justifying rather than assuming.
+    def f_volume_spike(i):
+        if np.isnan(a_volratio[i]) or a_volratio[i] < CONFIG['VOLUME_SPIKE_MULT']:
+            return None
+        if closes[i] > opens[i]: return "BUY"
+        if closes[i] < opens[i]: return "SELL"
+        return None
+
     _factors = [
         (f_sweep, "1. Liquidity Sweep (BSL/SSL) only"),
         (f_structure, "2. Structure Break (BOS/CHoCH) only"),
@@ -2194,10 +2300,20 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
         (f_fvg, "6. Fair Value Gap (FVG) proximity only"),
         (f_inducement, "7. Inducement wick-trap only"),
         (f_equal_level_density, "8. Equal-Level Density only"),
+        (f_volume_spike, "9. Volume Spike only (the live veto, measured)"),
     ]
 
     return {
         "symbol": symbol, "timeframe": timeframe, "candles_tested": len(df),
+        # FIX v6 (F30): which venue actually served these candles. If a pair
+        # name in COINDCX_PAIR_MAP is wrong, CoinDCX returns nothing and the
+        # ccxt fallbacks quietly serve a DIFFERENT token with the same ticker
+        # — and the whole report would then describe a coin you do not trade.
+        # Anything that is not "coindcx" needs the pair name checked before
+        # a single number below is believed.
+        "source": ex_id,
+        "first_bar": str(df.index[0]), "last_bar": str(df.index[-1]),
+        "median_atr_pct": round(float((df["atr"] / df["close"] * 100).median()), 4),
         "round_trip_cost_pct": round_trip_cost_pct(),
         "outcome_window_bars": WINDOW,
         "tp_atr_mult": CONFIG['TP_ATR_MULT'], "sl_atr_mult": CONFIG['SL_ATR_MULT'],
@@ -2782,8 +2898,10 @@ def run_combined_backtest(symbol, timeframe="5m", min_agree=2, strong_adx=25, us
             elif cross_down: votes.append("SELL")
         dbull = df["dist_to_bull_fvg_pct"].iloc[i]
         dbear = df["dist_to_bear_fvg_pct"].iloc[i]
-        if not pd.isna(dbull) and 0 <= dbull <= CONFIG['FVG_PROXIMITY_PCT']: votes.append("BUY")
-        if not pd.isna(dbear) and 0 <= dbear <= CONFIG['FVG_PROXIMITY_PCT']: votes.append("SELL")
+        _a = df["atr"].iloc[i]; _c = closes[i]
+        _thr = fvg_proximity_threshold(_a / _c * 100 if _c else float("nan"))
+        if not pd.isna(dbull) and 0 <= dbull <= _thr: votes.append("BUY")
+        if not pd.isna(dbear) and 0 <= dbear <= _thr: votes.append("SELL")
         ind = df["inducement"].iloc[i]
         if ind == "BULL_INDUCEMENT": votes.append("BUY")
         elif ind == "BEAR_INDUCEMENT": votes.append("SELL")
