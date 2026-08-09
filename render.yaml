@@ -3,4 +3,26 @@ services:
     name: btc-eth-smc
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --timeout 120 --workers 1 --threads 4
+    # --worker-class gthread is the important part. The default sync worker
+    # IGNORES --threads entirely, so the old command ran genuinely
+    # single-threaded: one slow request (a factor backtest) blocked the whole
+    # process, hit --timeout, and gunicorn SIGKILLed the worker — taking the
+    # background scanner thread down with it, because that thread lives in
+    # the same process. gthread makes --threads 4 real, so a long request
+    # occupies one thread and the scanner keeps running.
+    #
+    # --timeout raised to 300 because the factor backtest loops eight
+    # factors over 3000 bars with a 60-bar outcome window, and 0.1 CPU is
+    # slow. If a request still times out, pass ?candles=1500 rather than
+    # raising this further: a request that needs more than five minutes is
+    # a request that should be run on the research VM, not the web service.
+    startCommand: gunicorn app:app --worker-class gthread --timeout 300 --workers 1 --threads 4
+    envVars:
+      # viability.py reads these from the environment, NOT from scanner.py's
+      # CONFIG. Without them it falls back to 2.2/0.8 and the dashboard
+      # header reports R:R 2.75 while the engine actually trades 3.75.
+      # Keep these in step with CONFIG['TP_ATR_MULT'] and SL_ATR_MULT.
+      - key: TP_ATR_MULT
+        value: "3.0"
+      - key: SL_ATR_MULT
+        value: "0.8"
