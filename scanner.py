@@ -1516,6 +1516,13 @@ def analyze(symbol, timeframe="5m"):
         # each was worth. A component with weight 0.0 still reports whether
         # it fired, so "never triggers" is distinguishable from "triggers and
         # is switched off".
+        # FIX v6 (F29): confluence_score was missing from this payload while
+        # the frontend read d.confluence_score, so every card rendered
+        # "Confluence: - / 2" — the breakdown was visible but the number it
+        # summed to was not. Recomputed from the detail so the two can never
+        # disagree.
+        "confluence_score": (round(sum(v["contributed"] for v in confluence_detail.values()), 2)
+                             if confluence_detail else None),
         "confluence_detail": confluence_detail,
         "confluence_threshold": eff_cfg['MIN_CONFLUENCE_SCORE'],
         "acceleration_boost_enabled": CONFIG['ENABLE_ACCELERATION_BOOST'],
@@ -2053,14 +2060,33 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
     fvg_prox = CONFIG['FVG_PROXIMITY_PCT']
     eq_min = CONFIG['EQUAL_LEVEL_MIN_COUNT']
 
-    def simulate(direction_fn, label):
+    # FIX v6 (F28): the no-edge baseline, derived rather than guessed.
+    #
+    # For a driftless random walk with an upper barrier at TP and a lower one
+    # at SL, the probability of touching TP first is SL/(TP+SL). At 3.0/0.8
+    # that is 21.1%. This is what a coin flip scores with these exits — not
+    # 50%, and not the 28% an earlier close-only simulation suggested. That
+    # figure was wrong because _simulate_exit checks each bar's HIGH and LOW,
+    # so an intrabar spike takes out a stop the close never reaches, and with
+    # SL at 0.8 ATR the stop sits inside a single bar's typical range.
+    #
+    # Every win rate below is reported against this number. A factor at 14%
+    # here is not "a weak factor" — it is performing WORSE than random, which
+    # means it is pointing the wrong way on this data.
+    null_win_rate = round(CONFIG['SL_ATR_MULT'] /
+                          (CONFIG['TP_ATR_MULT'] + CONFIG['SL_ATR_MULT']) * 100, 1)
+
+    def simulate(direction_fn, label, fade=False):
         results = []
         blocked = 0
+        flip = {"BUY": "SELL", "SELL": "BUY"}
         for i in range(60, n - WINDOW - 1):
             atr = a_atr[i]
             if np.isnan(atr): continue
             direction = direction_fn(i)
             if direction is None: continue
+            if fade:
+                direction = flip[direction]
             entry = opens[i + 1]                   # FIX v3 (F7)
             tp, sl = calc_tp_sl(direction, entry, atr)
             if tp is None: continue
@@ -2085,14 +2111,25 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
         profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
         win_rate = round(len(wins) / total * 100, 1)
         expectancy = round(sum(r["pnl_pct"] for r in results) / total, 4)
-        # FIX v6 (F26): timeout_pct is the first number to read. If most
-        # trades time out, the outcome window is too short for TP_ATR_MULT
-        # and every other figure below is measuring fees, not edge. Fix the
-        # window before drawing any conclusion about the factor itself.
-        return {"label": label, "total_trades": total, "wins": len(wins),
+
+        # FIX v6 (F28): every win rate is reported against the no-edge
+        # baseline and with the error bar that sample size actually earns.
+        # A factor 6 points under the baseline on 300 trades is a finding;
+        # the same 6 points on 4 trades is nothing. Reporting the z-score
+        # here removes the temptation to read either one by eye.
+        p0 = null_win_rate / 100.0
+        se = (p0 * (1 - p0) / total) ** 0.5 * 100 if total else None
+        z = round((win_rate - null_win_rate) / se, 2) if se else None
+
+        return {"label": label, "direction": "fade" if fade else "follow",
+                "total_trades": total, "wins": len(wins),
                 "losses": len(losses), "timeouts": len(timeouts),
                 "timeout_pct": round(len(timeouts) / total * 100, 1),
-                "win_rate": win_rate, "profit_factor": profit_factor,
+                "win_rate": win_rate,
+                "vs_null_pts": round(win_rate - null_win_rate, 1),
+                "z_score": z,
+                "significant": bool(z is not None and abs(z) >= 2.0),
+                "profit_factor": profit_factor,
                 "expectancy_pct": expectancy,
                 "avg_win_pct": round(gross_profit / len(wins), 4) if wins else 0.0,
                 "avg_loss_pct": round(gross_loss / len(losses), 4) if losses else 0.0,
@@ -2148,26 +2185,35 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
         if eqh >= eq_min and eqh > eql: return "SELL"
         return None
 
+    _factors = [
+        (f_sweep, "1. Liquidity Sweep (BSL/SSL) only"),
+        (f_structure, "2. Structure Break (BOS/CHoCH) only"),
+        (f_divergence, "3. Divergence only"),
+        (f_pattern, "4. Candle Pattern only"),
+        (f_ema_baseline, "5. EMA Crossover (baseline)"),
+        (f_fvg, "6. Fair Value Gap (FVG) proximity only"),
+        (f_inducement, "7. Inducement wick-trap only"),
+        (f_equal_level_density, "8. Equal-Level Density only"),
+    ]
+
     return {
         "symbol": symbol, "timeframe": timeframe, "candles_tested": len(df),
         "round_trip_cost_pct": round_trip_cost_pct(),
         "outcome_window_bars": WINDOW,
         "tp_atr_mult": CONFIG['TP_ATR_MULT'], "sl_atr_mult": CONFIG['SL_ATR_MULT'],
-        # FIX v6 (F26): on a pure random walk with no edge at all, a 3.0/0.8
-        # ATR target set resolves at roughly 28% wins. Any factor at or below
-        # that number is not an underperforming factor — it is noise. Compare
-        # win_rate against this, never against 50%.
-        "random_walk_win_rate_pct": 28.0,
-        "factors": [
-            simulate(f_sweep, "1. Liquidity Sweep (BSL/SSL) only"),
-            simulate(f_structure, "2. Structure Break (BOS/CHoCH) only"),
-            simulate(f_divergence, "3. Divergence only"),
-            simulate(f_pattern, "4. Candle Pattern only"),
-            simulate(f_ema_baseline, "5. EMA Crossover (baseline)"),
-            simulate(f_fvg, "6. Fair Value Gap (FVG) proximity only"),
-            simulate(f_inducement, "7. Inducement wick-trap only"),
-            simulate(f_equal_level_density, "8. Equal-Level Density only"),
-        ]
+        "null_win_rate_pct": null_win_rate,
+        "null_note": ("SL/(TP+SL) — what a coin flip scores with these exits. "
+                      "Compare win_rate to this, never to 50%."),
+        # FIX v6 (F28): each factor is also run with its direction REVERSED.
+        # If every follow variant sits below the null and its fade variant
+        # sits above, the factors are not weak — they are inverted, and no
+        # amount of confluence weighting fixes a sign error. Running both is
+        # the cheapest way to tell "no edge" apart from "edge, wrong way".
+        # Treat a fade result as a hypothesis to test out of sample, not as a
+        # strategy: eight fades all winning on one asset over ten days is
+        # exactly what one mean-reverting stretch looks like.
+        "factors": [simulate(fn, lbl) for fn, lbl in _factors],
+        "factors_faded": [simulate(fn, lbl, fade=True) for fn, lbl in _factors],
     }
 
 
