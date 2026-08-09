@@ -1,11 +1,51 @@
 """
-SCALPING BOT — Multi-Factor Engine + Liquidity Concepts Combo  (v3 — AUDIT FIXES)
+SCALPING BOT — Multi-Factor Engine + Liquidity Concepts Combo  (v5)
 ================================================================================
 Base engine (EMA/RSI/ADX/Structure/Divergence/VolumeProfile/Regime) +
 Liquidity Concepts (BSL/SSL, Sweep, FVG, Inducement, Equal-Level Density).
 
-WHAT CHANGED IN v3 — every edit is tagged "# FIX v3:" inline.
-Read this list before deploying; several of these change how many signals fire.
+WHAT CHANGED IN v5 — 1m REMOVED EVERYWHERE, AND THE FEE NUMBER IS NOW REAL.
+
+  F19 1m IS GONE. Not disabled — removed. It is absent from
+      COINDCX_RESOLUTION_MAP, TF_SECONDS and TIMEFRAME_CONFIRM_MAP, so any
+      code path that still asks for it gets None from the fetcher rather
+      than silently trading a timeframe that cannot pay its own fees.
+
+      The arithmetic: a 1m ATR on BTC is roughly 0.05% of price. At
+      TP_ATR_MULT 2.2 that is a 0.11% gross target against a 0.18%
+      round-trip cost. The target is smaller than the toll. No entry filter,
+      no confluence score and no amount of tuning fixes a trade whose best
+      case loses money. 5m is marginal and 15m is where the arithmetic
+      starts to work, which is why those two are what remain.
+
+  F20 THE BACKTEST LADDER MOVED UP ONE STEP. run_backtest_full() used to
+      read 1m for entry scores, 5m for confirmation and 15m for bias. With
+      1m gone it now reads 5m for entry scores, 15m for confirmation and 1h
+      for bias. The relationships between the three are unchanged — the same
+      3x-ish spacing, the same shift(1) look-ahead guard — so the numbers
+      remain comparable in structure to the old ones, just on slower bars.
+
+  F21 ROUND_TRIP_COST_PCT IS NOW 0.18, NOT 0.10. The old value was a
+      placeholder with "PUT YOUR OWN NUMBER HERE" next to it, and it was
+      roughly half of reality. CoinDCX futures standard tier charges 0.075%
+      taker per side. This engine's live signals are market entries, so both
+      sides pay taker: 0.075 x 2 = 0.15%, plus 18% GST on the fee = 0.177%,
+      rounded to 0.18. Spread is on top of that and is not modelled.
+
+      Expect fewer signals. cost_gate() requires a target of at least
+      MIN_TP_COST_RATIO (3.0) x cost, which is now 0.54% instead of 0.30%.
+      Setups that vanish were never profitable — they were being measured
+      against a cost that did not exist. To revert, change this one line.
+
+  F22 PARAMETERS RENAMED FROM TIMEFRAME TO ROLE. decide_direction() took
+      regime_1m/regime_5m and get_ltf_scores() took snap_1m/snap_5m, which
+      stopped being true the moment the entry timeframe changed. They are
+      now regime_entry/regime_confirm and snap_entry/snap_confirm. Nothing
+      about the logic changed; the names now describe what the arguments
+      actually are.
+
+--------------------------------------------------------------------------------
+WHAT CHANGED IN v3/v4 — every edit tagged "# FIX v3:" / "# FIX v4:" inline.
 
   F1  Wilder RSI and Wilder ATR. calc_rsi/calc_atr used rolling().mean()
       (Cutler's), while calc_adx internally used ewm (Wilder). Two different
@@ -14,68 +54,56 @@ Read this list before deploying; several of these change how many signals fire.
 
   F2  CLOSED-CANDLE RULE. analyze_timeframe() read df.iloc[-1] — the candle
       still forming. Every indicator, candle pattern and BOS/CHoCH flipped on
-      each 10-second poll. This was the single biggest cause of BUY->SELL
-      flapping in a trending market. analyze_timeframe(closed_only=True) now
-      drops the forming bar; all live paths pass True, backtests pass False.
+      each poll. analyze_timeframe(closed_only=True) now drops the forming
+      bar; all live paths pass True, backtests pass False.
 
-  F3  COST GATE. TP_ATR_MULT 2.2 on a 5m ATR is often smaller than the
-      round-trip taker fee. A trade whose gross target is ~2x its own cost
-      cannot be profitable at any realistic win rate. cost_gate() rejects
-      those setups outright, live and in backtest.
+  F3  COST GATE. A trade whose gross target is ~2x its own cost cannot be
+      profitable at any realistic win rate. cost_gate() rejects those setups
+      outright, live and in backtest.
 
   F4  FEE_PCT (0.04) was deducted ONCE. Taker fees are charged per side.
       Replaced by ROUND_TRIP_COST_PCT covering entry + exit + spread.
 
   F5  STOP CHECKED FIRST. Every backtest loop tested TP before SL, so any
-      candle spanning both levels was scored a WIN. With TP 2.2 ATR / SL 0.8
-      ATR that is routine. Now the stop wins ambiguous candles.
+      candle spanning both levels was scored a WIN. Now the stop wins
+      ambiguous candles.
 
   F6  TIMEOUT TRADES NO LONGER DELETED. `if outcome == "OPEN": continue`
       silently removed every trade that chopped sideways — exactly the
-      trades that in reality exit flat and eat the full fee. Now closed at
-      market and counted.
+      trades that in reality exit flat and eat the full fee.
 
   F7  ENTRY AT NEXT BAR'S OPEN. Backtests filled at the close of the signal
       bar, a price not knowable until that bar ended.
 
-  F8  NEUTRAL HTF BIAS NOW BLOCKS BOTH DIRECTIONS. Previously
-      htf_bias in ("BULLISH","NEUTRAL") let a NEUTRAL 15m permit longs AND
-      shorts. That is what allowed counter-trend shorts during clean rallies.
+  F8  NEUTRAL HTF BIAS NOW BLOCKS BOTH DIRECTIONS. Previously a NEUTRAL
+      higher timeframe permitted longs AND shorts.
 
   F9  NaN NO LONGER VOTES BEARISH. `if ema5 > ema20: buy else: sell` sends
-      any NaN into the sell branch. Same in get_htf_bias. Structural short
-      bias whenever data was short or malformed.
+      any NaN into the sell branch.
 
-  F10 LOOK-AHEAD REMOVED from run_backtest_full(). The DataFrame index is
-      candle OPEN time but each row's indicators are computed through that
-      candle's CLOSE. merge_asof(direction="backward") therefore handed a
-      5m bar the 15m row whose values only exist 10-15 minutes later.
-      The 15m bias series is now shift(1)ed before alignment.
+  F10 LOOK-AHEAD REMOVED from run_backtest_full(). The index is candle OPEN
+      time but each row's indicators are computed through that candle's
+      CLOSE, so merge_asof handed a fast bar a slow row that did not exist
+      yet. The bias series is now shift(1)ed before alignment.
 
-  F11 candles_tested now reports len(df), not the CONFIG constant. CoinDCX
-      and the ccxt fallbacks cap the response well below 3000, so the old
-      number was fiction.
+  F11 candles_tested reports len(df), not the CONFIG constant.
 
-  F12 REGIME NOW HONOURS PER-ASSET ADX_MIN. ASSET_OVERRIDES lowered BTC/ETH
-      ADX_MIN to 14, but detect_market_regime() read the global CONFIG value
-      (18) — so the regime gate kept blocking the very trades the override
-      was meant to allow. The override was doing nothing on BTC and ETH.
+  F12 REGIME NOW HONOURS PER-ASSET ADX_MIN.
 
-  F13 calc_tp_sl_with_slippage() used round(x, 4). calc_tp_sl() was already
-      fixed to use _px() for exactly this reason: on BANK (~0.054) 4dp
-      collapses entry, TP and SL toward the same number. REALISTIC_BACKTEST
-      is True, so LIVE was using the broken one.
+  F13 calc_tp_sl_with_slippage() uses _px(), not round(x, 4).
 
-  F14 CoinDCX resolutions for 1h and 4h added. TIMEFRAME_CONFIRM_MAP maps
-      15m->1h and 1h->4h, but COINDCX_RESOLUTION_MAP had neither, so those
-      confirmation snapshots silently fell through to a different exchange.
-      Entry and confirmation timeframes were being read from two venues.
+  F14 CoinDCX resolutions for 1h and 4h added.
 
-  F15 MAX_CONSECUTIVE_LOSSES is now enforced in RiskManager. It was declared
-      in CONFIG and referenced nowhere.
+  F15 MAX_CONSECUTIVE_LOSSES is now enforced in RiskManager.
 
-  F16 Backtests report blocked_by_cost_gate so a sudden drop in trade count
-      is visible rather than mysterious.
+  F16 Backtests report blocked_by_cost_gate.
+
+  F17 CVD pressure is volume-normalised, so one threshold works on every
+      symbol regardless of how much it trades.
+
+  F18 The card reports both the entry and confirmation regime, so
+      "Regime: TRENDING" next to "BLOCKED (Choppy Flat Zones)" is no longer
+      a mystery — the confirm frame was the one blocking.
 
 KNOWN REMAINING GAP (not fixed here, needs a decision):
   run_backtest_full() still does not apply the confluence gate, the CVD
@@ -104,12 +132,14 @@ COINDCX_PAIR_MAP = {
     "BANK/USDT:USDT": "B-BANK_USDT",   # VERIFY exact pair name on CoinDCX
 }
 
-# FIX v3 (F14): 1h and 4h were missing. TIMEFRAME_CONFIRM_MAP asks for them
-# (15m->1h, 1h->4h), so every 15m and 1h card was silently pulling its
-# confirmation candles from mexc/bybit/okx instead of CoinDCX — a different
-# venue with different prints than the one actually being traded.
+# FIX v5 (F19): 1m removed. A request for it now returns None from
+# fetch_coindcx_futures() instead of quietly succeeding, which is the point —
+# a timeframe whose target is smaller than its fee should fail loudly rather
+# than produce signals nobody should take.
+# FIX v3 (F14): 1h and 4h are present because TIMEFRAME_CONFIRM_MAP asks for
+# them (15m->1h, 1h->4h); without them those confirmation snapshots silently
+# fell through to a different exchange with different prints.
 COINDCX_RESOLUTION_MAP = {
-    "1m": "1",
     "5m": "5",
     "15m": "15",
     "1h": "60",
@@ -117,7 +147,12 @@ COINDCX_RESOLUTION_MAP = {
 }
 
 # FIX v3 (F14): matching seconds table, used to compute the "from" timestamp.
-TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400}
+TF_SECONDS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400}
+
+# The only timeframes this engine will scan or trade. Anything outside this
+# tuple has not been checked against cost_reality_check() and should not be
+# wired into a live path without doing so first.
+SUPPORTED_TIMEFRAMES = ("5m", "15m", "1h", "4h")
 
 CONFIG = {
     'EMA_FAST': 5,
@@ -135,12 +170,14 @@ CONFIG = {
     'SCORE_THRESHOLD': 5.0,
     'SCORE_GAP_MIN': 3.5,
 
-    # ── FIX v3 (F3, F4): real transaction cost ──────────────────────────
-    # FEE_PCT (0.04, deducted once) modelled roughly a third of reality.
-    # Taker fee is charged on entry AND exit, and the spread costs you too.
-    # PUT YOUR OWN NUMBER HERE — check CoinDCX's futures fee schedule.
-    # This is (taker_fee_pct * 2) + typical_spread_pct.
-    'ROUND_TRIP_COST_PCT': 0.10,
+    # ── FIX v5 (F21): the real number, not a placeholder ────────────────
+    # CoinDCX futures standard tier: 0.075% taker per side. Live signals here
+    # are market entries, so both sides pay taker.
+    #     0.075 x 2 = 0.15%, + 18% GST on the fee = 0.177% -> 0.18
+    # Spread is on top of this and is not modelled, so treat 0.18 as a floor.
+    # If you move to limit entries (maker 0.025% per side) this drops to about
+    # 0.06 — but only once the code actually places limit orders.
+    'ROUND_TRIP_COST_PCT': 0.18,
 
     # A trade must target at least this multiple of its own cost, or the
     # arithmetic cannot work. At 2.2R gross TP / 0.8R SL and cost c, the
@@ -330,6 +367,14 @@ def fetch_coindcx_futures(ticker, timeframe, limit):
 
 
 def fetch_ohlcv_failover(ticker, timeframe, limit):
+    """FIX v5 (F19): unsupported timeframes are refused here rather than
+    falling through to a ccxt exchange. Without this the 1m removal would be
+    cosmetic — CoinDCX would return None and mexc/bybit would happily serve
+    1m candles instead, which is exactly the silent cross-venue behaviour
+    F14 existed to stop."""
+    if timeframe not in SUPPORTED_TIMEFRAMES:
+        return None, None
+
     df, src = fetch_coindcx_futures(ticker, timeframe, limit)
     if df is not None:
         return df, src
@@ -740,35 +785,41 @@ def analyze_timeframe(df, closed_only=False, eff_cfg=None):
     }
 
 
-def get_htf_bias(snap_15m):
-    """FIX v3 (F9): NaN no longer votes bearish. The old line was
+def get_htf_bias(snap_htf):
+    """Directional bias from the highest timeframe in the ladder.
+
+    FIX v3 (F9): NaN no longer votes bearish. The old line was
         score += weight*0.5 if snap["ema5"] > snap["ema20"] else -weight*0.5
     and a NaN comparison is False, so it fell into the -0.5 branch. Combined
     with a NaN RSI that is -1.25 — enough on its own to return BEARISH from
     missing data alone."""
     weight = 1.0; score = 0.0
-    if snap_15m["structure_trend"] == "BULL": score += weight
-    elif snap_15m["structure_trend"] == "BEAR": score -= weight
+    if snap_htf["structure_trend"] == "BULL": score += weight
+    elif snap_htf["structure_trend"] == "BEAR": score -= weight
 
-    e5, e20 = snap_15m.get("ema5"), snap_15m.get("ema20")
+    e5, e20 = snap_htf.get("ema5"), snap_htf.get("ema20")
     if pd.notna(e5) and pd.notna(e20):
         score += weight * 0.5 if e5 > e20 else -weight * 0.5
 
-    if not pd.isna(snap_15m["rsi"]):
-        if snap_15m["rsi"] > 55: score += weight * 0.3
-        elif snap_15m["rsi"] < 45: score -= weight * 0.3
-    if snap_15m.get("sweep") == "EQUAL_LOW_SWEEP": score += 0.5
-    elif snap_15m.get("sweep") == "EQUAL_HIGH_SWEEP": score -= 0.5
-    if snap_15m.get("inducement") == "BULL_INDUCEMENT": score += 0.3
-    elif snap_15m.get("inducement") == "BEAR_INDUCEMENT": score -= 0.3
+    if not pd.isna(snap_htf["rsi"]):
+        if snap_htf["rsi"] > 55: score += weight * 0.3
+        elif snap_htf["rsi"] < 45: score -= weight * 0.3
+    if snap_htf.get("sweep") == "EQUAL_LOW_SWEEP": score += 0.5
+    elif snap_htf.get("sweep") == "EQUAL_HIGH_SWEEP": score -= 0.5
+    if snap_htf.get("inducement") == "BULL_INDUCEMENT": score += 0.3
+    elif snap_htf.get("inducement") == "BEAR_INDUCEMENT": score -= 0.3
     if score >= 0.9: return "BULLISH"
     if score <= -0.9: return "BEARISH"
     return "NEUTRAL"
 
 
-def get_ltf_scores(snap_1m, snap_5m):
+def get_ltf_scores(snap_entry, snap_confirm):
+    """FIX v5 (F22): arguments named by ROLE, not by timeframe. These used to
+    be snap_1m/snap_5m, which stopped being accurate the moment the entry
+    timeframe changed. The confirmation frame still carries the heavier
+    weight (1.2), unchanged from before."""
     buy_score, sell_score = 0.0, 0.0
-    for snap, w in [(snap_1m, 1.0), (snap_5m, 1.2)]:
+    for snap, w in [(snap_entry, 1.0), (snap_confirm, 1.2)]:
         if snap is None:
             continue
         if snap["pattern"] == "BUY": buy_score += 2 * w
@@ -823,32 +874,36 @@ def get_ltf_scores(snap_1m, snap_5m):
     return round(buy_score, 2), round(sell_score, 2)
 
 
-def calc_confluence_score(snap_1m, snap_5m):
+def calc_confluence_score(snap_entry, snap_confirm):
+    """FIX v5 (F22): renamed from snap_1m/snap_5m. Same scoring."""
     confluence = 0.0
 
-    if snap_1m["pattern"] == "BUY" or snap_1m["pattern"] == "SELL":
+    if snap_entry["pattern"] == "BUY" or snap_entry["pattern"] == "SELL":
         confluence += 2
 
-    if snap_1m["structure_event"] in ("CHoCH_BULL", "BOS_BULL", "CHoCH_BEAR", "BOS_BEAR"):
+    if snap_entry["structure_event"] in ("CHoCH_BULL", "BOS_BULL", "CHoCH_BEAR", "BOS_BEAR"):
         confluence += 3
 
-    if snap_1m["divergence"] in ("BULL_DIV", "BEAR_DIV"):
+    if snap_entry["divergence"] in ("BULL_DIV", "BEAR_DIV"):
         confluence += 2.5
 
-    if (snap_1m["sweep"] == "EQUAL_LOW_SWEEP" and (snap_1m.get("eq_low_count") or 0) >= 3) or \
-       (snap_1m["sweep"] == "EQUAL_HIGH_SWEEP" and (snap_1m.get("eq_high_count") or 0) >= 3):
+    if (snap_entry["sweep"] == "EQUAL_LOW_SWEEP" and (snap_entry.get("eq_low_count") or 0) >= 3) or \
+       (snap_entry["sweep"] == "EQUAL_HIGH_SWEEP" and (snap_entry.get("eq_high_count") or 0) >= 3):
         confluence += 3
 
-    ema_1m_up = snap_1m["ema5"] > snap_1m["ema20"]
-    ema_5m_up = snap_5m["ema5"] > snap_5m["ema20"]
-    if ema_1m_up == ema_5m_up:
+    ema_entry_up = snap_entry["ema5"] > snap_entry["ema20"]
+    ema_confirm_up = snap_confirm["ema5"] > snap_confirm["ema20"]
+    if ema_entry_up == ema_confirm_up:
         confluence += 1.5
 
     return round(confluence, 2)
 
 
-def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regime_5m,
-                     entry_rsi=None, snap_1m=None, snap_5m=None, cvd_pressure=None, eff_cfg=None):
+def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_entry, regime_confirm,
+                     entry_rsi=None, snap_entry=None, snap_confirm=None, cvd_pressure=None,
+                     eff_cfg=None):
+    """FIX v5 (F22): regime_1m/regime_5m and snap_1m/snap_5m renamed to
+    entry/confirm. The gates are unchanged."""
     eff_cfg = eff_cfg if eff_cfg is not None else CONFIG
     if pd.isna(entry_adx) or entry_adx < eff_cfg['ADX_MIN']:
         return None, f"NO TREND (ADX {entry_adx:.1f} < {eff_cfg['ADX_MIN']})"
@@ -857,14 +912,14 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regi
             return None, f"BLOCKED (RSI overbought {entry_rsi:.1f})"
         if entry_rsi < CONFIG['RSI_OVERSOLD'] and sell_score >= buy_score:
             return None, f"BLOCKED (RSI oversold {entry_rsi:.1f})"
-    is_1m_comp = regime_1m["regime"] == "COMPRESSION"
-    is_5m_comp = regime_5m["regime"] == "COMPRESSION"
+    is_entry_comp = regime_entry["regime"] == "COMPRESSION"
+    is_confirm_comp = regime_confirm["regime"] == "COMPRESSION"
 
     # Compression-breakout bypass.
-    # FIX v3 (F8): htf_bias must now actively agree. A NEUTRAL 15m used to
-    # authorise both a long and a short here, which is how a clean uptrend
-    # still produced SELL signals.
-    if is_5m_comp and not is_1m_comp and entry_adx > eff_cfg['ADX_MIN']:
+    # FIX v3 (F8): htf_bias must now actively agree. A NEUTRAL higher
+    # timeframe used to authorise both a long and a short here, which is how
+    # a clean uptrend still produced SELL signals.
+    if is_confirm_comp and not is_entry_comp and entry_adx > eff_cfg['ADX_MIN']:
         if (buy_score >= CONFIG['SCORE_THRESHOLD'] + 0.5 and buy_score > sell_score
                 and htf_bias == "BULLISH"):
             if cvd_pressure is None or cvd_pressure >= -CONFIG['CVD_PRESSURE_MIN_FRAC']:
@@ -874,18 +929,18 @@ def decide_direction(buy_score, sell_score, htf_bias, entry_adx, regime_1m, regi
             if cvd_pressure is None or cvd_pressure <= CONFIG['CVD_PRESSURE_MIN_FRAC']:
                 return "SELL", "COMPRESSION BREAKOUT SHORT"
 
-    if is_1m_comp and is_5m_comp:
+    if is_entry_comp and is_confirm_comp:
         return None, "BLOCKED (Tight Squeeze Range)"
 
-    if regime_1m["regime"] == "RANGING" or regime_5m["regime"] == "RANGING":
+    if regime_entry["regime"] == "RANGING" or regime_confirm["regime"] == "RANGING":
         return None, "BLOCKED (Choppy Flat Zones)"
 
-    if regime_1m["regime"] != "TRENDING" or regime_5m["regime"] != "TRENDING":
+    if regime_entry["regime"] != "TRENDING" or regime_confirm["regime"] != "TRENDING":
         return None, "BLOCKED (Not Dynamic Trending Structure)"
 
     confluence_score = None
-    if snap_1m is not None and snap_5m is not None:
-        confluence_score = calc_confluence_score(snap_1m, snap_5m)
+    if snap_entry is not None and snap_confirm is not None:
+        confluence_score = calc_confluence_score(snap_entry, snap_confirm)
         if confluence_score < eff_cfg['MIN_CONFLUENCE_SCORE']:
             return None, f"BLOCKED (Low confluence {confluence_score:.1f} < {eff_cfg['MIN_CONFLUENCE_SCORE']})"
 
@@ -1041,6 +1096,10 @@ import time as _time
 _HTF_CACHE = {}
 _HTF_CACHE_TTL = 15
 
+# The timeframe the directional bias is read from. Kept as a named constant
+# because two separate functions need to agree on it.
+HTF_BIAS_TIMEFRAME = "15m"
+
 
 def _get_htf_bias_cached(symbol):
     now = _time.time()
@@ -1049,11 +1108,11 @@ def _get_htf_bias_cached(symbol):
         return cached["bias"]
     htf_bias = "NEUTRAL"
     eff_cfg = get_effective_config(symbol)
-    df_15m, _ = fetch_ohlcv_failover(symbol, "15m", CONFIG['LIMIT'])
-    if df_15m is not None:
+    df_htf, _ = fetch_ohlcv_failover(symbol, HTF_BIAS_TIMEFRAME, CONFIG['LIMIT'])
+    if df_htf is not None:
         # FIX v3 (F2): closed candles only for the bias snapshot too.
-        snap_15m = analyze_timeframe(df_15m, closed_only=True, eff_cfg=eff_cfg)
-        htf_bias = get_htf_bias(snap_15m)
+        snap_htf = analyze_timeframe(df_htf, closed_only=True, eff_cfg=eff_cfg)
+        htf_bias = get_htf_bias(snap_htf)
     _HTF_CACHE[symbol] = {"bias": htf_bias, "ts": now}
     return htf_bias
 
@@ -1062,17 +1121,18 @@ _LTF_CACHE = {}
 _SIGNAL_AGE_CACHE = {}
 _LTF_CACHE_TTL = 10
 
+# FIX v5 (F19): the "1m": "5m" entry is gone. 5m is now the fastest entry
+# timeframe and confirms against 15m.
 TIMEFRAME_CONFIRM_MAP = {
-    "1m": "5m",
     "5m": "15m",
     "15m": "1h",
     "1h": "4h",
 }
 
 
-def _get_ltf_snaps_cached(symbol, timeframe="1m", preloaded_entry_snap=None):
+def _get_ltf_snaps_cached(symbol, timeframe="5m", preloaded_entry_snap=None):
     now = _time.time()
-    confirm_tf = TIMEFRAME_CONFIRM_MAP.get(timeframe, "5m")
+    confirm_tf = TIMEFRAME_CONFIRM_MAP.get(timeframe, "15m")
     cache_key = (symbol, timeframe)
     cached = _LTF_CACHE.get(cache_key)
     if cached and (now - cached["ts"]) < _LTF_CACHE_TTL:
@@ -1159,7 +1219,14 @@ def calc_dynamic_trailing_exit(direction, entry_price, current_price, atr, sl, t
     }
 
 
-def analyze(symbol, timeframe="1m"):
+def analyze(symbol, timeframe="5m"):
+    """FIX v5 (F19): default entry timeframe is 5m. A caller asking for an
+    unsupported timeframe gets a clear error instead of a signal built from
+    another exchange's candles."""
+    if timeframe not in SUPPORTED_TIMEFRAMES:
+        return {"symbol": symbol, "timeframe": timeframe,
+                "error": f"unsupported timeframe — this engine trades {SUPPORTED_TIMEFRAMES}"}
+
     eff_cfg = get_effective_config(symbol)
     df_entry, ex_id = fetch_ohlcv_failover(symbol, timeframe, CONFIG['LIMIT'])
     if df_entry is None or len(df_entry) < 3:
@@ -1194,7 +1261,7 @@ def analyze(symbol, timeframe="1m"):
         momentum_note = "Quiet / choppy"
 
     # Last CLOSED candle's own move. This used to read the forming bar, so it
-    # flickered red/green within the same minute.
+    # flickered red/green within the same period.
     last_candle_pct = None
     last_open = float(df_closed["open"].iloc[-1])
     if last_open:
@@ -1222,7 +1289,7 @@ def analyze(symbol, timeframe="1m"):
     direction, reason = decide_direction(
         buy_score, sell_score, htf_bias, snap_entry["adx"],
         snap_entry_tf["regime"], snap_confirm["regime"], entry_rsi=rsi_now,
-        snap_1m=snap_entry_tf, snap_5m=snap_confirm,
+        snap_entry=snap_entry_tf, snap_confirm=snap_confirm,
         cvd_pressure=snap_entry_tf.get("cvd_pressure_norm"),   # FIX v4 (F17)
         eff_cfg=eff_cfg,
     )
@@ -1294,7 +1361,7 @@ def analyze(symbol, timeframe="1m"):
         # frame was the one blocking, and it was invisible.
         "regime_entry": snap_entry_tf["regime"]["regime"],
         "regime_confirm": snap_confirm["regime"]["regime"],
-        "confirm_timeframe": TIMEFRAME_CONFIRM_MAP.get(timeframe, "5m"),
+        "confirm_timeframe": TIMEFRAME_CONFIRM_MAP.get(timeframe, "15m"),
         "exchange": ex_id, "entry": _px(price) if direction else None,
         "tp": tp, "sl": sl, "atr": _px(atr_now) if atr_now else None,
         "tp_levels": tp_levels,
@@ -1455,31 +1522,36 @@ def _build_tf_features(df, eff_cfg=None):
     return df
 
 
-def _htf_bias_series_single(df15):
+def _htf_bias_series_single(df_htf):
+    """Bias series from the slowest frame in the ladder. FIX v5 (F22):
+    parameter renamed from df15 — with 1m gone this frame is 1h, not 15m."""
     weight = 1.0
-    s = pd.Series(0.0, index=df15.index)
-    s += np.where(df15["structure_trend"] == "BULL", weight, np.where(df15["structure_trend"] == "BEAR", -weight, 0.0))
-    s += np.where(df15["ema5"] > df15["ema20"], weight * 0.5, -weight * 0.5)
-    s += np.where(df15["rsi"] > 55, weight * 0.3, np.where(df15["rsi"] < 45, -weight * 0.3, 0.0))
-    s += np.where(df15["sweep_v"] == "EQUAL_LOW_SWEEP", 0.5, np.where(df15["sweep_v"] == "EQUAL_HIGH_SWEEP", -0.5, 0.0))
-    s += np.where(df15["inducement"] == "BULL_INDUCEMENT", 0.3, np.where(df15["inducement"] == "BEAR_INDUCEMENT", -0.3, 0.0))
+    s = pd.Series(0.0, index=df_htf.index)
+    s += np.where(df_htf["structure_trend"] == "BULL", weight, np.where(df_htf["structure_trend"] == "BEAR", -weight, 0.0))
+    s += np.where(df_htf["ema5"] > df_htf["ema20"], weight * 0.5, -weight * 0.5)
+    s += np.where(df_htf["rsi"] > 55, weight * 0.3, np.where(df_htf["rsi"] < 45, -weight * 0.3, 0.0))
+    s += np.where(df_htf["sweep_v"] == "EQUAL_LOW_SWEEP", 0.5, np.where(df_htf["sweep_v"] == "EQUAL_HIGH_SWEEP", -0.5, 0.0))
+    s += np.where(df_htf["inducement"] == "BULL_INDUCEMENT", 0.3, np.where(df_htf["inducement"] == "BEAR_INDUCEMENT", -0.3, 0.0))
 
     # FIX v3 (F10): shift by one bar before this series is merged onto a
     # faster timeframe. The DataFrame index is the candle's OPEN time, but
     # every value on that row (ema5, rsi, structure_trend, sweep) is computed
     # through the candle's CLOSE. merge_asof(direction="backward") matches a
-    # 5m bar at 10:05 to the 15m row labelled 10:00 — whose contents do not
-    # exist until 10:15. That is ten minutes of future information feeding
-    # the entry decision, and it is why backtest results looked usable while
-    # live did not. Shifting means each bar only ever sees the last fully
-    # completed 15m candle.
+    # fast bar to the slow row labelled with an earlier open time — whose
+    # contents do not exist until that slow bar closes. That is future
+    # information feeding the entry decision, and it is why backtest results
+    # looked usable while live did not. Shifting means each bar only ever
+    # sees the last fully completed higher-timeframe candle.
     s = s.shift(1)
 
     bias = np.where(s >= 0.9, "BULLISH", np.where(s <= -0.9, "BEARISH", "NEUTRAL"))
-    return pd.Series(bias, index=df15.index, name="bias")
+    return pd.Series(bias, index=df_htf.index, name="bias")
 
 
-def _ltf_score_series(df1m, df5m):
+def _ltf_score_series(df_entry_tf, df_confirm_tf):
+    """FIX v5 (F22): was _ltf_score_series(df1m, df5m). Now takes the entry
+    frame and the confirmation frame by role. With 1m removed the callers
+    pass 5m and 15m."""
     def score_component(df, w):
         buy = pd.Series(0.0, index=df.index); sell = pd.Series(0.0, index=df.index)
         buy += np.where(df["pat_sig"] == "BUY", 2 * w, 0.0)
@@ -1504,25 +1576,32 @@ def _ltf_score_series(df1m, df5m):
         buy += liq_b; sell += liq_s
         return buy, sell
 
-    b1, s1 = score_component(df1m, 1.0)
-    b5, s5 = score_component(df5m, 1.2)
+    b_entry, s_entry = score_component(df_entry_tf, 1.0)
+    b_conf, s_conf = score_component(df_confirm_tf, 1.2)
 
     # FIX v3 (F10): same open-time / close-value mismatch as the bias series.
-    # The 5m contribution is shifted so a 1m bar never reads a 5m candle that
-    # has not finished forming.
-    b5, s5 = b5.shift(1), s5.shift(1)
+    # The confirmation contribution is shifted so an entry bar never reads a
+    # confirmation candle that has not finished forming.
+    b_conf, s_conf = b_conf.shift(1), s_conf.shift(1)
 
-    out1m = pd.DataFrame({"time": df1m.index, "b1": b1.values, "s1": s1.values})
-    out5m = pd.DataFrame({"time": df5m.index, "b5": b5.values, "s5": s5.values})
-    merged = pd.merge_asof(out1m.sort_values("time"), out5m.sort_values("time"), on="time", direction="backward")
-    merged["buy_score"] = (merged["b1"] + merged["b5"].fillna(0)).round(2)
-    merged["sell_score"] = (merged["s1"] + merged["s5"].fillna(0)).round(2)
+    out_entry = pd.DataFrame({"time": df_entry_tf.index,
+                              "b_entry": b_entry.values, "s_entry": s_entry.values})
+    out_conf = pd.DataFrame({"time": df_confirm_tf.index,
+                             "b_conf": b_conf.values, "s_conf": s_conf.values})
+    merged = pd.merge_asof(out_entry.sort_values("time"), out_conf.sort_values("time"),
+                           on="time", direction="backward")
+    merged["buy_score"] = (merged["b_entry"] + merged["b_conf"].fillna(0)).round(2)
+    merged["sell_score"] = (merged["s_entry"] + merged["s_conf"].fillna(0)).round(2)
     merged = merged.set_index("time")
     return merged[["buy_score", "sell_score"]]
 
 
 def run_backtest_full(symbol, entry_timeframe="5m"):
     """Multi-timeframe backtest.
+
+    FIX v5 (F20): the ladder moved up one step now that 1m is gone. It was
+    1m scores / 5m confirm / 15m bias; it is now 5m scores / 15m confirm /
+    1h bias. Same relative spacing, same shift(1) look-ahead guard.
 
     STILL NOT AT FULL LIVE PARITY: the confluence gate, the CVD check and the
     blow-off veto that live analyze() applies are not replicated here, so this
@@ -1531,22 +1610,22 @@ def run_backtest_full(symbol, entry_timeframe="5m"):
     eff_cfg = get_effective_config(symbol)
     limit = CONFIG['BACKTEST_CANDLES']
     df_entry, ex_id = fetch_ohlcv_failover(symbol, entry_timeframe, limit)
-    df_1m, _ = fetch_ohlcv_failover(symbol, "1m", limit)
-    df_5m, _ = fetch_ohlcv_failover(symbol, "5m", limit)
-    df_15m, _ = fetch_ohlcv_failover(symbol, "15m", limit)
-    if any(x is None for x in [df_entry, df_1m, df_5m, df_15m]):
-        return {"error": "insufficient data across timeframes (need 1m/5m/15m)"}
+    df_fast, _ = fetch_ohlcv_failover(symbol, "5m", limit)
+    df_mid, _ = fetch_ohlcv_failover(symbol, "15m", limit)
+    df_slow, _ = fetch_ohlcv_failover(symbol, "1h", limit)
+    if any(x is None for x in [df_entry, df_fast, df_mid, df_slow]):
+        return {"error": "insufficient data across timeframes (need 5m/15m/1h)"}
 
     df_entry = _build_tf_features(df_entry, eff_cfg=eff_cfg)
-    df_1m = _build_tf_features(df_1m, eff_cfg=eff_cfg)
-    df_5m = _build_tf_features(df_5m, eff_cfg=eff_cfg)
-    df_15m = _build_tf_features(df_15m, eff_cfg=eff_cfg)
+    df_fast = _build_tf_features(df_fast, eff_cfg=eff_cfg)
+    df_mid = _build_tf_features(df_mid, eff_cfg=eff_cfg)
+    df_slow = _build_tf_features(df_slow, eff_cfg=eff_cfg)
 
-    bias_series = _htf_bias_series_single(df_15m)
-    score_df = _ltf_score_series(df_1m, df_5m)
+    bias_series = _htf_bias_series_single(df_slow)
+    score_df = _ltf_score_series(df_fast, df_mid)
 
-    regime_1m_series = df_1m[["regime_label"]].rename(columns={"regime_label": "regime_1m"})
-    regime_5m_series = df_5m[["regime_label"]].rename(columns={"regime_label": "regime_5m"})
+    regime_entry_series = df_fast[["regime_label"]].rename(columns={"regime_label": "regime_entry"})
+    regime_confirm_series = df_mid[["regime_label"]].rename(columns={"regime_label": "regime_confirm"})
 
     entry_times = pd.DataFrame({"time": df_entry.index})
 
@@ -1557,15 +1636,15 @@ def run_backtest_full(symbol, entry_timeframe="5m"):
 
     bias_aligned = _asof(bias_series.rename("bias").to_frame())
     score_aligned = _asof(score_df)
-    regime1_aligned = _asof(regime_1m_series)
-    regime5_aligned = _asof(regime_5m_series)
+    regime_entry_aligned = _asof(regime_entry_series)
+    regime_confirm_aligned = _asof(regime_confirm_series)
 
     df_entry = df_entry.reset_index()
     df_entry["bias"] = bias_aligned["bias"]
     df_entry["buy_score"] = score_aligned["buy_score"]
     df_entry["sell_score"] = score_aligned["sell_score"]
-    df_entry["regime_1m"] = regime1_aligned["regime_1m"]
-    df_entry["regime_5m"] = regime5_aligned["regime_5m"]
+    df_entry["regime_entry"] = regime_entry_aligned["regime_entry"]
+    df_entry["regime_confirm"] = regime_confirm_aligned["regime_confirm"]
 
     opens = df_entry["open"].values
     closes = df_entry["close"].values
@@ -1591,7 +1670,7 @@ def run_backtest_full(symbol, entry_timeframe="5m"):
         gap = abs(buy_score - sell_score)
         if gap < eff_cfg['SCORE_GAP_MIN']: continue
 
-        if row["regime_1m"] != "TRENDING" or row["regime_5m"] != "TRENDING":
+        if row["regime_entry"] != "TRENDING" or row["regime_confirm"] != "TRENDING":
             continue
 
         bias = row["bias"]
@@ -1624,9 +1703,11 @@ def run_backtest_full(symbol, entry_timeframe="5m"):
 
     return _summarize(results, symbol, entry_timeframe, len(df_entry),
                       blocked_by_cost=blocked_by_cost,
-                      extra={"note": "v3: SL-first fills, next-bar-open entry, timeout trades counted, "
-                                     "round-trip cost, HTF lookahead removed. Confluence/CVD/blowoff "
-                                     "gates still NOT replicated here — see docstring."})
+                      extra={"ladder": "5m scores / 15m confirm / 1h bias",
+                             "note": "v5: 1m removed, ladder shifted up. SL-first fills, "
+                                     "next-bar-open entry, timeout trades counted, round-trip "
+                                     "cost 0.18. Confluence/CVD/blowoff gates still NOT "
+                                     "replicated here — see docstring."})
 
 
 def run_backtest(symbol, timeframe="5m"):
@@ -1645,7 +1726,7 @@ def run_backtest(symbol, timeframe="5m"):
     df = calc_equal_level_density(df, CONFIG['BSL_SSL_LOOKBACK'], CONFIG['EQUAL_LEVEL_TOLERANCE_PCT'])
 
     _confirm_tf = TIMEFRAME_CONFIRM_MAP.get(timeframe)
-    _confirm_rule = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}.get(_confirm_tf)
+    _confirm_rule = {"15m": "15min", "1h": "1h", "4h": "4h"}.get(_confirm_tf)
     if _confirm_rule:
         _htf_close = df["close"].resample(_confirm_rule).last().dropna()
         df["htf_ema5"] = calc_ema(_htf_close, 5).shift(1).reindex(df.index, method="ffill")
@@ -1758,18 +1839,18 @@ def run_backtest(symbol, timeframe="5m"):
 
     return _summarize(results, symbol, timeframe, len(df),
                       blocked_by_cost=blocked_by_cost,
-                      extra={"note": "v3: closest proxy for live. SL-first fills, next-bar-open "
-                                     "entry, timeouts counted, round-trip cost, cost gate."})
+                      extra={"note": "v5: closest proxy for live. SL-first fills, next-bar-open "
+                                     "entry, timeouts counted, round-trip cost 0.18, cost gate."})
 
 
 def run_factor_backtest(symbol, timeframe="5m"):
     """Which single factors actually carry edge on their own.
 
-    With v3's honest fills (stop first, next-bar entry, timeouts counted,
-    real cost) expect these numbers to be materially worse than before. That
-    difference was never edge — it was measurement error. Keep only factors
-    that clear profit factor 1.2 on a decent sample and drop the rest from
-    the composite score."""
+    With honest fills (stop first, next-bar entry, timeouts counted, real
+    cost) expect these numbers to be materially worse than a naive backtest.
+    That difference was never edge — it was measurement error. Keep only
+    factors that clear profit factor 1.2 on a decent sample and drop the rest
+    from the composite score."""
     eff_cfg = get_effective_config(symbol)
     limit = CONFIG['BACKTEST_CANDLES']
     df, ex_id = fetch_ohlcv_failover(symbol, timeframe, limit)
@@ -2216,15 +2297,19 @@ class OrderFlowRiskManager(RiskManager):
         }
 
 
-def analyze_orderflow(symbol, entry_timeframe="1m", structure_timeframe="5m"):
+def analyze_orderflow(symbol, entry_timeframe="5m", structure_timeframe="15m"):
+    """FIX v5 (F19): was 1m entry / 5m structure. Now 5m entry / 15m
+    structure. The POC target this produces is often only a fraction of a
+    percent away, so the cost gate below rejects a large share of them —
+    that is the gate doing its job, not a bug."""
     df_entry, ex_id = fetch_ohlcv_failover(symbol, entry_timeframe, CONFIG['LIMIT'])
-    df_5m, _ = fetch_ohlcv_failover(symbol, structure_timeframe, CONFIG['LIMIT'])
-    if df_entry is None or df_5m is None:
+    df_struct, _ = fetch_ohlcv_failover(symbol, structure_timeframe, CONFIG['LIMIT'])
+    if df_entry is None or df_struct is None:
         return {"symbol": symbol, "error": "no data"}
 
     # FIX v3 (F2): closed candles only, same rule as analyze().
     df_entry = _drop_forming_candle(df_entry)
-    df_5m = _drop_forming_candle(df_5m)
+    df_struct = _drop_forming_candle(df_struct)
     if df_entry is None or len(df_entry) < 30:
         return {"symbol": symbol, "error": "not enough closed candles"}
 
@@ -2235,7 +2320,7 @@ def analyze_orderflow(symbol, entry_timeframe="1m", structure_timeframe="5m"):
     df_entry = calc_cvd_proxy(df_entry)
     df_entry["absorption"] = detect_absorption_proxy(df_entry)
 
-    vp_nodes = build_volume_profile_nodes(df_5m)
+    vp_nodes = build_volume_profile_nodes(df_struct)
     atr_series = calc_atr(df_entry, CONFIG['ATR_PERIOD'])
 
     if not session_ok:
@@ -2302,11 +2387,12 @@ def analyze_orderflow(symbol, entry_timeframe="1m", structure_timeframe="5m"):
     }
 
 
-def run_orderflow_backtest(symbol, entry_timeframe="1m", structure_timeframe="5m"):
+def run_orderflow_backtest(symbol, entry_timeframe="5m", structure_timeframe="15m"):
+    """FIX v5 (F19): was 1m entry / 5m structure."""
     limit = CONFIG['BACKTEST_CANDLES']
     df_entry, ex_id = fetch_ohlcv_failover(symbol, entry_timeframe, limit)
-    df_5m, _ = fetch_ohlcv_failover(symbol, structure_timeframe, limit)
-    if df_entry is None or df_5m is None:
+    df_struct, _ = fetch_ohlcv_failover(symbol, structure_timeframe, limit)
+    if df_entry is None or df_struct is None:
         return {"error": "no data"}
 
     df_entry = add_indicators_vectorized(df_entry)
@@ -2331,7 +2417,7 @@ def run_orderflow_backtest(symbol, entry_timeframe="1m", structure_timeframe="5m
             continue
 
         sub_df = df_entry.iloc[:i + 1]
-        vp_source = df_5m[df_5m.index <= ts]
+        vp_source = df_struct[df_struct.index <= ts]
         if len(vp_source) < 10:
             continue
         vp_nodes = build_volume_profile_nodes(vp_source)
@@ -2406,6 +2492,7 @@ def run_orderflow_backtest(symbol, entry_timeframe="1m", structure_timeframe="5m
     return _summarize(results, symbol, entry_timeframe, len(df_entry),
                       blocked_by_cost=blocked_by_cost,
                       extra={"setup_breakdown": setup_breakdown,
+                             "structure_timeframe": structure_timeframe,
                              "note": "OHLCV-based order-flow PROXY backtest — no real tape data."})
 
 
@@ -2620,14 +2707,18 @@ def run_funding_rate_backtest(symbol="BTC/USDT:USDT", price_timeframe="15m", fun
 # ══════════════════════════════════════════════════════════════════════════
 # COST REALITY CHECK — run this before anything else
 # ══════════════════════════════════════════════════════════════════════════
-def cost_reality_check(symbol="BTC/USDT:USDT", timeframes=("1m", "5m", "15m", "1h")):
+def cost_reality_check(symbol="BTC/USDT:USDT", timeframes=SUPPORTED_TIMEFRAMES):
     """FIX v3 (F3): the single most useful number in this file.
 
     For each timeframe it reports the median ATR as a percentage of price, the
     gross take-profit that TP_ATR_MULT implies, and how many multiples of your
     round-trip cost that target represents. Any timeframe below
     MIN_TP_COST_RATIO is not tradeable at your fee level — no signal quality
-    fixes that, because the target is smaller than the toll."""
+    fixes that, because the target is smaller than the toll.
+
+    FIX v5 (F19): defaults to SUPPORTED_TIMEFRAMES. 1m used to be in this
+    list and used to come back "TOO SMALL" every single run, which is what
+    prompted removing it outright."""
     out = []
     cost = round_trip_cost_pct()
     for tf in timeframes:
@@ -2818,7 +2909,7 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == "orderflow":
         SYMBOL = "BTC/USDT:USDT"
         print(f"Order-flow-proxy live signal for {SYMBOL}:")
-        sig = analyze_orderflow(SYMBOL, entry_timeframe="1m", structure_timeframe="5m")
+        sig = analyze_orderflow(SYMBOL, entry_timeframe="5m", structure_timeframe="15m")
         print(sig)
         print("\nHouse-money risk sizing example (10,000 USDT capital, 3x leverage):")
         ofrm = OrderFlowRiskManager(account_capital_usdt=10000)
@@ -2826,8 +2917,8 @@ if __name__ == "__main__":
             print(ofrm.position_size_orderflow(sig["entry"], sig["sl"], leverage=3))
         else:
             print("No active signal to size.")
-        print("\nOrder-flow-proxy backtest (1m entry / 5m structure):")
-        print(run_orderflow_backtest(SYMBOL, entry_timeframe="1m", structure_timeframe="5m"))
+        print("\nOrder-flow-proxy backtest (5m entry / 15m structure):")
+        print(run_orderflow_backtest(SYMBOL, entry_timeframe="5m", structure_timeframe="15m"))
     else:
         factor_result = step1_factor_report()
         grid_results = step2_grid_search()
