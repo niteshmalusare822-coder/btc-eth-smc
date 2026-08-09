@@ -303,7 +303,18 @@ def factor_backtest(symbol, timeframe):
     try:
         sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT", "DEXE": "DEXE/USDT:USDT", "BANK": "BANK/USDT:USDT"}
         full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
-        result = run_factor_backtest(full_symbol, timeframe)
+        # This endpoint loops eight factors over every bar, each with an
+        # inner outcome window. On a 0.1 CPU instance the full 3000-candle
+        # run can exceed gunicorn's request timeout and take the worker down
+        # with it — which also kills the background scanner thread living in
+        # that same process. `candles` lets you ask for a shorter run.
+        # Fewer candles is a smaller sample, not a cheaper answer: read the
+        # trade counts before trusting a short run's profit factors.
+        try:
+            candles = int(request.args.get("candles", 3000))
+        except ValueError:
+            candles = 3000
+        result = run_factor_backtest(full_symbol, timeframe, candles=candles)
         return jsonify(sanitize(result))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
