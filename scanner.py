@@ -190,7 +190,23 @@ CONFIG = {
     'CHOPPINESS_PERIOD': 14,
     'CHOPPINESS_TREND_MAX': 61.8,
     'LIMIT': 150,
-    'TP_ATR_MULT': 2.2,
+    # ── FIX v6 (F23): TP_ATR_MULT raised from 2.2 to 3.0 ────────────────
+    # The fee is a fixed percentage of price; the target is not. So the only
+    # way to shrink the fee's share of a winning trade is to make the target
+    # bigger. Measured on BTC 15m: 1R is about 0.44% of price, so at 0.18%
+    # round-trip the fee ate roughly 20% of every R. At 3.0 the target is
+    # 36% further out and the fee's share drops to about 15%.
+    #
+    # This does NOT loosen any filter. ADX_MIN, MIN_CONFLUENCE_SCORE and
+    # SCORE_THRESHOLD are untouched on purpose — a signal that only appears
+    # because a gate was lowered is a signal the gate existed to reject.
+    #
+    # The trade-off is honest: a further target is hit less often. Gross R:R
+    # goes from 2.75 to 3.75, which moves the breakeven win rate from about
+    # 26% to about 21%. Expect win rate to fall and expectancy to be the
+    # number that decides whether this was worth it — watch expectancy_pct
+    # and profit_factor, not win_rate, when comparing before and after.
+    'TP_ATR_MULT': 3.0,
     'SL_ATR_MULT': 0.8,
     'RSI_OVERBOUGHT': 85,
     'RSI_OVERSOLD': 15,
