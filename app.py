@@ -79,6 +79,14 @@ TICKERS = {
     "bank": "BANK/USDT:USDT",
 }
 
+# Single source of truth for which timeframes the dashboard covers. 1m was
+# dropped: at CoinDCX taker fees a 1m ATR target is smaller than the round
+# trip cost, so every 1m setup was either blocked by cost_gate() or was a
+# losing trade waiting to happen. The placeholder and error paths below read
+# this same tuple, so they can never drift out of sync with the scan loop
+# again — previously they announced 1m/5m cards while the loop built 5m/15m.
+SCAN_TIMEFRAMES = ("5m", "15m")
+
 _DASH = {"data": None, "ts": 0.0, "error": None, "progress": "not started",
          "passes": 0, "last_pass_seconds": None}
 _DASH_LOCK = threading.Lock()
@@ -99,7 +107,7 @@ def _pending(tick, tf):
 
 
 def _blank_dashboard():
-    return {key: {tf: _pending(tick, tf) for tf in ("1m", "5m")}
+    return {key: {tf: _pending(tick, tf) for tf in SCAN_TIMEFRAMES}
             for key, tick in TICKERS.items()}
 
 
@@ -123,7 +131,7 @@ def _build_dashboard():
         t0 = time.time()
         try:
             payload = {}
-            for tf in ("5m", "15m",):
+            for tf in SCAN_TIMEFRAMES:
                 t1 = time.time()
                 payload[tf] = safe_analyze(tick, tf)
                 _log(f"{key} {tf} took {time.time() - t1:.1f}s")
@@ -134,7 +142,7 @@ def _build_dashboard():
             # must not take the other three down with it.
             _log(f"{key} FAILED: {e}")
             _publish(key, {tf: {"symbol": tick, "timeframe": tf, "error": str(e)}
-                           for tf in ("1m", "5m")})
+                           for tf in SCAN_TIMEFRAMES})
             continue
 
         try:
@@ -220,6 +228,7 @@ def dashboard():
     out["_age_seconds"] = round(time.time() - ts, 1)
     out["_progress"] = progress
     out["_passes"] = passes
+    out["_timeframes"] = list(SCAN_TIMEFRAMES)
     if err:
         out["_error"] = err
     return jsonify(out)
@@ -245,7 +254,7 @@ def strategy_test_all():
     out = {}
     for name, ticker in (("BTC", "BTC/USDT:USDT"), ("ETH", "ETH/USDT:USDT"),
                          ("DEXE", "DEXE/USDT:USDT"), ("BANK", "BANK/USDT:USDT")):
-        for tf in ("5m", "15m"):
+        for tf in SCAN_TIMEFRAMES:
             try:
                 out[f"{name}_{tf}"] = backtest_sma(ticker, tf)
             except Exception as e:
@@ -411,6 +420,7 @@ def scanner_status():
                         pending.append(f"{key}/{tf}")
         return jsonify({
             "scanner_alive": _scanner_thread is not None and _scanner_thread.is_alive(),
+            "timeframes": list(SCAN_TIMEFRAMES),
             "passes_completed": _DASH["passes"],
             "total_revivals": _revivals,
             "last_pass_seconds": _DASH["last_pass_seconds"],
