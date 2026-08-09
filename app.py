@@ -123,7 +123,7 @@ def _build_dashboard():
         t0 = time.time()
         try:
             payload = {}
-            for tf in ("1m", "5m", "15m",):
+            for tf in ("5m", "15m",):
                 t1 = time.time()
                 payload[tf] = safe_analyze(tick, tf)
                 _log(f"{key} {tf} took {time.time() - t1:.1f}s")
