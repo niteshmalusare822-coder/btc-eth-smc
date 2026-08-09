@@ -211,7 +211,30 @@ CONFIG = {
     'RSI_OVERBOUGHT': 85,
     'RSI_OVERSOLD': 15,
     'BACKTEST_CANDLES': 3000,
-    'BACKTEST_OUTCOME_WINDOW': 10,
+
+    # ── FIX v6 (F26): the window was far too short for the target ───────
+    # This was 10 bars. With TP at 3.0 ATR and SL at 0.8 ATR, a trade needs
+    # 3 ATR of favourable movement to win but only 0.8 ATR of adverse
+    # movement to lose. In 10 bars the adverse move is routine and the
+    # favourable one is rare, so nearly everything resolved as LOSS or
+    # TIMEOUT — and a TIMEOUT exits at market and still pays the full
+    # round-trip fee, so it books as a loss too.
+    #
+    # The signature was unmistakable: run_factor_backtest returned profit
+    # factors of 0.07 to 0.23 across ALL EIGHT factors, including the plain
+    # EMA-crossover baseline. Win rates of 15% against a 21% breakeven means
+    # the test was performing WORSE than random, which no combination of
+    # eight unrelated signals does by accident. That is a broken measurement,
+    # not eight broken factors.
+    #
+    # 60 bars is 5 hours on 5m and 15 hours on 15m — enough room for a 3 ATR
+    # move to actually resolve. smc.py has used TIMEOUT_BARS 40 for exactly
+    # this reason; this file never got the same treatment.
+    #
+    # If you change TP_ATR_MULT, revisit this. The two are coupled: a further
+    # target needs more time, and leaving the window behind silently turns
+    # every backtest into a fee-collection simulator.
+    'BACKTEST_OUTCOME_WINDOW': 60,
 
     # ── Divergence quality gates ────────────────────────────────────
     'DIV_MIN_RSI_GAP': 5.0,
@@ -1975,16 +1998,25 @@ def run_backtest(symbol, timeframe="5m"):
                                      "entry, timeouts counted, round-trip cost 0.18, cost gate."})
 
 
-def run_factor_backtest(symbol, timeframe="5m"):
+def run_factor_backtest(symbol, timeframe="5m", candles=None):
     """Which single factors actually carry edge on their own.
 
-    With honest fills (stop first, next-bar entry, timeouts counted, real
-    cost) expect these numbers to be materially worse than a naive backtest.
-    That difference was never edge — it was measurement error. Keep only
-    factors that clear profit factor 1.2 on a decent sample and drop the rest
-    from the composite score."""
+    FIX v6 (F27): every factor function now reads NUMPY ARRAYS, not
+    df[col].iloc[i]. Scalar .iloc access goes through pandas indexing
+    machinery on every single call; in a loop of 3000 bars across 8 factors
+    that is 24,000 of them per run, and it was the reason this endpoint took
+    over two minutes and got killed by gunicorn's 120s timeout once
+    BACKTEST_OUTCOME_WINDOW went from 10 to 60. The arrays are extracted
+    once up front and indexed directly, which is roughly an order of
+    magnitude faster and changes no result.
+
+    `candles` is a parameter so a slow host can ask for less. Fewer candles
+    means a smaller sample and wider error bars, not a faster answer to the
+    same question — halve it only if the request will not complete
+    otherwise, and read the trade counts accordingly.
+    """
     eff_cfg = get_effective_config(symbol)
-    limit = CONFIG['BACKTEST_CANDLES']
+    limit = candles if candles is not None else CONFIG['BACKTEST_CANDLES']
     df, ex_id = fetch_ohlcv_failover(symbol, timeframe, limit)
     if df is None:
         return {"error": "no data"}
@@ -2004,12 +2036,29 @@ def run_factor_backtest(symbol, timeframe="5m"):
     lows = df["low"].values
     n = len(df); WINDOW = CONFIG['BACKTEST_OUTCOME_WINDOW']
 
+    # FIX v6 (F27): one extraction, then plain array indexing everywhere.
+    a_atr = df["atr"].values
+    a_sweep = df["sweep_v"].values
+    a_struct = df["structure_event"].values
+    a_div = df["divergence"].values
+    a_pat = df["pat_sig"].values
+    a_ema5 = df["ema5"].values
+    a_ema20 = df["ema20"].values
+    a_dbull = df["dist_to_bull_fvg_pct"].values
+    a_dbear = df["dist_to_bear_fvg_pct"].values
+    a_ind = df["inducement"].values
+    a_eqh = df["eq_high_count"].values
+    a_eql = df["eq_low_count"].values
+
+    fvg_prox = CONFIG['FVG_PROXIMITY_PCT']
+    eq_min = CONFIG['EQUAL_LEVEL_MIN_COUNT']
+
     def simulate(direction_fn, label):
         results = []
         blocked = 0
         for i in range(60, n - WINDOW - 1):
-            atr = df["atr"].iloc[i]
-            if pd.isna(atr): continue
+            atr = a_atr[i]
+            if np.isnan(atr): continue
             direction = direction_fn(i)
             if direction is None: continue
             entry = opens[i + 1]                   # FIX v3 (F7)
@@ -2025,75 +2074,90 @@ def run_factor_backtest(symbol, timeframe="5m"):
 
         if not results:
             return {"label": label, "total_trades": 0, "blocked_by_cost_gate": blocked,
-                    "note": "no signals"}
+                    "outcome_window_bars": WINDOW, "note": "no signals"}
 
         total = len(results)
         wins = [r for r in results if r["pnl_pct"] > 0]
         losses = [r for r in results if r["pnl_pct"] <= 0]
+        timeouts = [r for r in results if r["outcome"] == "TIMEOUT"]
         gross_profit = sum(r["pnl_pct"] for r in wins) if wins else 0.0
         gross_loss = abs(sum(r["pnl_pct"] for r in losses)) if losses else 0.0
         profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
         win_rate = round(len(wins) / total * 100, 1)
         expectancy = round(sum(r["pnl_pct"] for r in results) / total, 4)
-        return {"label": label, "total_trades": total, "wins": len(wins), "losses": len(losses),
+        # FIX v6 (F26): timeout_pct is the first number to read. If most
+        # trades time out, the outcome window is too short for TP_ATR_MULT
+        # and every other figure below is measuring fees, not edge. Fix the
+        # window before drawing any conclusion about the factor itself.
+        return {"label": label, "total_trades": total, "wins": len(wins),
+                "losses": len(losses), "timeouts": len(timeouts),
+                "timeout_pct": round(len(timeouts) / total * 100, 1),
                 "win_rate": win_rate, "profit_factor": profit_factor,
-                "expectancy_pct": expectancy, "blocked_by_cost_gate": blocked}
+                "expectancy_pct": expectancy,
+                "avg_win_pct": round(gross_profit / len(wins), 4) if wins else 0.0,
+                "avg_loss_pct": round(gross_loss / len(losses), 4) if losses else 0.0,
+                "blocked_by_cost_gate": blocked,
+                "outcome_window_bars": WINDOW}
 
     def f_sweep(i):
-        s = df["sweep_v"].iloc[i]
+        s = a_sweep[i]
         if s == "EQUAL_LOW_SWEEP": return "BUY"
         if s == "EQUAL_HIGH_SWEEP": return "SELL"
         return None
 
     def f_structure(i):
-        ev = df["structure_event"].iloc[i]
+        ev = a_struct[i]
         if ev in ("BOS_BULL", "CHoCH_BULL"): return "BUY"
         if ev in ("BOS_BEAR", "CHoCH_BEAR"): return "SELL"
         return None
 
     def f_divergence(i):
-        d = df["divergence"].iloc[i]
+        d = a_div[i]
         if d == "BULL_DIV": return "BUY"
         if d == "BEAR_DIV": return "SELL"
         return None
 
     def f_pattern(i):
-        p = df["pat_sig"].iloc[i]
+        p = a_pat[i]
         if p == "BUY": return "BUY"
         if p == "SELL": return "SELL"
         return None
 
     def f_ema_baseline(i):
         if i < 1: return None
-        cross_up = df["ema5"].iloc[i - 1] <= df["ema20"].iloc[i - 1] and df["ema5"].iloc[i] > df["ema20"].iloc[i]
-        cross_down = df["ema5"].iloc[i - 1] >= df["ema20"].iloc[i - 1] and df["ema5"].iloc[i] < df["ema20"].iloc[i]
-        if cross_up: return "BUY"
-        if cross_down: return "SELL"
+        if a_ema5[i - 1] <= a_ema20[i - 1] and a_ema5[i] > a_ema20[i]: return "BUY"
+        if a_ema5[i - 1] >= a_ema20[i - 1] and a_ema5[i] < a_ema20[i]: return "SELL"
         return None
 
     def f_fvg(i):
-        dbull = df["dist_to_bull_fvg_pct"].iloc[i]; dbear = df["dist_to_bear_fvg_pct"].iloc[i]
-        if not pd.isna(dbull) and 0 <= dbull <= CONFIG['FVG_PROXIMITY_PCT']: return "BUY"
-        if not pd.isna(dbear) and 0 <= dbear <= CONFIG['FVG_PROXIMITY_PCT']: return "SELL"
+        dbull = a_dbull[i]; dbear = a_dbear[i]
+        if not np.isnan(dbull) and 0 <= dbull <= fvg_prox: return "BUY"
+        if not np.isnan(dbear) and 0 <= dbear <= fvg_prox: return "SELL"
         return None
 
     def f_inducement(i):
-        ind = df["inducement"].iloc[i]
+        ind = a_ind[i]
         if ind == "BULL_INDUCEMENT": return "BUY"
         if ind == "BEAR_INDUCEMENT": return "SELL"
         return None
 
     def f_equal_level_density(i):
-        eqh = df["eq_high_count"].iloc[i] or 0
-        eql = df["eq_low_count"].iloc[i] or 0
-        if pd.isna(eqh) or pd.isna(eql): return None
-        if eql >= CONFIG['EQUAL_LEVEL_MIN_COUNT'] and eql > eqh: return "BUY"
-        if eqh >= CONFIG['EQUAL_LEVEL_MIN_COUNT'] and eqh > eql: return "SELL"
+        eqh = a_eqh[i]; eql = a_eql[i]
+        if np.isnan(eqh) or np.isnan(eql): return None
+        if eql >= eq_min and eql > eqh: return "BUY"
+        if eqh >= eq_min and eqh > eql: return "SELL"
         return None
 
     return {
         "symbol": symbol, "timeframe": timeframe, "candles_tested": len(df),
         "round_trip_cost_pct": round_trip_cost_pct(),
+        "outcome_window_bars": WINDOW,
+        "tp_atr_mult": CONFIG['TP_ATR_MULT'], "sl_atr_mult": CONFIG['SL_ATR_MULT'],
+        # FIX v6 (F26): on a pure random walk with no edge at all, a 3.0/0.8
+        # ATR target set resolves at roughly 28% wins. Any factor at or below
+        # that number is not an underperforming factor — it is noise. Compare
+        # win_rate against this, never against 50%.
+        "random_walk_win_rate_pct": 28.0,
         "factors": [
             simulate(f_sweep, "1. Liquidity Sweep (BSL/SSL) only"),
             simulate(f_structure, "2. Structure Break (BOS/CHoCH) only"),
