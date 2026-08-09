@@ -99,6 +99,19 @@ function renderConfluence(d) {
     `;
 }
 
+// Risk-first sizing. The only quantity shown is the one whose downside is
+// capped. The old "qty for ₹500 profit" line is deliberately gone — it had no
+// upper bound and was the thing recommending 4x-oversized positions.
+//
+// This function's header was destroyed when renderConfluence() was pasted on
+// top of it, leaving `const levColor` and the return below sitting at file
+// scope. A `return` outside a function is a SyntaxError, so the ENTIRE script
+// failed to parse and not one line of it ran — which is why the page sat on
+// "Connecting..." forever while the backend was scanning perfectly.
+function renderSizing(d) {
+    const s = d.risk_size;
+    if (!s) return "";
+
     const levColor = s.leverage_needed > 3 ? "#ff9100" : "#00e676";
     const need = d.capital_needed_for_500;
     const needLine = (need && need > s.capital_inr)
@@ -199,6 +212,7 @@ function renderCoin(data) {
             <p class="meta" style="color:${momColor}">${d.momentum_note ?? ""} (${d.momentum_pct ?? "-"}%) &nbsp; | &nbsp; This candle: ${d.last_candle_direction ?? "-"} (${d.last_candle_pct ?? "-"}%)</p>
             ${boRow}
             ${renderConfluence(d)}
+            ${renderSizing(d)}
             <p class="reason">${d.reason ?? ""}</p>
             ${tradeRow}
         </div>`;
