@@ -64,16 +64,40 @@ async function loadViability() {
 // Risk-first sizing. The only quantity shown is the one whose downside is
 // capped. The old "qty for ₹500 profit" line is deliberately gone — it had no
 // upper bound and was the thing recommending 4x-oversized positions.
-function renderSize(d) {
-    const s = d.risk_size;
-    if (!s) return "";
+function renderConfluence(d) {
+    const detail = d.confluence_detail;
 
-    if (!s.tradeable) {
-        return `<div style="margin-top:8px;padding:8px;border:1px solid #ff4d4d;border-radius:4px;">
-            <p class="meta" style="color:#ff4d4d;font-weight:bold;margin:0;">🚫 DON'T TAKE THIS</p>
-            <p class="meta" style="margin:4px 0 0;">${s.note}</p>
+    if (!detail) return "";
+
+    const labels = {
+        candle_pattern: "Candle Pattern",
+        structure_break: "Structure Break",
+        divergence: "Divergence",
+        sweep_with_equal_levels: "Liquidity Sweep + Equal Levels",
+        fvg_proximity: "FVG Proximity",
+        inducement: "Inducement",
+        htf_ema_alignment: "HTF EMA Alignment"
+    };
+
+    const rows = Object.entries(detail).map(([key, value]) => {
+        const status = value.fired ? "✓" : "—";
+        const contribution = Number(value.contributed ?? 0).toFixed(1);
+
+        return `<div style="font-size:12px;color:${value.fired ? "#ddd" : "#777"};">
+            ${status} ${labels[key] ?? key}: ${contribution}
         </div>`;
-    }
+    }).join("");
+
+    return `
+        <div style="margin-top:6px;padding:7px;border:1px solid #333;border-radius:4px;">
+            <p class="meta" style="margin:0 0 4px;">
+                <b>Confluence:</b>
+                ${d.confluence_score ?? "-"} / ${d.confluence_threshold ?? "-"}
+            </p>
+            ${rows}
+        </div>
+    `;
+}
 
     const levColor = s.leverage_needed > 3 ? "#ff9100" : "#00e676";
     const need = d.capital_needed_for_500;
@@ -174,6 +198,7 @@ function renderCoin(data) {
             <p class="meta">Score: BUY ${d.buy_score ?? "-"} / SELL ${d.sell_score ?? "-"}</p>
             <p class="meta" style="color:${momColor}">${d.momentum_note ?? ""} (${d.momentum_pct ?? "-"}%) &nbsp; | &nbsp; This candle: ${d.last_candle_direction ?? "-"} (${d.last_candle_pct ?? "-"}%)</p>
             ${boRow}
+            ${renderConfluence(d)}
             <p class="reason">${d.reason ?? ""}</p>
             ${tradeRow}
         </div>`;
