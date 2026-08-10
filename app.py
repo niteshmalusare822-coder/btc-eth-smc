@@ -6,7 +6,7 @@ import signal_log
 import viability
 from scanner import fetch_ohlcv_failover
 from sma_strategy_test import backtest_sma
-from scanner import analyze, run_backtest, run_backtest_full, run_factor_backtest, run_combined_backtest, run_funding_rate_backtest, calc_dynamic_trailing_exit
+from scanner import analyze, run_backtest, run_backtest_full, run_factor_backtest, run_combined_backtest, run_funding_rate_backtest, calc_dynamic_trailing_exit, cost_reality_check
 # new realistic backtest import
 from scanner_fixed import improved_run_backtest
 # Standalone sweep->shift strategy. Imports nothing from scanner.py, so its
@@ -297,6 +297,43 @@ def backtest_full(symbol, timeframe):
         return jsonify(sanitize(result))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/cost-check/<symbol>")
+def cost_check(symbol):
+    """Which timeframes on this symbol can even pay their own fees.
+
+    This is the first question, not the last one. cost_gate() requires a
+    target of MIN_TP_COST_RATIO x round-trip cost — 0.54% at current
+    settings. With TP set at TP_ATR_MULT x ATR, that means a timeframe is
+    only tradeable when its median ATR clears roughly 0.18% of price.
+    Measured: BANK 5m sits near 1.0% and passes everything; ETH 5m sits near
+    0.12% and had 139-1494 signals blocked per factor.
+
+    A "TOO SMALL" verdict here is not a filter that needs loosening. It says
+    the target is smaller than the toll, and no entry logic fixes that.
+    """
+    sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT",
+               "DEXE": "DEXE/USDT:USDT", "BANK": "BANK/USDT:USDT"}
+    full_symbol = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
+    try:
+        return jsonify(sanitize(cost_reality_check(full_symbol)))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/cost-check-all")
+def cost_check_all():
+    """Every symbol at once — the tradeable universe in one call."""
+    out = {}
+    for name in ("BTC", "ETH", "DEXE", "BANK"):
+        sym = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT",
+               "DEXE": "DEXE/USDT:USDT", "BANK": "BANK/USDT:USDT"}[name]
+        try:
+            out[name] = cost_reality_check(sym)
+        except Exception as e:
+            out[name] = {"error": str(e)}
+    return jsonify(out)
+
 
 @app.route("/api/factor-backtest/<symbol>/<timeframe>")
 def factor_backtest(symbol, timeframe):
