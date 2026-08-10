@@ -13,6 +13,10 @@ from scanner_fixed import improved_run_backtest
 # numbers are independent of the multi-factor engine and can be compared
 # against it rather than being contaminated by it.
 from smc import backtest as smc_backtest, signal as smc_signal
+# Signal-only engine. Imports nothing cost-related and is never consulted by
+# the cost-aware dashboard path — the two answer different questions and are
+# kept apart on purpose.
+from signal_engine import scan as signal_scan, signal as signal_one
 import math
 import gc
 import os
@@ -318,6 +322,37 @@ def backtest_full(symbol, timeframe):
         return jsonify(sanitize(result))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/signals")
+def api_signals():
+    """Signal-only engine. No fees, no cost gate, no TP/SL.
+
+    Deliberately separate from /api/dashboard. That one is the cost-aware
+    scanner and will block a setup whose target cannot pay its fees; this one
+    answers only whether structure, trend and momentum are aligned. Two
+    different questions, so two different endpoints rather than one endpoint
+    with a flag.
+
+    ?tf=5m,15m to pick timeframes.
+    """
+    tfs = tuple(t.strip() for t in request.args.get("tf", "5m,15m").split(",") if t.strip())
+    try:
+        return jsonify(signal_scan(timeframes=tfs))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/signal/<symbol>/<timeframe>")
+def api_signal_one(symbol, timeframe):
+    """One symbol, one timeframe, with the per-condition breakdown."""
+    sym_map = {"BTC": "BTC/USDT:USDT", "ETH": "ETH/USDT:USDT",
+               "DEXE": "DEXE/USDT:USDT", "BANK": "BANK/USDT:USDT"}
+    full = sym_map.get(symbol.upper(), f"{symbol.upper()}/USDT:USDT")
+    try:
+        return jsonify(sanitize(signal_one(full, timeframe)))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route("/api/cost-check/<symbol>")
 def cost_check(symbol):
