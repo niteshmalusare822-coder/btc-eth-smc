@@ -79,13 +79,34 @@ TICKERS = {
     "bank": "BANK/USDT:USDT",
 }
 
-# Single source of truth for which timeframes the dashboard covers. 1m was
-# dropped: at CoinDCX taker fees a 1m ATR target is smaller than the round
-# trip cost, so every 1m setup was either blocked by cost_gate() or was a
-# losing trade waiting to happen. The placeholder and error paths below read
-# this same tuple, so they can never drift out of sync with the scan loop
-# again — previously they announced 1m/5m cards while the loop built 5m/15m.
-SCAN_TIMEFRAMES = ("5m", "15m")
+# FIX v6 (F34): SCAN TIMEFRAMES MOVED FROM 5m/15m TO 15m/1h.
+#
+# cost_reality_check() on live CoinDCX data, at a 0.18% round trip:
+#
+#     breakeven win rate      5m      15m      1h      4h
+#     BTC                  160.3%    52.0%   32.0%   25.4%
+#     ETH                   99.1%    43.9%   28.8%   24.1%
+#     DEXE                  33.4%    26.8%   22.1%   21.9%
+#     BANK                  28.5%    24.6%   21.8%   22.1%
+#
+# BTC on 5m needs a 160% win rate. That is not a hard target, it is an
+# impossible one — the fee is larger than the entire move the strategy aims
+# for, so winning every single trade still loses money. ETH 5m is the same
+# at 99%.
+#
+# This is why the dashboard sat on WAIT for a full day while every gate
+# looked healthy. Nothing was misconfigured. The two main assets were being
+# scanned on a timeframe where no entry logic of any kind can be profitable.
+#
+# 15m keeps DEXE and BANK viable and gives ETH a marginal 3.46x cost ratio.
+# 1h brings BTC in at 7.2x and lifts everything else well clear. Both have
+# entries in TIMEFRAME_CONFIRM_MAP (15m->1h, 1h->4h) and in the CoinDCX
+# resolution map, so neither silently falls through to another exchange.
+#
+# The cost: far fewer signals and holds measured in hours rather than
+# minutes. That is not a downgrade. Trading a 5m chart at these fees was
+# never an option that existed — it only looked like one.
+SCAN_TIMEFRAMES = ("15m", "1h")
 
 _DASH = {"data": None, "ts": 0.0, "error": None, "progress": "not started",
          "passes": 0, "last_pass_seconds": None}
