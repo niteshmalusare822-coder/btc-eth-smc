@@ -144,15 +144,20 @@ COINDCX_RESOLUTION_MAP = {
     "15m": "15",
     "1h": "60",
     "4h": "240",
+    # FIX v6 (F35): 1d added so 4h has a real confirmation frame. Without it
+    # TIMEFRAME_CONFIRM_MAP.get("4h", "15m") fell back to 15m — a LOWER
+    # timeframe confirming a higher one, which inverts the whole point of the
+    # confirmation step.
+    "1d": "1D",
 }
 
 # FIX v3 (F14): matching seconds table, used to compute the "from" timestamp.
-TF_SECONDS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400}
+TF_SECONDS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
 
 # The only timeframes this engine will scan or trade. Anything outside this
 # tuple has not been checked against cost_reality_check() and should not be
 # wired into a live path without doing so first.
-SUPPORTED_TIMEFRAMES = ("5m", "15m", "1h", "4h")
+SUPPORTED_TIMEFRAMES = ("5m", "15m", "1h", "4h", "1d")
 
 CONFIG = {
     'EMA_FAST': 5,
@@ -1319,6 +1324,7 @@ TIMEFRAME_CONFIRM_MAP = {
     "5m": "15m",
     "15m": "1h",
     "1h": "4h",
+    "4h": "1d",     # FIX v6 (F35): was missing; 4h silently confirmed on 15m
 }
 
 
@@ -1932,7 +1938,7 @@ def run_backtest(symbol, timeframe="5m"):
     df = calc_equal_level_density(df, CONFIG['BSL_SSL_LOOKBACK'], CONFIG['EQUAL_LEVEL_TOLERANCE_PCT'])
 
     _confirm_tf = TIMEFRAME_CONFIRM_MAP.get(timeframe)
-    _confirm_rule = {"15m": "15min", "1h": "1h", "4h": "4h"}.get(_confirm_tf)
+    _confirm_rule = {"15m": "15min", "1h": "1h", "4h": "4h", "1d": "1D"}.get(_confirm_tf)
     if _confirm_rule:
         _htf_close = df["close"].resample(_confirm_rule).last().dropna()
         df["htf_ema5"] = calc_ema(_htf_close, 5).shift(1).reindex(df.index, method="ffill")
