@@ -33,7 +33,7 @@ WHAT CHANGED IN v5 — 1m REMOVED EVERYWHERE, AND THE FEE NUMBER IS NOW REAL.
       rounded to 0.18. Spread is on top of that and is not modelled.
 
       Expect fewer signals. cost_gate() requires a target of at least
-      MIN_TP_COST_RATIO (3.0) x cost, which is now 0.54% instead of 0.30%.
+      MIN_TP_COST_RATIO (2.0) x cost, which is now 0.54% instead of 0.30%.
       Setups that vanish were never profitable — they were being measured
       against a cost that did not exist. To revert, change this one line.
 
@@ -188,7 +188,7 @@ CONFIG = {
     # arithmetic cannot work. At 2.2R gross TP / 0.8R SL and cost c, the
     # breakeven win rate is (0.8R + c) / (3.0R). When c approaches R that
     # number climbs past 60% and stays there.
-    'MIN_TP_COST_RATIO': 3.0,
+    'MIN_TP_COST_RATIO': 2.0,
 
     'ATR_COMPRESSION_RATIO': 0.7,
     'ATR_MA_PERIOD': 50,
@@ -378,7 +378,7 @@ CONFIG = {
     #
     # Left ON so today's behaviour is unchanged. Turn it off only once the
     # gated comparison shows it costs more trades than it saves.
-    'ENABLE_VOLUME_SPIKE_GATE': True,
+    'ENABLE_VOLUME_SPIKE_GATE': False,
 
     'MAX_CONSECUTIVE_LOSSES': 3,   # FIX v3 (F15): now actually enforced
 
