@@ -96,14 +96,18 @@ def find_bos(df, swings, body_threshold=2.0, max_wick_ratio=0.5, require_displac
     ev = []
     hi_sw = None
     lo_sw = None
+    hi_swept = False
+    lo_swept = False
     p = 0
     for i in range(len(df)):
         while p < len(swings) and swings[p].confirmed_idx <= i:
             s = swings[p]
             if s.kind == "high":
                 hi_sw = s
+                hi_swept = False
             else:
                 lo_sw = s
+                lo_swept = False
             p += 1
         if hi_sw is not None and hs[i] > hi_sw.price:
             ok = (not require_displacement) or bv[i] >= body_threshold
@@ -111,16 +115,20 @@ def find_bos(df, swings, body_threshold=2.0, max_wick_ratio=0.5, require_displac
             if broke and ok and uw[i] <= max_wick_ratio:
                 ev.append(BOS(i, "bull", hi_sw.price, hi_sw.idx, float(bv[i]), False))
                 hi_sw = None
-            elif not broke:
+                hi_swept = False
+            elif not broke and not hi_swept:
                 ev.append(BOS(i, "bull", hi_sw.price, hi_sw.idx, float(bv[i]), True))
+                hi_swept = True
         if lo_sw is not None and ls[i] < lo_sw.price:
             ok = (not require_displacement) or bv[i] >= body_threshold
             broke = cl[i] < lo_sw.price
             if broke and ok and lw[i] <= max_wick_ratio:
                 ev.append(BOS(i, "bear", lo_sw.price, lo_sw.idx, float(bv[i]), False))
                 lo_sw = None
-            elif not broke:
+                lo_swept = False
+            elif not broke and not lo_swept:
                 ev.append(BOS(i, "bear", lo_sw.price, lo_sw.idx, float(bv[i]), True))
+                lo_swept = True
     return ev
 
 
