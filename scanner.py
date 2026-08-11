@@ -359,6 +359,27 @@ CONFIG = {
     'VOLUME_SPIKE_LOOKBACK': 20,
     'VOLUME_SPIKE_MULT': 1.2,
 
+    # ── FIX v6 (F36): the volume veto is now a switch, and measurable ────
+    # analyze() has been vetoing any signal without a 1.2x volume spike in
+    # the last three bars. On quiet days that veto blocked BTC repeatedly
+    # while confluence read 4.5 against a threshold of 2.0 and every other
+    # gate had passed — it was the single most active blocker in the engine.
+    #
+    # Measured standalone, it is at the null: z=+1.01 on BANK 5m, z=-0.98 on
+    # ETH 5m. That means a volume spike does not predict DIRECTION. It does
+    # NOT by itself mean the veto is useless, because a filter's job is to
+    # improve the other factors rather than to trade on its own — and that
+    # second question had never been asked.
+    #
+    # run_factor_backtest now answers it directly: every factor is run twice,
+    # once unfiltered and once requiring a volume spike, so the gate's effect
+    # on OTHER factors is visible instead of assumed. Read
+    # factors_volume_gated against factors before changing this flag.
+    #
+    # Left ON so today's behaviour is unchanged. Turn it off only once the
+    # gated comparison shows it costs more trades than it saves.
+    'ENABLE_VOLUME_SPIKE_GATE': True,
+
     'MAX_CONSECUTIVE_LOSSES': 3,   # FIX v3 (F15): now actually enforced
 
     # ── Order-flow proxy settings ───────────────────────────────────────
@@ -1497,7 +1518,7 @@ def analyze(symbol, timeframe="5m"):
     if not bo_ok:
         direction, reason = None, bo_reason
 
-    if direction is not None:
+    if direction is not None and CONFIG['ENABLE_VOLUME_SPIKE_GATE']:
         vol_spike_series = detect_volume_spike(df_closed)
         if not bool(vol_spike_series.tail(3).any()):
             direction, reason = None, f"BLOCKED (No volume spike confirming {reason})"
@@ -2141,10 +2162,11 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
     null_win_rate = round(CONFIG['SL_ATR_MULT'] /
                           (CONFIG['TP_ATR_MULT'] + CONFIG['SL_ATR_MULT']) * 100, 1)
 
-    def simulate(direction_fn, label, fade=False):
+    def simulate(direction_fn, label, fade=False, require_volume=False):
         results = []
         blocked = 0
         overlapping_skipped = 0
+        vol_filtered = 0
         last_exit = -1
         flip = {"BUY": "SELL", "SELL": "BUY"}
         for i in range(60, n - WINDOW - 1):
@@ -2152,6 +2174,16 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
             if np.isnan(atr): continue
             direction = direction_fn(i)
             if direction is None: continue
+
+            # FIX v6 (F36): the volume veto applied as a FILTER on another
+            # factor — which is what it actually does live — rather than as a
+            # standalone signal. Same rule as analyze(): a 1.2x spike within
+            # the last three bars.
+            if require_volume:
+                lo_i = max(0, i - 2)
+                if not bool((a_volratio[lo_i:i + 1] >= CONFIG['VOLUME_SPIKE_MULT']).any()):
+                    vol_filtered += 1
+                    continue
 
             # FIX v6 (F31): ONE POSITION AT A TIME.
             #
@@ -2192,6 +2224,7 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
             return {"label": label, "direction": "fade" if fade else "follow",
                     "total_trades": 0, "blocked_by_cost_gate": blocked,
                     "overlapping_skipped": overlapping_skipped,
+                    "removed_by_volume_gate": vol_filtered,
                     "outcome_window_bars": WINDOW, "note": "no signals"}
 
         total = len(results)
@@ -2227,6 +2260,7 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
                 "avg_loss_pct": round(gross_loss / len(losses), 4) if losses else 0.0,
                 "blocked_by_cost_gate": blocked,
                 "overlapping_skipped": overlapping_skipped,
+                "removed_by_volume_gate": vol_filtered,
                 "outcome_window_bars": WINDOW}
 
     def f_sweep(i):
@@ -2336,6 +2370,15 @@ def run_factor_backtest(symbol, timeframe="5m", candles=None):
         # exactly what one mean-reverting stretch looks like.
         "factors": [simulate(fn, lbl) for fn, lbl in _factors],
         "factors_faded": [simulate(fn, lbl, fade=True) for fn, lbl in _factors],
+        # FIX v6 (F36): the same factors with the live volume veto applied.
+        # Compare win_rate here against `factors` above. If the gated version
+        # is not clearly better, the veto is costing trades without buying
+        # anything, and ENABLE_VOLUME_SPIKE_GATE should go to False.
+        "factors_volume_gated": [simulate(fn, lbl, require_volume=True)
+                                 for fn, lbl in _factors],
+        "volume_gate_note": ("factors_volume_gated applies the same veto "
+                             "analyze() applies live. Higher win_rate there "
+                             "justifies the gate; equal or lower does not."),
     }
 
 
