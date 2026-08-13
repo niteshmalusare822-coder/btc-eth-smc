@@ -35,7 +35,24 @@ _ccxt_cache = {}
 OHLC = ["open", "high", "low", "close", "volume"]
 
 
+def to_ns(series):
+    """Every timestamp in this project is datetime64[ns]. No exceptions."""
+    out = pd.to_datetime(series, errors="coerce")
+    try:
+        if getattr(out.dtype, "tz", None) is not None:
+            out = out.dt.tz_localize(None)
+    except (AttributeError, TypeError):
+        pass
+    return out.astype("datetime64[ns]")
+
+
 def _clean(df, bars):
+    # Force a single timestamp resolution at the door. pandas will happily hand
+    # back datetime64[us] from one venue and datetime64[ns] from another, and
+    # merge_asof refuses to join across resolutions — which is exactly how the
+    # 1H bias failed to reach the 5M timeline. Normalising here means no
+    # downstream code has to think about it.
+    df["ts"] = to_ns(df["ts"])
     df = df.drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
     df = df.astype({c: float for c in OHLC})
     return df.tail(bars).reset_index(drop=True)
