@@ -89,9 +89,10 @@ def build_signal(symbol):
 
     bias = ctx["bias"][i]
     trig = ctx["trigger"][i] or "none"
+    # same call the backtest makes: no price arguments, so the live scanner
+    # reports a RESTING LIMIT rather than pretending the bar already filled it
     action, setup, side, level, why = mtf.decide(
-        bias, ctx["trigger"][i], ctx["setups"],
-        ts, float(df5["low"].iat[i]), float(df5["high"].iat[i]))
+        bias, ctx["trigger"][i], ctx["setups"], ts)
 
     base = {
         "symbol": symbol, "source": source, "price": _f(price),
@@ -140,6 +141,8 @@ def build_signal(symbol):
         "fees_inr": _f(s.fees_inr), "slippage_inr": _f(s.slippage_inr),
         "sl_distance_pct": _f(s.sl_distance_pct),
         "cost_in_r": _f(s.cost_in_r),
+        "order_type": "resting limit — fills on a later candle, or not at all",
+        "distance_to_entry_pct": _f((level - price) / price * 100),
         "tradeable": bool(s.cost_in_r <= float(os.environ.get("MAX_COST_IN_R", 0.15))),
         "zone": {"top": _f(setup.zone_top), "bottom": _f(setup.zone_bottom),
                  "has_fvg": setup.has_fvg, "swept": setup.swept},
@@ -156,6 +159,18 @@ def build_report(symbol):
     rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["1h"])
     rep["source"] = source
     return rep
+
+
+def build_trade_log(symbol, limit=150):
+    """The audit trail on its own endpoint, so it can be pulled without
+    re-running the whole three-arm report."""
+    frames, source = D.load_mtf(symbol, REPORT_BARS_5M)
+    if frames is None:
+        return {"symbol": symbol, "error": "no data", "source": source}
+    rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["1h"])
+    return {"symbol": symbol, "source": source,
+            "total": rep.get("trade_log_total", 0),
+            "trades": (rep.get("trade_log") or [])[:limit]}
 
 
 # ---------------------------------------------------------------------------
@@ -217,12 +232,31 @@ def report(symbol):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/trades/<symbol>")
+def trades(symbol):
+    symbol = symbol.upper()
+    if symbol not in SYMBOLS:
+        return jsonify({"error": f"symbol must be one of {SYMBOLS}"}), 400
+    try:
+        limit = min(int(request.args.get("limit", 150)), 500)
+    except ValueError:
+        limit = 150
+    try:
+        res, hit = cached(("log", symbol, limit), REPORT_TTL,
+                          lambda: build_trade_log(symbol, limit))
+        return jsonify({**res, "from_cache": hit})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/")
 def root():
     return jsonify({"service": "smc-mtf-scanner",
                     "endpoints": ["/api/health", "/api/config",
                                   "/api/signal/<symbol>", "/api/signals",
-                                  "/api/report/<symbol>"]})
+                                  "/api/report/<symbol>",
+                                  "/api/trades/<symbol>"]})
 
 
 if __name__ == "__main__":
