@@ -81,7 +81,7 @@ def build_signal(symbol):
     ctx = mtf.build_context(df5, df15, df1h)
 
     i = len(df5) - 2                      # last CLOSED 5M bar
-    ts = mtf._ns(df5["ts"]).iat[i]
+    ts = mtf._ts(df5["ts"]).iat[i]
     atr = float(_atr(df5).iat[i])
     price = float(df5["close"].iat[i])
 
