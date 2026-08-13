@@ -28,10 +28,29 @@ CAPITAL_INR = float(os.environ.get("CAPITAL_INR", 10000))
 MAX_RISK_INR = float(os.environ.get("MAX_RISK_INR", 700))
 USDT_INR = float(os.environ.get("USDT_INR", 88.0))
 
+# What you would LIKE each level to pay. Aspiration, not instruction.
 TP_TARGETS_INR = [
     float(os.environ.get("TP1_INR", 1200)),
     float(os.environ.get("TP2_INR", 2000)),
     float(os.environ.get("TP3_INR", 3500)),
+]
+
+# What the market is actually asked to deliver, in R.
+#
+# BUG FIX: the ladder used to be solved backwards from the rupee targets. At a
+# Rs.700 risk cap that demanded 2.47R / 3.94R / 6.68R, and the last two needed
+# 7 to 12 ATR of travel — levels a 5M chart reaches almost never. Two thirds of
+# every position was therefore aimed at prices that could not print, so the
+# only way to book a net win was to hit an impossible target. Hitting TP1 and
+# then stopping out netted MINUS Rs.69. That is the whole 1.1% win rate.
+#
+# The ladder is now structural. Rupee value is REPORTED per level, so you can
+# see what each one pays and whether it clears your target, but it no longer
+# dictates where the level sits.
+TP_R_LADDER = [
+    float(os.environ.get("TP1_R", 1.0)),
+    float(os.environ.get("TP2_R", 2.0)),
+    float(os.environ.get("TP3_R", 3.0)),
 ]
 
 # ── Costs ──────────────────────────────────────────────────────────────────
@@ -171,37 +190,43 @@ def size_position(symbol, direction, entry, sl,
 
 def _rupee_targets(direction, entry, qty, usdt_inr, sl_dist,
                    atr=None, structure_limit=None):
-    """Price levels that deliver the rupee targets NET of the exit costs,
-    each marked reachable or not against market structure."""
+    """Structural R ladder, with the rupee value of each level reported.
+
+    reachable is decided by market structure only. An unreachable level is
+    still returned so the dashboard can show it greyed out, but the backtest
+    must not use it as an exit target.
+    """
     out = []
-    if qty <= 0:
+    if qty <= 0 or sl_dist <= 0:
         return out
     entry_inr = entry * usdt_inr
+    cost_inr = qty * entry_inr * ROUND_TRIP_COST
 
-    for i, target in enumerate(TP_TARGETS_INR, start=1):
-        # net target = gross move - round trip cost on the notional
-        gross_needed = target + qty * entry_inr * ROUND_TRIP_COST
-        move_inr_per_unit = gross_needed / qty
-        move_px = move_inr_per_unit / usdt_inr
+    for i, r_mult in enumerate(TP_R_LADDER, start=1):
+        move_px = r_mult * sl_dist
         px = entry + move_px if direction == "BUY" else entry - move_px
 
-        r_multiple = move_px / sl_dist if sl_dist > 0 else 0.0
+        gross_inr = qty * move_px * usdt_inr
+        net_inr = gross_inr - cost_inr          # full round trip, not a share
 
-        reachable = True
-        why = ""
+        reachable, why = True, ""
         if structure_limit is not None:
             if direction == "BUY" and px > structure_limit:
                 reachable, why = False, "beyond the next liquidity level"
-            if direction == "SELL" and px < structure_limit:
+            elif direction == "SELL" and px < structure_limit:
                 reachable, why = False, "beyond the next liquidity level"
         if reachable and atr and atr > 0 and move_px > 6 * atr:
-            reachable, why = False, f"needs {move_px/atr:.1f} ATR of travel"
+            reachable, why = False, f"needs {move_px / atr:.1f} ATR of travel"
 
+        want = TP_TARGETS_INR[i - 1] if i <= len(TP_TARGETS_INR) else None
         out.append({
             "level": f"TP{i}",
-            "target_inr": target,
             "price": round(px, 8),
-            "r_multiple": round(r_multiple, 2),
+            "r_multiple": round(r_mult, 2),
+            "gross_inr": round(gross_inr, 0),
+            "net_inr": round(net_inr, 0),
+            "target_inr": want,
+            "meets_target": bool(want is not None and net_inr >= want),
             "reachable": reachable,
             "note": why,
         })
@@ -227,4 +252,5 @@ def cost_summary():
         "funding_per_8h_pct": FUNDING_PER_8H * 100,
         "leverage_fraction": LEVERAGE_FRACTION,
         "tp_targets_inr": TP_TARGETS_INR,
+        "tp_r_ladder": TP_R_LADDER,
     }
