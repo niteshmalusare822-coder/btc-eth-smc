@@ -43,13 +43,35 @@ PARAMS = {
     "ote_low": 0.618,
     "ote_high": 0.79,
     "trigger_lookback": 3,   # 5M bars the entry trigger may look back over
+    "kill_on": "full",       # when a 15M zone is considered mitigated
 }
+
+
+def _calibrate(df, p, calib_end=None):
+    """Body threshold from a TRAINING slice only.
+
+    BUG FIX: this used to quantile the whole frame. In the backtest that meant
+    the displacement threshold applied to out-of-sample bars was derived from
+    those same out-of-sample bars — textbook look-ahead. Worse, live ran on
+    1000 bars and the backtest on 4000, so the two produced DIFFERENT
+    thresholds and were quietly running different strategies.
+
+    calib_end is a fraction of the frame (0.0-1.0). None means calibrate on
+    everything, which is only correct for a pure live scan where every bar is
+    already in the past.
+    """
+    if calib_end is None:
+        slice_ = df
+    else:
+        cut = max(120, int(len(df) * float(calib_end)))
+        slice_ = df.iloc[:min(cut, len(df))]
+    return poi.calibrate_body_threshold(slice_, target_pct=p["body_pct"])
 
 
 # ---------------------------------------------------------------------------
 # 1H BIAS
 # ---------------------------------------------------------------------------
-def htf_bias_series(df_1h, p=None):
+def htf_bias_series(df_1h, p=None, calib_end=None):
     """BULLISH / BEARISH / NEUTRAL per 1H bar, causal.
 
     Bias flips on a confirmed BOS and only stays valid while price holds on the
@@ -59,7 +81,7 @@ def htf_bias_series(df_1h, p=None):
     p = p or PARAMS
     df = poi.add_candle_metrics(df_1h)
     swings = poi.find_swings(df, p["swing_left"], p["swing_right"])
-    thr = poi.calibrate_body_threshold(df, target_pct=p["body_pct"])
+    thr = _calibrate(df, p, calib_end)
     bos = poi.find_bos(df, swings, body_threshold=thr, require_displacement=True)
 
     n = len(df)
@@ -115,9 +137,10 @@ class Setup:
     expires_ts: pd.Timestamp
     has_fvg: bool
     swept: bool
+    dead_ts: object = None    # when price invalidated the zone, if it did
 
 
-def find_setups(df_15m, p=None):
+def find_setups(df_15m, p=None, calib_end=None):
     """Sweep -> BOS -> order block, with the FVG overlap flagged.
 
     A setup is only emitted when a liquidity sweep of the OPPOSITE side
@@ -126,7 +149,7 @@ def find_setups(df_15m, p=None):
     """
     p = p or PARAMS
     df = poi.add_candle_metrics(df_15m)
-    thr = poi.calibrate_body_threshold(df, target_pct=p["body_pct"])
+    thr = _calibrate(df, p, calib_end)
     swings = poi.find_swings(df, p["swing_left"], p["swing_right"])
     bos = poi.find_bos(df, swings, body_threshold=thr, require_displacement=True)
 
@@ -141,6 +164,13 @@ def find_setups(df_15m, p=None):
 
     obs = poi.find_order_blocks(df, kept)
     fvgs = poi.find_fvgs(df, body_threshold=thr, require_displacement=True)
+
+    # BUG FIX: mitigation was never applied on the 15M frame. A zone that price
+    # had already torn straight through stayed "active" until its age expired,
+    # so entries were being taken into dead levels. Replaying bar by bar is the
+    # only safe way to do this — vectorising it would leak future bars in.
+    for i in range(len(df)):
+        poi.update_zones(obs, df, i, p.get("kill_on", "full"))
 
     ts = _ts(df["ts"]).to_numpy()
     bar = pd.Timedelta(minutes=TF_MINUTES["15m"])
@@ -160,6 +190,8 @@ def find_setups(df_15m, p=None):
             confirmed_ts=pd.Timestamp(ts[z.confirmed_idx]) + bar,
             expires_ts=pd.Timestamp(ts[exp_idx]) + bar,
             has_fvg=has_fvg, swept=True,
+            dead_ts=(pd.Timestamp(ts[z.dead_idx]) + bar
+                     if z.dead_idx is not None else None),
         ))
     setups.sort(key=lambda s: s.confirmed_ts)
     return setups, thr
@@ -168,12 +200,12 @@ def find_setups(df_15m, p=None):
 # ---------------------------------------------------------------------------
 # 5M TRIGGER
 # ---------------------------------------------------------------------------
-def trigger_series(df_5m, p=None):
+def trigger_series(df_5m, p=None, calib_end=None):
     """Micro structure shift on 5M. Direction-agnostic: it reports what the
     5M chart just did, and the caller checks it against the 1H/15M side."""
     p = p or PARAMS
     df = poi.add_candle_metrics(df_5m)
-    thr = poi.calibrate_body_threshold(df, target_pct=p["body_pct"])
+    thr = _calibrate(df, p, calib_end)
     swings = poi.find_swings(df, p["swing_left"], p["swing_right"])
     bos = poi.find_bos(df, swings, body_threshold=thr, require_displacement=True)
 
@@ -253,12 +285,17 @@ def align_htf(df_5m, df_htf_state, tf, col):
     return merged[col].to_numpy()
 
 
-def build_context(df_5m, df_15m, df_1h, p=None):
-    """Everything a bar-by-bar loop needs, precomputed and causal."""
+def build_context(df_5m, df_15m, df_1h, p=None, calib_end=None):
+    """Everything a bar-by-bar loop needs, precomputed and causal.
+
+    calib_end is passed to every frame so live and backtest calibrate the same
+    way. That is the parity guarantee: same functions, same thresholds, only
+    the data source differs.
+    """
     p = p or PARAMS
-    bias_df = htf_bias_series(df_1h, p)
-    setups, thr15 = find_setups(df_15m, p)
-    trig = trigger_series(df_5m, p)
+    bias_df = htf_bias_series(df_1h, p, calib_end)
+    setups, thr15 = find_setups(df_15m, p, calib_end)
+    trig = trigger_series(df_5m, p, calib_end)
     bias_on_5m = align_htf(df_5m, bias_df, "1h", "htf_bias")
     return {"bias": bias_on_5m, "setups": setups, "trigger": trig,
             "threshold_15m": thr15}
@@ -269,6 +306,8 @@ def active_setups_at(setups, ts, side=None):
     out = []
     for s in setups:
         if s.confirmed_ts > ts or s.expires_ts < ts:
+            continue
+        if s.dead_ts is not None and s.dead_ts <= ts:
             continue
         if side and s.side != side:
             continue
