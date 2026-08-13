@@ -142,7 +142,7 @@ def find_setups(df_15m, p=None):
     obs = poi.find_order_blocks(df, kept)
     fvgs = poi.find_fvgs(df, body_threshold=thr, require_displacement=True)
 
-    ts = _ns(df["ts"]).to_numpy()
+    ts = _ts(df["ts"]).to_numpy()
     bar = pd.Timedelta(minutes=TF_MINUTES["15m"])
     setups = []
     for z in obs:
@@ -198,29 +198,56 @@ def trigger_series(df_5m, p=None):
 # ALIGNMENT
 # ---------------------------------------------------------------------------
 def _ns(series):
-    """merge_asof refuses to join datetime64[ns] against datetime64[us], and
-    different venues hand back different resolutions. Normalise both sides."""
+    """Every timestamp in this project, as int64 nanoseconds since the epoch.
+
+    Not datetime64. merge_asof refuses to join datetime64[ns] against [us] or
+    [ms], and which resolution you get depends on the pandas version, the
+    Python version and which venue answered. Chasing that with astype() means
+    the code breaks again the next time any of those three changes.
+
+    Integers have one dtype. Merging on int64 cannot mismatch, on any pandas.
+    """
     out = pd.to_datetime(series, errors="coerce")
     try:
         if getattr(out.dtype, "tz", None) is not None:
             out = out.dt.tz_localize(None)
     except (AttributeError, TypeError):
         pass
-    return out.astype("datetime64[ns]")
+    # NOT .astype("int64"): that returns the raw underlying integer in
+    # WHATEVER unit the column happens to carry, so a seconds-resolution
+    # column and a nanosecond one produce numbers a billion times apart and
+    # the merge silently finds nothing. Dividing by a Timedelta is explicit
+    # about the unit and behaves the same on every pandas version.
+    return ((out - pd.Timestamp("1970-01-01")) // pd.Timedelta(1, "ns")).astype("int64")
+
+
+def _ts(series):
+    """Real Timestamps, for display and for comparing against setup windows."""
+    out = pd.to_datetime(series, errors="coerce")
+    try:
+        if getattr(out.dtype, "tz", None) is not None:
+            out = out.dt.tz_localize(None)
+    except (AttributeError, TypeError):
+        pass
+    return out
 
 
 def align_htf(df_5m, df_htf_state, tf, col):
     """Join higher-timeframe state onto the 5M timeline with NO look-ahead.
 
-    The join key is the higher frame's CLOSE time (ts + one bar), so a 5M bar
-    can only ever see higher-frame candles that had already finished.
+    The join key is the higher frame's CLOSE time (ts + one bar) expressed in
+    integer nanoseconds, so a 5M bar can only ever see higher-frame candles
+    that had already finished.
     """
-    bar = pd.Timedelta(minutes=TF_MINUTES[tf])
-    right = df_htf_state.copy()
-    right["available_at"] = _ns(right["ts"]) + bar
-    right = right[["available_at", col]].sort_values("available_at")
+    bar_ns = int(TF_MINUTES[tf] * 60 * 1_000_000_000)
+
+    right = pd.DataFrame({
+        "available_at": _ns(df_htf_state["ts"]) + bar_ns,
+        col: df_htf_state[col].to_numpy(),
+    }).dropna(subset=["available_at"]).sort_values("available_at")
 
     left = pd.DataFrame({"ts": _ns(df_5m["ts"])}).sort_values("ts")
+
     merged = pd.merge_asof(left, right, left_on="ts", right_on="available_at",
                            direction="backward")
     return merged[col].to_numpy()
@@ -230,7 +257,6 @@ def build_context(df_5m, df_15m, df_1h, p=None):
     """Everything a bar-by-bar loop needs, precomputed and causal."""
     p = p or PARAMS
     bias_df = htf_bias_series(df_1h, p)
-    bias_df["ts"] = _ns(bias_df["ts"])
     setups, thr15 = find_setups(df_15m, p)
     trig = trigger_series(df_5m, p)
     bias_on_5m = align_htf(df_5m, bias_df, "1h", "htf_bias")
