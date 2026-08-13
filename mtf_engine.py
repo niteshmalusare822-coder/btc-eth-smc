@@ -142,7 +142,7 @@ def find_setups(df_15m, p=None):
     obs = poi.find_order_blocks(df, kept)
     fvgs = poi.find_fvgs(df, body_threshold=thr, require_displacement=True)
 
-    ts = pd.to_datetime(df["ts"]).to_numpy()
+    ts = _ns(df["ts"]).to_numpy()
     bar = pd.Timedelta(minutes=TF_MINUTES["15m"])
     setups = []
     for z in obs:
@@ -197,6 +197,18 @@ def trigger_series(df_5m, p=None):
 # ---------------------------------------------------------------------------
 # ALIGNMENT
 # ---------------------------------------------------------------------------
+def _ns(series):
+    """merge_asof refuses to join datetime64[ns] against datetime64[us], and
+    different venues hand back different resolutions. Normalise both sides."""
+    out = pd.to_datetime(series, errors="coerce")
+    try:
+        if getattr(out.dtype, "tz", None) is not None:
+            out = out.dt.tz_localize(None)
+    except (AttributeError, TypeError):
+        pass
+    return out.astype("datetime64[ns]")
+
+
 def align_htf(df_5m, df_htf_state, tf, col):
     """Join higher-timeframe state onto the 5M timeline with NO look-ahead.
 
@@ -205,10 +217,10 @@ def align_htf(df_5m, df_htf_state, tf, col):
     """
     bar = pd.Timedelta(minutes=TF_MINUTES[tf])
     right = df_htf_state.copy()
-    right["available_at"] = pd.to_datetime(right["ts"]) + bar
+    right["available_at"] = _ns(right["ts"]) + bar
     right = right[["available_at", col]].sort_values("available_at")
 
-    left = pd.DataFrame({"ts": pd.to_datetime(df_5m["ts"])}).sort_values("ts")
+    left = pd.DataFrame({"ts": _ns(df_5m["ts"])}).sort_values("ts")
     merged = pd.merge_asof(left, right, left_on="ts", right_on="available_at",
                            direction="backward")
     return merged[col].to_numpy()
@@ -218,6 +230,7 @@ def build_context(df_5m, df_15m, df_1h, p=None):
     """Everything a bar-by-bar loop needs, precomputed and causal."""
     p = p or PARAMS
     bias_df = htf_bias_series(df_1h, p)
+    bias_df["ts"] = _ns(bias_df["ts"])
     setups, thr15 = find_setups(df_15m, p)
     trig = trigger_series(df_5m, p)
     bias_on_5m = align_htf(df_5m, bias_df, "1h", "htf_bias")
