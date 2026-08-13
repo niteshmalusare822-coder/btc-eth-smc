@@ -105,42 +105,117 @@ def pnl_inr(side, entry, legs, qty, usdt_inr, notional_inr, bars_held, tf_min):
 # ---------------------------------------------------------------------------
 # ARMS
 # ---------------------------------------------------------------------------
-def _open_trade(symbol, df, i, side, entry, stop_level, atr, max_hold, tf_min):
-    direction = "BUY" if side == "bull" else "SELL"
-    buf = 0.10 * abs(entry - stop_level) if stop_level is not None else 0.0
-    sl = (stop_level - buf) if side == "bull" else (stop_level + buf)
+def _find_fill(df, side, level, start, max_wait):
+    """First bar at or after `start` whose range reaches the resting limit.
 
-    lim = entry + 6 * atr if side == "bull" else entry - 6 * atr
-    s = R.size_position(symbol, direction, entry, sl, atr=atr, structure_limit=lim)
+    start is signal_bar + 1. The signal bar itself is never eligible: its range
+    was already complete when the decision was made, so filling on it would be
+    trading on information the order did not have.
+    """
+    lows = df["low"].to_numpy()
+    highs = df["high"].to_numpy()
+    last = min(start + max_wait, len(df) - 2)
+    for j in range(start, last + 1):
+        if side == "bull" and lows[j] <= level:
+            return j
+        if side == "bear" and highs[j] >= level:
+            return j
+    return None
+
+
+def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
+                bias=None, setup=None, trigger=None, arm=""):
+    """Place a resting limit at the close of sig_i, fill from sig_i+1 onward.
+
+    Returns (trade_dict, reject_reason). trade_dict carries the full audit
+    trail: what each timeframe said, when the order was placed, when it filled,
+    when and why it closed.
+    """
+    direction = "BUY" if side == "bull" else "SELL"
+    buf = 0.10 * abs(level - stop_level) if stop_level is not None else 0.0
+    sl = (stop_level - buf) if side == "bull" else (stop_level + buf)
+    if (side == "bull" and level <= sl) or (side == "bear" and level >= sl):
+        return None, "entry on the wrong side of the stop"
+
+    fill_i = _find_fill(df, side, level, sig_i + 1, cfg["max_wait"])
+    if fill_i is None:
+        return None, "limit never filled"
+
+    lim = level + 6 * atr if side == "bull" else level - 6 * atr
+    s = R.size_position(symbol, direction, level, sl, atr=atr, structure_limit=lim)
     if not s.ok:
         return None, s.reason
 
-    legs, hit, outcome, ex = simulate(df, side, entry, sl, s.tps, i, max_hold)
-    held = ex - i
-    gross, net, fees, slip, fund = pnl_inr(side, entry, legs, s.qty, R.USDT_INR,
+    legs, hit, outcome, ex = simulate(df, side, level, sl, s.tps, fill_i, cfg["max_hold"])
+    held = ex - fill_i
+    gross, net, fees, slip, fund = pnl_inr(side, level, legs, s.qty, R.USDT_INR,
                                            s.notional_inr, held, tf_min)
+
+    reason = {"STOP": "stop hit", "TP_ALL": "all reachable targets hit",
+              "PARTIAL": "partial targets then time stop",
+              "TIMEOUT": "time stop, no target reached"}.get(outcome, outcome)
+
     return {
-        "i": i, "exit_i": ex, "ts": str(df["ts"].iat[i]),
-        "side": direction, "entry": entry, "sl": sl,
-        "tps": s.tps, "tp_hit": hit, "outcome": outcome,
-        "qty": s.qty, "notional_inr": s.notional_inr,
+        "arm": arm,
+        "signal_ts": str(df["ts"].iat[sig_i]),
+        "entry_ts": str(df["ts"].iat[fill_i]),
+        "exit_ts": str(df["ts"].iat[ex]),
+        "bars_to_fill": fill_i - sig_i,
+        "bias_1h": bias, "setup_15m": setup, "trigger_5m": trigger,
+        "side": direction,
+        "entry": round(level, 8), "sl": round(sl, 8),
+        "exit_reason": reason, "outcome": outcome, "tp_hit": hit,
+        "targets": [{"level": t["level"], "price": t["price"],
+                     "r": t["r_multiple"], "reachable": t["reachable"]}
+                    for t in s.tps],
+        "qty": s.qty, "notional_inr": round(s.notional_inr, 0),
         "leverage_used": s.leverage_used, "leverage_allowed": s.leverage_allowed,
-        "risk_inr": s.risk_inr, "cost_in_r": s.cost_in_r,
-        "gross_inr": gross, "net_inr": net,
-        "fees_inr": fees, "slippage_inr": slip, "funding_inr": fund,
+        "risk_inr": round(s.risk_inr, 0), "cost_in_r": round(s.cost_in_r, 3),
+        "gross_inr": round(gross, 0), "net_inr": round(net, 0),
+        "fees_inr": round(fees, 0), "slippage_inr": round(slip, 0),
+        "funding_inr": round(fund, 2),
         "bars_held": held,
+        "i": sig_i, "fill_i": fill_i, "exit_i": ex,
     }, None
 
 
-def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None):
-    """arm: 'random' | 'smc' | 'smc_mtf'. Same exits for all three."""
+def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
+    """arm: 'random' | 'smc' | 'smc_mtf' | 'matched_random'.
+
+    All arms share _open_trade, so entry timing, fill rules, sizing, costs and
+    exits are identical. Only the decision of WHEN and WHICH SIDE differs.
+
+    matched_random replays a given trade list at the SAME signal bars with the
+    SAME stop distances and a coin-flipped side. That is the fair null: it
+    isolates whether the setup picks direction and timing better than chance,
+    rather than comparing against trades taken at unrelated moments.
+    """
     atr = _atr(df5, 14).to_numpy()
-    lows = df5["low"].to_numpy()
-    highs = df5["high"].to_numpy()
     ts_all = mtf._ts(df5["ts"])
     tf_min = 5
-    trades, rejected = [], 0
+    trades, rejected = [], {}
     busy_until = -1
+
+    def _rej(why):
+        rejected[why] = rejected.get(why, 0) + 1
+
+    if arm == "matched_random":
+        for t in (matched or []):
+            i = t["i"]
+            if not np.isfinite(atr[i]) or atr[i] <= 0:
+                continue
+            side = "bull" if rng.random() < 0.5 else "bear"
+            level = t["entry"]
+            dist = abs(t["entry"] - t["sl"])
+            stop = level - dist if side == "bull" else level + dist
+            tr, why = _open_trade(symbol, df5, i, side, level, stop, atr[i], cfg,
+                                  tf_min, bias="RANDOM", setup="matched",
+                                  trigger="coin flip", arm=arm)
+            if tr:
+                trades.append(tr)
+            else:
+                _rej(why)
+        return trades, rejected
 
     if arm == "random":
         idxs = sorted(rng.integers(lo_i, hi_i, cfg["n_random"]).tolist())
@@ -150,16 +225,17 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None):
             if not _in_session(ts_all.iat[i]):
                 continue
             side = "bull" if rng.random() < 0.5 else "bear"
-            entry = df5["open"].iat[i]
-            stop = entry - cfg["rand_sl_atr"] * atr[i] if side == "bull" \
-                else entry + cfg["rand_sl_atr"] * atr[i]
-            t, why = _open_trade(symbol, df5, i, side, entry, stop, atr[i],
-                                 cfg["max_hold"], tf_min)
-            if t:
-                trades.append(t)
-                busy_until = t["exit_i"]
+            level = float(df5["close"].iat[i])
+            dist = cfg["rand_sl_atr"] * atr[i]
+            stop = level - dist if side == "bull" else level + dist
+            tr, why = _open_trade(symbol, df5, i, side, level, stop, atr[i], cfg,
+                                  tf_min, bias="RANDOM", setup="none",
+                                  trigger="coin flip", arm=arm)
+            if tr:
+                trades.append(tr)
+                busy_until = tr["exit_i"]
             else:
-                rejected += 1
+                _rej(why)
         return trades, rejected
 
     for i in range(lo_i, hi_i):
@@ -170,29 +246,30 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None):
             continue
 
         if arm == "smc_mtf":
-            action, s, side, level, _ = mtf.decide(
-                ctx["bias"][i], ctx["trigger"][i], ctx["setups"], ts,
-                lows[i], highs[i])
+            action, s, side, level, why = mtf.decide(
+                ctx["bias"][i], ctx["trigger"][i], ctx["setups"], ts)
             if action == "NO_TRADE":
                 continue
-        else:  # smc: 15M setup only, no bias and no trigger gate
-            side, s, level = None, None, None
-            for cand in mtf.active_setups_at(ctx["setups"], ts):
-                lv = cand.ote_high if cand.side == "bull" else cand.ote_low
-                touched = lows[i] <= lv if cand.side == "bull" else highs[i] >= lv
-                if touched:
-                    side, s, level = cand.side, cand, lv
-                    break
-            if s is None:
+            bias_s, setup_s, trig_s = ctx["bias"][i], \
+                ("OB+FVG" if s.has_fvg else "OB"), ctx["trigger"][i]
+        else:  # smc: 15M setup only, no 1H bias gate and no 5M trigger gate
+            live = mtf.active_setups_at(ctx["setups"], ts)
+            if not live:
                 continue
+            s = live[0]
+            side = s.side
+            level = s.ote_high if side == "bull" else s.ote_low
+            bias_s, setup_s, trig_s = "ignored", \
+                ("OB+FVG" if s.has_fvg else "OB"), "ignored"
 
-        t, why = _open_trade(symbol, df5, i, side, level, s.stop_level, atr[i],
-                             cfg["max_hold"], tf_min)
-        if t:
-            trades.append(t)
-            busy_until = t["exit_i"]
+        tr, why = _open_trade(symbol, df5, i, side, level, s.stop_level, atr[i],
+                              cfg, tf_min, bias=bias_s, setup=setup_s,
+                              trigger=trig_s, arm=arm)
+        if tr:
+            trades.append(tr)
+            busy_until = tr["exit_i"]
         else:
-            rejected += 1
+            _rej(why)
 
     return trades, rejected
 
@@ -256,6 +333,7 @@ def metrics(trades, label):
         "tp3_hit": sum(1 for t in trades if "TP3" in t["tp_hit"]),
         "stopped": sum(1 for t in trades if t["outcome"] == "STOP"),
         "timeouts": sum(1 for t in trades if t["outcome"] == "TIMEOUT"),
+        "avg_bars_to_fill": round(float(np.mean([t["bars_to_fill"] for t in trades])), 1),
         "long": _side(longs), "short": _side(shorts),
     }
 
@@ -264,6 +342,9 @@ def metrics(trades, label):
 # ORCHESTRATION
 # ---------------------------------------------------------------------------
 DEFAULT_CFG = {"max_hold": 60, "rand_sl_atr": 1.0, "n_random": 400,
+               "max_wait": 12,      # bars a resting limit stays live before cancel
+               "matched_boot": 20,  # coin-flip replays of the matched null
+               "log_trades": 150,   # trades returned in the audit log
                "is_frac": 0.60, "wf_folds": 4, "seed": 42}
 
 
@@ -285,15 +366,53 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
            "in_sample_bars": split - warm, "out_of_sample_bars": n - split,
            "costs": R.cost_summary(), "params": params}
 
+    log = []
     for name, lo, hi in [("in_sample", warm, split), ("out_of_sample", split, n - 2)]:
-        arms = []
+        arms, by_arm = [], {}
         for arm in ("random", "smc", "smc_mtf"):
             tr, rej = run_arm(symbol, df5, ctx, arm, cfg, lo, hi,
                               rng=np.random.default_rng(cfg["seed"]))
+            by_arm[arm] = tr
             m = metrics(tr, arm.upper())
-            m["rejected_by_sizing"] = rej
+            m["rejected"] = rej
             arms.append(m)
+
+        # Fair null: same signal bars, same stop distances, coin-flipped side,
+        # bootstrapped so one lucky draw cannot decide the verdict.
+        for base in ("smc_mtf", "smc"):
+            src = by_arm.get(base) or []
+            if not src:
+                continue
+            boots = []
+            for k in range(cfg["matched_boot"]):
+                mt, _ = run_arm(symbol, df5, ctx, "matched_random", cfg, lo, hi,
+                                rng=np.random.default_rng(cfg["seed"] + 1000 + k),
+                                matched=src)
+                mm = metrics(mt, "x")
+                if mm.get("trades"):
+                    boots.append(mm)
+            if not boots:
+                continue
+            arms.append({
+                "arm": f"MATCHED_RANDOM_vs_{base.upper()}",
+                "trades": int(np.mean([x["trades"] for x in boots])),
+                "win_rate_pct": round(float(np.mean([x["win_rate_pct"] for x in boots])), 1),
+                "expectancy_inr": round(float(np.mean([x["expectancy_inr"] for x in boots])), 1),
+                "net_pnl_inr": round(float(np.mean([x["net_pnl_inr"] for x in boots])), 0),
+                "max_drawdown_inr": round(float(np.mean([x["max_drawdown_inr"] for x in boots])), 0),
+                "profit_factor": round(float(np.mean([x["profit_factor"] or 0 for x in boots])), 2),
+                "median_cost_in_r": round(float(np.mean([x["median_cost_in_r"] for x in boots])), 3),
+                "boots": len(boots),
+            })
+
+        if name == "out_of_sample":
+            for arm in ("smc_mtf", "smc", "random"):
+                log.extend(by_arm.get(arm) or [])
         out[name] = arms
+
+    log.sort(key=lambda t: t["signal_ts"])
+    out["trade_log"] = log[:cfg["log_trades"]]
+    out["trade_log_total"] = len(log)
 
     out["walk_forward"] = _walk_forward(symbol, df5, ctx, cfg, warm, n)
     out["sensitivity"] = _sensitivity(symbol, df5, df15, df1h, cfg, params, warm, n)
@@ -349,7 +468,9 @@ def _sensitivity(symbol, df5, df15, df1h, cfg, params, warm, n):
 def _verdict(out):
     oos = {m["arm"]: m for m in out["out_of_sample"]}
     smc = oos.get("SMC_MTF", {})
-    rnd = oos.get("RANDOM", {})
+    # matched null first: same bars, same stops, coin-flipped side. The
+    # unmatched RANDOM arm trades at unrelated moments and is a weaker control.
+    rnd = oos.get("MATCHED_RANDOM_vs_SMC_MTF") or oos.get("RANDOM", {})
     n = smc.get("trades", 0)
     e_smc = smc.get("expectancy_inr", 0) or 0
     e_rnd = rnd.get("expectancy_inr", 0) or 0
