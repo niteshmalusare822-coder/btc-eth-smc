@@ -1,7 +1,11 @@
-flask==3.0.3
-flask-cors==4.0.1
-gunicorn==22.0.0
-pandas==2.2.2
-numpy==1.26.4
-requests==2.32.3
-ccxt==4.3.24
+# Lower bounds, not hard pins. Render picked Python 3.14 despite runtime.txt,
+# and pandas==2.2.2 has no wheel for 3.14 — pinning exactly is what let an
+# unexpected pandas in through the back door. The code no longer depends on
+# any particular pandas timestamp resolution, so a range is safe here.
+flask>=3.0
+flask-cors>=4.0
+gunicorn>=22.0
+pandas>=2.2
+numpy>=1.26
+requests>=2.32
+ccxt>=4.3
