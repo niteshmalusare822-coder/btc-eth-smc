@@ -78,7 +78,9 @@ def build_signal(symbol):
                 "reason": "no data from any venue", "source": source}
 
     df5, df15, df1h = frames["5m"], frames["15m"], frames["1h"]
-    ctx = mtf.build_context(df5, df15, df1h)
+    # calib_end=None is correct here and ONLY here: in a live scan every bar
+    # in the frame is already in the past, so there is no future to leak.
+    ctx = mtf.build_context(df5, df15, df1h, calib_end=None)
 
     i = len(df5) - 2                      # last CLOSED 5M bar
     ts = mtf._ts(df5["ts"]).iat[i]
@@ -118,13 +120,15 @@ def build_signal(symbol):
         return base
 
     reachable = [t for t in s.tps if t["reachable"]]
-    potential = max((t["target_inr"] for t in reachable), default=0)
+    potential = max((t["net_inr"] for t in reachable), default=0)
     rr = round(potential / s.risk_inr, 2) if s.risk_inr > 0 else None
 
     base.update({
         "action": action,
         "entry": _f(level), "sl": _f(sl),
-        "tp1": s.tps[0], "tp2": s.tps[1], "tp3": s.tps[2],
+        "tp1": s.tps[0] if len(s.tps) > 0 else None,
+        "tp2": s.tps[1] if len(s.tps) > 1 else None,
+        "tp3": s.tps[2] if len(s.tps) > 2 else None,
         "position_size_qty": _f(s.qty),
         "notional_inr": _f(s.notional_inr), "margin_inr": _f(s.margin_inr),
         "leverage_allowed": s.leverage_allowed,
