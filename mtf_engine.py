@@ -315,12 +315,21 @@ def active_setups_at(setups, ts, side=None):
     return out
 
 
-def decide(bias, trigger, setups, ts, price_low, price_high):
-    """The one decision function. Returns (action, setup, side, entry_level).
+def decide(bias, trigger, setups, ts):
+    """The one decision function. Returns (action, setup, side, level, reason).
 
-    action is BUY, SELL or NO_TRADE. Every gate is an AND — if any timeframe
-    disagrees the answer is no trade, which is the intended behaviour and the
-    reason trade counts are low.
+    NO PRICE ARGUMENTS. This used to take the current bar's low and high and
+    check whether they had already touched the entry level — which meant the
+    decision to trade bar i was made using bar i's completed range, and the
+    exit was then simulated from that same bar. Classic same-bar look-ahead:
+    in reality you place a resting limit at the close of bar i and find out on
+    bar i+1 or later whether it filled.
+
+    This now answers only "is a limit order justified, and at what price". The
+    fill is a separate step that starts at the NEXT bar.
+
+    Every gate is an AND. If any timeframe disagrees the answer is no trade,
+    which is intended behaviour and the reason trade counts are low.
     """
     if bias not in ("BULLISH", "BEARISH"):
         return "NO_TRADE", None, None, None, "1H bias neutral"
@@ -329,10 +338,11 @@ def decide(bias, trigger, setups, ts, price_low, price_high):
     if trigger != side:
         return "NO_TRADE", None, None, None, "no 5M trigger in the 1H direction"
 
-    for s in active_setups_at(setups, ts, side):
-        level = s.ote_high if side == "bull" else s.ote_low
-        touched = price_low <= level if side == "bull" else price_high >= level
-        if touched:
-            return ("BUY" if side == "bull" else "SELL"), s, side, level, "aligned"
+    live = active_setups_at(setups, ts, side)
+    if not live:
+        return "NO_TRADE", None, None, None, "no live 15M setup"
 
-    return "NO_TRADE", None, None, None, "no 15M setup in range"
+    # nearest setup first: the shallowest OTE is the one price reaches soonest
+    s = live[0]
+    level = s.ote_high if side == "bull" else s.ote_low
+    return ("BUY" if side == "bull" else "SELL"), s, side, level, "aligned"
