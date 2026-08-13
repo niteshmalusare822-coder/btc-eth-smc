@@ -1,8 +1,7 @@
-flask
-flask-cors
-ccxt
-pandas
-numpy
-gunicorn
-requests
-psycopg2-binary
+flask==3.0.3
+flask-cors==4.0.1
+gunicorn==22.0.0
+pandas==2.2.2
+numpy==1.26.4
+requests==2.32.3
+ccxt==4.3.24
