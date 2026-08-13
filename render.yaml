@@ -1,28 +1,54 @@
+# render.yaml — everything the service needs. Nothing to set by hand in the
+# dashboard, so config can never drift out of step with the code again.
 services:
   - type: web
     name: btc-eth-smc
-    env: python
+    runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
-    # --worker-class gthread is the important part. The default sync worker
-    # IGNORES --threads entirely, so the old command ran genuinely
-    # single-threaded: one slow request (a factor backtest) blocked the whole
-    # process, hit --timeout, and gunicorn SIGKILLed the worker — taking the
-    # background scanner thread down with it, because that thread lives in
-    # the same process. gthread makes --threads 4 real, so a long request
-    # occupies one thread and the scanner keeps running.
-    #
-    # --timeout raised to 300 because the factor backtest loops eight
-    # factors over 3000 bars with a 60-bar outcome window, and 0.1 CPU is
-    # slow. If a request still times out, pass ?candles=1500 rather than
-    # raising this further: a request that needs more than five minutes is
-    # a request that should be run on the research VM, not the web service.
-    startCommand: gunicorn app:app --worker-class gthread --timeout 300 --workers 1 --threads 4
+    # gthread, not sync. The default sync worker IGNORES --threads, so one slow
+    # /api/report request blocks the whole process until gunicorn SIGKILLs it.
+    startCommand: gunicorn app:app --worker-class gthread --workers 1 --threads 8 --timeout 300 --bind 0.0.0.0:$PORT
+    healthCheckPath: /api/health
     envVars:
-      # viability.py reads these from the environment, NOT from scanner.py's
-      # CONFIG. Without them it falls back to 2.2/0.8 and the dashboard
-      # header reports R:R 2.75 while the engine actually trades 3.75.
-      # Keep these in step with CONFIG['TP_ATR_MULT'] and SL_ATR_MULT.
-      - key: TP_ATR_MULT
-        value: "3.0"
-      - key: SL_ATR_MULT
-        value: "0.8"
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+
+      # ── Account. The Rs.700 cap is INCLUSIVE of fees and slippage.
+      - key: CAPITAL_INR
+        value: "10000"
+      - key: MAX_RISK_INR
+        value: "700"
+      - key: USDT_INR
+        value: "88.0"
+      - key: TP1_INR
+        value: "1200"
+      - key: TP2_INR
+        value: "2000"
+      - key: TP3_INR
+        value: "3500"
+
+      # ── Costs. Do not set these to zero to make a backtest look better.
+      - key: FEE_PER_LEG
+        value: "0.0005"
+      - key: SLIPPAGE_PER_LEG
+        value: "0.0002"
+      - key: FUNDING_PER_8H
+        value: "0.0001"
+
+      # ── Leverage: 20% of the venue maximum, never the maximum.
+      - key: LEVERAGE_FRACTION
+        value: "0.20"
+
+      # ── Viability. Fee as a fraction of the stop distance.
+      - key: MAX_COST_IN_R
+        value: "0.15"
+
+      - key: LIVE_BARS_5M
+        value: "1000"
+      - key: REPORT_BARS_5M
+        value: "4000"
+      - key: SIGNAL_TTL
+        value: "120"
+      - key: REPORT_TTL
+        value: "3600"
