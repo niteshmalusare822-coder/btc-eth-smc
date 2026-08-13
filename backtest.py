@@ -34,10 +34,17 @@ SESSION_HOURS = None  # e.g. (7, 22) UTC. None = all hours.
 # EXIT
 # ---------------------------------------------------------------------------
 def simulate(df, side, entry, sl, tps, start, max_hold):
-    """Scale out at TP1/TP2/TP3, one third each, stop on the remainder.
+    """Scale out across the REACHABLE targets, stop on the remainder.
 
     Stop is checked BEFORE targets on every bar. A candle spanning both is a
     loss. Without tick data that is the only honest assumption.
+
+    BUG FIX: this used every level in the ladder, including ones flagged
+    unreachable. Two thirds of each position was aimed at prices that could
+    not print, so the position could only ever be closed by the stop or the
+    time stop, and hitting TP1 alone still netted a loss after full round-trip
+    costs. Unreachable levels are now dropped and the size is split across
+    what is actually left.
     """
     hi = df["high"].to_numpy()
     lo = df["low"].to_numpy()
@@ -45,10 +52,16 @@ def simulate(df, side, entry, sl, tps, start, max_hold):
     n = len(df)
     last = min(start + max_hold, n - 1)
 
+    live = [t for t in (tps or []) if t.get("reachable")]
+    if not live:
+        live = [tps[0]] if tps else []
+    share = 1.0 / len(live) if live else 1.0
+
     remaining = 1.0
     realised_px = []          # (fraction, exit_price)
     hit = []
-    tp_px = [t["price"] for t in tps]
+    tp_px = [t["price"] for t in live]
+    tp_name = [t["level"] for t in live]
     nxt = 0
 
     for j in range(start, last + 1):
@@ -61,10 +74,10 @@ def simulate(df, side, entry, sl, tps, start, max_hold):
             reached = hi[j] >= tp_px[nxt] if side == "bull" else lo[j] <= tp_px[nxt]
             if not reached:
                 break
-            frac = min(1.0 / 3.0, remaining)
+            frac = min(share, remaining)
             realised_px.append((frac, tp_px[nxt]))
             remaining -= frac
-            hit.append(f"TP{nxt+1}")
+            hit.append(tp_name[nxt])
             nxt += 1
             if remaining <= 1e-9:
                 return realised_px, hit, "TP_ALL", j
@@ -259,10 +272,14 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
     params = params or mtf.PARAMS
     rng = np.random.default_rng(cfg["seed"])
 
-    ctx = mtf.build_context(df5, df15, df1h, params)
     n = len(df5)
     warm = 100
     split = int(n * cfg["is_frac"])
+
+    # thresholds derived from the in-sample slice ONLY, then frozen and applied
+    # to both halves. Calibrating on everything was leaking out-of-sample bars
+    # into the very filter that decides whether an out-of-sample bar qualifies.
+    ctx = mtf.build_context(df5, df15, df1h, params, calib_end=cfg["is_frac"])
 
     out = {"symbol": symbol, "bars_5m": n,
            "in_sample_bars": split - warm, "out_of_sample_bars": n - split,
@@ -314,7 +331,7 @@ def _sensitivity(symbol, df5, df15, df1h, cfg, params, warm, n):
         for v in vals:
             p = {**params, key: v}
             try:
-                ctx = mtf.build_context(df5, df15, df1h, p)
+                ctx = mtf.build_context(df5, df15, df1h, p, calib_end=cfg["is_frac"])
                 tr, _ = run_arm(symbol, df5, ctx, "smc_mtf", cfg, warm, n - 2)
                 m = metrics(tr, "smc_mtf")
                 rows.append({"param": key, "value": v,
