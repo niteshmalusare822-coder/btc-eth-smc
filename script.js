@@ -1,356 +1,267 @@
-const API_URL       = "https://crypto-scanner-api-xnwd.onrender.com/api/dashboard";
-const BACKTEST_URL  = "https://crypto-scanner-api-xnwd.onrender.com/api/backtest";
+/* script.js — wired to the SMC multi-timeframe API.
+ *
+ * Written against the EXISTING index.html, so no HTML or CSS changes are
+ * needed. Element ids used: #status, #viability, #btc-content, #eth-content,
+ * #dexe-content, #bank-content, #backtest-result, #bt-symbol, #bt-tf.
+ *
+ * Styles are injected from here, so style.css does not need touching either.
+ *
+ * NOTE on the timeframe dropdown: the engine is now fixed multi-timeframe
+ * (1H bias, 15M setup, 5M entry). A single-timeframe selector no longer means
+ * anything, so it is disabled on load rather than silently ignored.
+ */
 
-function signalClass(signal) {
-    if (signal === "BUY")  return "signal-buy";
-    if (signal === "SELL") return "signal-sell";
-    return "signal-wait";
+const API = "https://crypto-scanner-api-xnwd.onrender.com";
+const SYMBOLS = ["BTC", "ETH", "DEXE", "BANK"];
+const REFRESH_MS = 120000;
+
+const CSS = `
+.sig{font-size:13px;line-height:1.55}
+.sig .act{display:inline-block;padding:3px 10px;border-radius:20px;
+  font-size:11px;font-weight:700;letter-spacing:.05em;margin-bottom:8px}
+.sig .act.buy{background:#2ea043;color:#fff}
+.sig .act.sell{background:#da3633;color:#fff}
+.sig .act.flat{background:#484f58;color:#fff}
+.sig .px{font-size:20px;font-weight:600;margin:4px 0 8px}
+.sig .chips{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}
+.sig .chip{font-size:10px;padding:3px 7px;border-radius:4px;
+  border:1px solid #3a3a4e;color:#8b949e}
+.sig .chip.on{color:#e6edf3;border-color:#5c6bc0}
+.sig table{width:100%;border-collapse:collapse;margin:8px 0}
+.sig td{padding:4px 3px;border-bottom:1px solid #2a2a3e;font-size:12px}
+.sig tr.sl td{color:#da3633}
+.sig tr.dead{opacity:.4}
+.sig .kv{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:8px 0}
+.sig .kv label{display:block;color:#8b949e;font-size:10px;text-transform:uppercase}
+.sig .kv b{font-size:13px}
+.sig .why{color:#8b949e;font-size:12px;margin-top:8px}
+.sig .src{color:#484f58;font-size:10px;margin-top:5px}
+.sig .warn{background:rgba(210,153,34,.12);border:1px solid #d29922;
+  color:#d29922;padding:7px;border-radius:6px;font-size:11px;margin:8px 0}
+.verdict{padding:14px;border-radius:10px;border:1px solid}
+.verdict.good{background:rgba(46,160,67,.1);border-color:#2ea043}
+.verdict.bad{background:rgba(218,54,51,.1);border-color:#da3633}
+.verdict.wait{background:rgba(92,107,192,.1);border-color:#5c6bc0}
+.verdict b{font-size:14px;letter-spacing:.04em;color:#fff}
+.verdict p{margin:6px 0 0;font-size:13px;color:#ccc}
+.arms{width:100%;border-collapse:collapse;font-size:12px;margin:10px 0}
+.arms th{color:#8b949e;font-size:10px;text-transform:uppercase;
+  text-align:left;padding:5px 4px;border-bottom:1px solid #333}
+.arms td{padding:5px 4px;border-bottom:1px solid #2a2a3e}
+.arms tr.hero td{color:#e6edf3;font-weight:600}
+.mtf-meta{display:flex;gap:14px;flex-wrap:wrap;color:#8b949e;font-size:11px;margin-top:8px}
+.fine{color:#484f58;font-size:11px;margin-top:10px}
+.lbl{color:#8b949e;font-size:10px;text-transform:uppercase;margin:12px 0 4px}
+`;
+
+function injectCss() {
+  if (document.getElementById("sig-css")) return;
+  const s = document.createElement("style");
+  s.id = "sig-css";
+  s.textContent = CSS;
+  document.head.appendChild(s);
 }
 
-const VIABILITY_URL = "https://crypto-scanner-api-xnwd.onrender.com/api/viability";
+const inr = n => (n === null || n === undefined || isNaN(n)) ? "—" :
+  "₹" + Number(n).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+const px = n => (n === null || n === undefined || isNaN(n)) ? "—" :
+  Number(n).toLocaleString("en-US", { maximumFractionDigits: 6 });
+const pc = n => (n === null || n === undefined || isNaN(n)) ? "—" :
+  Number(n).toFixed(2) + "%";
 
-// The panel that answers "is this worth trading yet?". Deliberately sits at
-// the top of the page: on a Rs.3,000 account the scanner's job is to prove
-// or disprove itself, not to hand out trades.
+function setStatus(text, colour) {
+  const el = document.getElementById("status");
+  if (el) { el.textContent = text; el.style.color = colour || "#8b949e"; }
+}
+
+function chip(label, value, on) {
+  return `<span class="chip ${on ? "on" : ""}">${label} ${value}</span>`;
+}
+
+/* A NO_TRADE renders with its reason attached. Which timeframe disagreed is
+   the useful part — a blank card tells you nothing. */
+function renderFlat(s) {
+  const bias = s.htf_bias_1h || "—";
+  const trig = s.trigger_5m || "none";
+  return `<div class="sig">
+    <span class="act flat">NO TRADE</span>
+    <div class="px">${px(s.price)}</div>
+    <div class="chips">
+      ${chip("1H", bias, bias === "BULLISH" || bias === "BEARISH")}
+      ${chip("15M", s.setup_15m ? "setup" : "none", !!s.setup_15m)}
+      ${chip("5M", trig, trig !== "none" && trig !== "")}
+    </div>
+    <div class="why">${s.reason || s.error || "no alignment"}</div>
+    <div class="src">${s.source || ""}</div>
+  </div>`;
+}
+
+function tpRow(tp) {
+  if (!tp) return "";
+  const dead = tp.reachable ? "" : "dead";
+  const note = tp.reachable ? `${tp.r_multiple}R` :
+    `<span style="color:#8b949e">${tp.note}</span>`;
+  return `<tr class="${dead}"><td>${tp.level}</td><td>${px(tp.price)}</td>
+    <td>${inr(tp.target_inr)}</td><td>${note}</td></tr>`;
+}
+
+function renderTicket(s) {
+  const dir = s.action === "BUY" ? "buy" : "sell";
+  const warn = s.tradeable ? "" :
+    `<div class="warn">Fee is ${(s.cost_in_r * 100).toFixed(0)}% of the stop
+     distance — above the 15% limit. Flagged not tradeable.</div>`;
+
+  return `<div class="sig">
+    <span class="act ${dir}">${s.action}</span>
+    <div class="px">${px(s.price)}</div>
+    <div class="chips">
+      ${chip("1H", s.htf_bias_1h, true)}
+      ${chip("15M", s.zone && s.zone.has_fvg ? "OB+FVG" : "OB", true)}
+      ${chip("5M", s.trigger_5m, true)}
+    </div>
+    ${warn}
+    <table>
+      <tr><td>Entry</td><td>${px(s.entry)}</td><td colspan="2">limit at OTE</td></tr>
+      <tr class="sl"><td>SL</td><td>${px(s.sl)}</td>
+        <td>${inr(s.risk_inr)}</td><td>${pc(s.sl_distance_pct)}</td></tr>
+      ${tpRow(s.tp1)}${tpRow(s.tp2)}${tpRow(s.tp3)}
+    </table>
+    <div class="kv">
+      <div><label>Size</label><b>${px(s.position_size_qty)}</b></div>
+      <div><label>Notional</label><b>${inr(s.notional_inr)}</b></div>
+      <div><label>Margin</label><b>${inr(s.margin_inr)}</b></div>
+      <div><label>Leverage</label><b>${s.leverage_used}x</b></div>
+      <div><label>Risk</label><b>${inr(s.risk_inr)}</b></div>
+      <div><label>R:R</label><b>${s.risk_reward ?? "—"}</b></div>
+      <div><label>Fees</label><b>${inr(s.fees_inr)}</b></div>
+      <div><label>Slippage</label><b>${inr(s.slippage_inr)}</b></div>
+    </div>
+    <div class="why">${s.reason || ""}</div>
+    <div class="src">${s.source || ""} · ${s.last_closed || ""}</div>
+  </div>`;
+}
+
+async function loadSignals() {
+  const targets = {};
+  SYMBOLS.forEach(s => {
+    const el = document.getElementById(s.toLowerCase() + "-content");
+    targets[s] = el;
+    if (el && !el.innerHTML.trim()) {
+      el.innerHTML = `<div class="sig"><div class="why">Loading…</div></div>`;
+    }
+  });
+
+  try {
+    const r = await fetch(`${API}/api/signals`);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+
+    (d.results || []).forEach(s => {
+      const el = targets[s.symbol];
+      if (!el) return;
+      el.innerHTML = (s.action === "BUY" || s.action === "SELL")
+        ? renderTicket(s) : renderFlat(s);
+    });
+
+    const n = d.actionable ?? 0;
+    setStatus(`🟢 Live · ${n} actionable · ${new Date().toLocaleTimeString("en-IN")}`,
+      n > 0 ? "#2ea043" : "#8b949e");
+  } catch (e) {
+    setStatus(`🔴 Disconnected (${e.message}) — retrying`, "#da3633");
+    SYMBOLS.forEach(s => {
+      const el = targets[s];
+      if (el) el.innerHTML = `<div class="sig"><div class="why">API unreachable</div></div>`;
+    });
+  }
+}
+
+/* The verdict panel loads first and sits above the signals, because whether
+   the system has an edge matters more than what it happens to say today. */
 async function loadViability() {
-    const el = document.getElementById("viability");
-    if (!el) return;
-    try {
-        const res = await fetch(VIABILITY_URL, { cache: "no-store" });
-        const v = await res.json();
-        if (v.error) { el.innerHTML = ""; return; }
-
-        const colour = { COLLECTING: "#ff9100", INCONCLUSIVE: "#ff9100",
-                         DISPROVEN: "#ff4d4d", CONFIRMED: "#00e676" }[v.stage] || "#888";
-
-        let body = `<p style="margin:6px 0 0;font-size:13px;">${v.verdict}</p>`;
-
-        if (v.stage === "COLLECTING") {
-            const pct = v.progress_pct || 0;
-            body += `<div style="margin-top:8px;height:8px;background:#333;border-radius:4px;overflow:hidden;">
-                        <div style="width:${pct}%;height:100%;background:${colour};"></div>
-                     </div>
-                     <p style="margin:4px 0 0;font-size:12px;color:#888;">
-                        ${v.resolved_signals} / ${v.signals_needed_for_verdict} signals · ${pct}%
-                     </p>`;
-        }
-
-        if (v.stage === "CONFIRMED" && v.projection_at_current_capital) {
-            const p = v.projection_at_current_capital;
-            body += `<p style="margin:6px 0 0;font-size:13px;">
-                        At ₹${v.capital_inr.toLocaleString("en-IN")}: <b>₹${p.expectancy_per_trade_inr}</b>/trade,
-                        <b>₹${p.per_month_inr.toLocaleString("en-IN")}</b>/month at ${p.trades_per_day} trade/day
-                     </p>`;
-            if (v.capital_needed_for_target) {
-                body += `<p style="margin:4px 0 0;font-size:12px;color:#888;">
-                            ₹${v.target_monthly_inr.toLocaleString("en-IN")}/month would need
-                            ₹${Number(v.capital_needed_for_target).toLocaleString("en-IN")} capital.
-                         </p>`;
-            }
-        }
-
-        el.innerHTML = `<div style="padding:10px;border:1px solid ${colour};border-radius:6px;margin-bottom:12px;">
-            <p style="margin:0;font-weight:bold;color:${colour};">${v.stage}
-               <span style="font-weight:normal;color:#888;font-size:12px;">
-                 · breakeven ${v.breakeven_win_rate_pct}% · R:R ${v.reward_risk}
-               </span></p>
-            ${body}
-        </div>`;
-    } catch (err) {
-        console.error("viability fetch failed:", err);
-    }
+  const el = document.getElementById("viability");
+  if (!el) return;
+  el.innerHTML = `<div class="verdict wait"><b>MEASURING</b>
+    <p>Running three arms on ETH. The first run after a cold start takes a minute.</p></div>`;
+  try {
+    const r = await fetch(`${API}/api/report/ETH`);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    const v = d.verdict || {};
+    el.innerHTML = `<div class="verdict ${v.profitable ? "good" : "bad"}">
+      <b>${v.profitable ? "EDGE FOUND" : "NO EDGE"}</b>
+      <p>${v.statement || "no verdict returned"}</p></div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="verdict wait"><b>UNMEASURED</b>
+      <p>Could not reach the report endpoint (${e.message}).</p></div>`;
+  }
 }
 
-// Risk-first sizing. The only quantity shown is the one whose downside is
-// capped. The old "qty for ₹500 profit" line is deliberately gone — it had no
-// upper bound and was the thing recommending 4x-oversized positions.
-function renderConfluence(d) {
-    const detail = d.confluence_detail;
-
-    if (!detail) return "";
-
-    const labels = {
-        candle_pattern: "Candle Pattern",
-        structure_break: "Structure Break",
-        divergence: "Divergence",
-        sweep_with_equal_levels: "Liquidity Sweep + Equal Levels",
-        fvg_proximity: "FVG Proximity",
-        inducement: "Inducement",
-        htf_ema_alignment: "HTF EMA Alignment"
-    };
-
-    const rows = Object.entries(detail).map(([key, value]) => {
-        const status = value.fired ? "✓" : "—";
-        const contribution = Number(value.contributed ?? 0).toFixed(1);
-
-        return `<div style="font-size:12px;color:${value.fired ? "#ddd" : "#777"};">
-            ${status} ${labels[key] ?? key}: ${contribution}
-        </div>`;
-    }).join("");
-
-    return `
-        <div style="margin-top:6px;padding:7px;border:1px solid #333;border-radius:4px;">
-            <p class="meta" style="margin:0 0 4px;">
-                <b>Confluence:</b>
-                ${d.confluence_score ?? "-"} / ${d.confluence_threshold ?? "-"}
-            </p>
-            ${rows}
-        </div>
-    `;
+function armRow(m) {
+  if (!m || !m.trades) {
+    return `<tr><td>${m ? m.arm : "—"}</td><td colspan="7">no trades</td></tr>`;
+  }
+  const hero = m.arm === "SMC_MTF" ? "hero" : "";
+  return `<tr class="${hero}">
+    <td>${m.arm}</td><td>${m.trades}</td><td>${m.win_rate_pct}%</td>
+    <td>${m.profit_factor ?? "—"}</td><td>${inr(m.expectancy_inr)}</td>
+    <td>${inr(m.net_pnl_inr)}</td><td>${inr(m.max_drawdown_inr)}</td>
+    <td>${m.median_cost_in_r}</td></tr>`;
 }
 
-// Risk-first sizing. The only quantity shown is the one whose downside is
-// capped. The old "qty for ₹500 profit" line is deliberately gone — it had no
-// upper bound and was the thing recommending 4x-oversized positions.
-//
-// This function's header was destroyed when renderConfluence() was pasted on
-// top of it, leaving `const levColor` and the return below sitting at file
-// scope. A `return` outside a function is a SyntaxError, so the ENTIRE script
-// failed to parse and not one line of it ran — which is why the page sat on
-// "Connecting..." forever while the backend was scanning perfectly.
-function renderSizing(d) {
-    const s = d.risk_size;
-    if (!s) return "";
+/* Called by the button in index.html. The timeframe argument is accepted for
+   backward compatibility and ignored: the engine is fixed 1H/15M/5M. */
+async function runBacktest(symbol) {
+  const el = document.getElementById("backtest-result");
+  if (!el) return;
+  el.innerHTML = `Running RANDOM vs SMC vs SMC_MTF on ${symbol}, in-sample and
+    out-of-sample, plus walk-forward and parameter sensitivity. This can take a
+    minute on a cold start.`;
+  try {
+    const r = await fetch(`${API}/api/report/${symbol}`);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    if (d.error) { el.innerHTML = `Error: ${d.error}`; return; }
 
-    const levColor = s.leverage_needed > 3 ? "#ff9100" : "#00e676";
-    const need = d.capital_needed_for_500;
-    const needLine = (need && need > s.capital_inr)
-        ? `<p class="meta" style="color:#888;margin:4px 0 0;">₹500/trade would need ₹${Number(need).toLocaleString("en-IN")} capital at this risk level.</p>`
-        : "";
+    const v = d.verdict || {};
+    const wf = d.walk_forward || {};
+    const se = d.sensitivity || {};
+    const head = `<tr><th>Arm</th><th>Trades</th><th>Win</th><th>PF</th>
+      <th>Expectancy</th><th>Net P&L</th><th>Max DD</th><th>Cost/R</th></tr>`;
 
-    return `<div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:4px;">
-        <p class="meta" style="margin:0;">📦 Qty: <b>${s.qty}</b> &nbsp; (notional ₹${s.notional_inr.toLocaleString("en-IN")})</p>
-        <p class="meta" style="margin:4px 0 0;">🛑 Risk: <b style="color:#ff4d4d">₹${s.risk_inr}</b> (${s.risk_pct_of_capital}% of ₹${s.capital_inr})
-           &nbsp;|&nbsp; ⚙️ <b style="color:${levColor}">${s.leverage_needed}x</b></p>
-        <p class="meta" style="margin:4px 0 0;">🎯 If TP hits: <b style="color:#00e676">₹${s.profit_at_tp_inr}</b> &nbsp; (R:R ${s.reward_risk}, fees ₹${s.fee_cost_inr})</p>
-        <p class="meta" style="margin:4px 0 0;color:#888;">${s.note}</p>
-        ${needLine}
-    </div>`;
+    el.innerHTML = `
+      <div class="verdict ${v.profitable ? "good" : "bad"}">
+        <b>${v.profitable ? "EDGE FOUND" : "NO EDGE"}</b>
+        <p>${v.statement || ""}</p>
+      </div>
+      <div class="lbl">Out of sample</div>
+      <table class="arms">${head}${(d.out_of_sample || []).map(armRow).join("")}</table>
+      <div class="lbl">In sample</div>
+      <table class="arms">${head}${(d.in_sample || []).map(armRow).join("")}</table>
+      <div class="mtf-meta">
+        <span>Walk-forward: beat random in
+          ${wf.folds_beating_random ?? "—"}/${wf.total_folds ?? "—"} folds</span>
+        <span>Sensitivity: ${se.positive_of_total ?? "—"} positive
+          ${se.fragile ? "· FRAGILE" : ""}</span>
+        <span>Source: ${d.source || "—"}</span>
+      </div>
+      <p class="fine">SMC_MTF has to beat RANDOM, not merely be positive.
+      A profitable arm that loses to a coin flip is not an edge.</p>`;
+  } catch (e) {
+    el.innerHTML = `API unreachable: ${e.message}`;
+  }
 }
 
-function renderCoin(data) {
-    // A missing ticker used to silently render as an empty string, which is
-    // why the page could look completely blank while reporting "Live".
-    if (!data || typeof data !== "object" || Object.keys(data).length === 0) {
-        return `<div class="timeframe"><p class="signal-wait">⏳ Waiting for first scan…</p></div>`;
-    }
+document.addEventListener("DOMContentLoaded", () => {
+  injectCss();
 
-    let html = "";
-    for (const tf in data) {
-        const d = data[tf];
+  // the engine is fixed multi-timeframe now, so a single-TF selector is a lie
+  const tf = document.getElementById("bt-tf");
+  if (tf) {
+    tf.innerHTML = `<option>1H bias · 15M setup · 5M entry</option>`;
+    tf.disabled = true;
+  }
 
-        if (!d) {
-            html += `<div class="timeframe"><h3>${tf}</h3><p class="signal-wait">⏳ Waiting…</p></div>`;
-            continue;
-        }
-
-        if (d.pending) {
-            html += `<div class="timeframe"><h3>${tf}</h3><p class="signal-wait">⏳ Scanning…</p></div>`;
-            continue;
-        }
-
-        if (d.error) {
-            html += `<div class="timeframe"><h3>${tf}</h3><p class="signal-wait">No data</p></div>`;
-            continue;
-        }
-
-        // RSI color
-        let rsiStyle = "";
-        let rsiTag   = "";
-        if (d.rsi !== null && d.rsi !== undefined) {
-            if (d.rsi > 75) { rsiStyle = "color:#ff4d4d;font-weight:bold"; rsiTag = " ⚠️ OB"; }
-            else if (d.rsi < 25) { rsiStyle = "color:#00e676;font-weight:bold"; rsiTag = " ⚠️ OS"; }
-        }
-
-        // Entry / TP / SL — only on BUY or SELL
-        let tradeRow = "";
-        if (d.signal === "BUY" || d.signal === "SELL") {
-            const age = d.signal_age_seconds;
-            let ageText = "🆕 Just triggered";
-            let ageColor = "#00e676";
-            if (age !== null && age !== undefined && age > 0) {
-                if (age < 60) { ageText = `⏱️ Active ${Math.round(age)}s`; ageColor = "#00e676"; }
-                else { ageText = `⏱️ Active ${Math.floor(age / 60)}m ${Math.round(age % 60)}s`; ageColor = age > 300 ? "#ffd600" : "#00e676"; }
-            }
-            tradeRow = `
-            <div style="margin-top:8px;padding-top:8px;border-top:1px solid #444;">
-                <p class="meta" style="color:${ageColor};font-weight:bold">${ageText}</p>
-                <p class="meta">📍 Entry: <b>$${d.entry ?? "-"}</b></p>
-                <p class="meta">🎯 TP: <b style="color:#00e676">$${d.tp ?? "-"}</b> &nbsp; 🛑 SL: <b style="color:#ff4d4d">$${d.sl ?? "-"}</b></p>
-                <p class="meta">📊 ATR: ${d.atr ?? "-"}</p>
-                ${renderSize(d)}
-            </div>`;
-        }
-
-        // NEW: momentum awareness — always shown, even on WAIT, so "market is
-        // moving" is visible separately from the filtered trade signal.
-        let momColor = "#888";
-        if (d.momentum_pct !== null && d.momentum_pct !== undefined) {
-            if (Math.abs(d.momentum_pct) >= 1.0) momColor = d.momentum_pct > 0 ? "#00e676" : "#ff4d4d";
-            else if (Math.abs(d.momentum_pct) >= 0.3) momColor = d.momentum_pct > 0 ? "#8bc34a" : "#ff8a65";
-        }
-
-        // NEW: blow-off exhaustion banner
-        let boRow = "";
-        if (d.blowoff && d.blowoff.active) {
-            const lv = d.blowoff.levels || {};
-            const tag = d.blowoff.confirmed ? "CONFIRMED — climax low broken" : "ACTIVE — not confirmed yet";
-            boRow = `<p class="meta" style="color:#ff9100;font-weight:bold;">
-                🚫 BLOW-OFF ${tag} (score ${d.blowoff.score ?? "-"})<br>
-                <span style="font-weight:normal">invalidation $${lv.invalidation?.toFixed?.(5) ?? "-"} &nbsp;|&nbsp; 0.618 $${lv.fib_618?.toFixed?.(5) ?? "-"}</span>
-            </p>`;
-        }
-
-        html += `
-        <div class="timeframe">
-            <h3>${tf}</h3>
-            <p>Price: $${d.price}</p>
-            <p style="${rsiStyle}">RSI: ${d.rsi ?? "-"}${rsiTag}</p>
-            <p class="${signalClass(d.signal)}">${d.signal}</p>
-            <p class="meta">Bias: ${d.htf_bias ?? "-"} | Regime: ${d.regime_entry ?? d.regime ?? "-"} | Confirm: ${d.regime_confirm ?? "-"}</p>
-            <p class="meta">Score: BUY ${d.buy_score ?? "-"} / SELL ${d.sell_score ?? "-"}</p>
-            <p class="meta" style="color:${momColor}">${d.momentum_note ?? ""} (${d.momentum_pct ?? "-"}%) &nbsp; | &nbsp; This candle: ${d.last_candle_direction ?? "-"} (${d.last_candle_pct ?? "-"}%)</p>
-            ${boRow}
-            ${renderConfluence(d)}
-            ${renderSizing(d)}
-            <p class="reason">${d.reason ?? ""}</p>
-            ${tradeRow}
-        </div>`;
-    }
-    return html;
-}
-
-// ── Backtest ─────────────────────────────────────────────
-async function runBacktest(symbol, timeframe) {
-    const box = document.getElementById("backtest-result");
-    box.innerHTML = "⏳ Running backtest...";
-    try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 60000);
-        const res = await fetch(`${BACKTEST_URL}/${symbol}/${timeframe}`, { signal: controller.signal });
-        clearTimeout(timeout);
-        const data = await res.json();
-
-        if (data.error) {
-            box.innerHTML = `❌ Error: ${data.error}`;
-            return;
-        }
-
-        const trades = (data.recent_trades || []).map(t => {
-            const color = t.outcome === "WIN" ? "#00e676" : "#ff4d4d";
-            const icon  = t.outcome === "WIN" ? "✅" : "❌";
-            return `<p style="color:${color};margin:2px 0;">${icon} ${t.time} | ${t.direction} @ $${t.entry} → TP $${t.tp} | SL $${t.sl}</p>`;
-        }).join("");
-
-        const wrColor = data.win_rate >= 55 ? "#00e676" : data.win_rate >= 45 ? "#ffd600" : "#ff4d4d";
-
-        box.innerHTML = `
-        <div style="padding:12px;">
-            <p><b>${data.symbol} ${data.timeframe} — Last ${data.candles_tested} candles</b></p>
-            <p>Total Trades: <b>${data.total_trades}</b> &nbsp;|&nbsp;
-               ✅ Wins: <b style="color:#00e676">${data.wins}</b> &nbsp;|&nbsp;
-               ❌ Losses: <b style="color:#ff4d4d">${data.losses}</b></p>
-            <p>Win Rate: <b style="color:${wrColor};font-size:1.2em">${data.win_rate}%</b></p>
-            <p>Profit Factor: <b>${data.profit_factor ?? "-"}</b> &nbsp;|&nbsp; Expectancy: <b style="color:${data.expectancy_pct >= 0 ? '#00e676' : '#ff4d4d'}">${data.expectancy_pct}%</b> &nbsp;|&nbsp; Avg R:R: <b>${data.avg_rr ?? "-"}</b></p>
-            <hr style="border-color:#444;margin:8px 0;">
-            <p><b>Recent Trades:</b></p>
-            ${trades || "<p>No trades found</p>"}
-        </div>`;
-    } catch (err) {
-        if (err.name === "AbortError") {
-            box.innerHTML = "⏳ Timeout — try again";
-        } else {
-            box.innerHTML = `❌ ${err.message}`;
-        }
-    }
-}
-
-// ── Dashboard ────────────────────────────────────────────
-let inFlight = false;          // stops overlapping polls piling up on the server
-let lastGood = null;           // last successful payload
-let lastGoodAt = null;         // when we received it
-
-function paint(data) {
-    document.getElementById("btc-content").innerHTML  = renderCoin(data.btc);
-    document.getElementById("eth-content").innerHTML  = renderCoin(data.eth);
-    document.getElementById("dexe-content").innerHTML = renderCoin(data.dexe);
-    document.getElementById("bank-content").innerHTML = renderCoin(data.bank);
-}
-
-// A failed poll should never wipe the screen. Repaint what we had and label
-// it clearly as stale so it is obvious the numbers are not current.
-function paintStale(reason) {
-    const statusEl = document.getElementById("status");
-    if (!lastGood) {
-        statusEl.innerHTML = `🔴 ${reason} — no data yet, retrying`;
-        return;
-    }
-    paint(lastGood);
-    const secs = Math.round((Date.now() - lastGoodAt) / 1000);
-    statusEl.innerHTML = `🟠 ${reason} — showing data from ${secs}s ago`;
-}
-
-async function loadDashboard() {
-    if (inFlight) return;      // previous request still running - skip this tick
-    inFlight = true;
-
-    const statusEl = document.getElementById("status");
-    try {
-        const controller = new AbortController();
-        // 90s, not 40s: a cold Render instance needs ~60s to answer the very
-        // first request. Once warm the response is near-instant anyway.
-        const timeout = setTimeout(() => controller.abort(), 90000);
-        const response = await fetch(API_URL, { signal: controller.signal, cache: "no-store" });
-        clearTimeout(timeout);
-
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-
-        if (data.warming) {
-            const detail = data.progress ? ` — ${data.progress}` : "";
-            // If we already had data, the backend just restarted. The numbers
-            // still on screen are now orphaned, so age-label them rather than
-            // leaving them looking current.
-            if (lastGood) {
-                const secs = Math.round((Date.now() - lastGoodAt) / 1000);
-                statusEl.innerHTML = `⏳ Backend restarted, rescanning${detail} — numbers below are ${secs}s old`;
-            } else {
-                statusEl.innerHTML = `⏳ First scan running${detail}`;
-            }
-            if (data.error) statusEl.innerHTML += `<br><span style="color:#ff4d4d">backend error: ${data.error}</span>`;
-            return;
-        }
-
-        lastGood = data;
-        lastGoodAt = Date.now();
-        paint(data);
-
-        const now = new Date().toLocaleTimeString();
-        const age = data._age_seconds;
-        // The scanner now rests ~60s+ between passes, so 45s was flagging
-        // healthy data as stale on every other poll.
-        const stale = age > 180;
-        statusEl.innerHTML = stale
-            ? `🟡 Live (updated ${now}) — scan data ${age}s old`
-            : `🟢 Live (updated ${now})`;
-        if (data._error) {
-            statusEl.innerHTML += `<br><span style="color:#ff9100">last pass warning: ${data._error}</span>`;
-        }
-    } catch (err) {
-        if (err.name === "AbortError") {
-            paintStale("Server slow to respond");
-        } else {
-            console.error("Fetch error:", err);
-            paintStale(`Disconnected (${err.message})`);
-        }
-    } finally {
-        inFlight = false;
-    }
-}
-
-loadDashboard();
-setInterval(loadDashboard, 15000);
-// Journal stats move slowly; polling this as often as prices would just burn
-// the free tier's CPU for numbers that change a few times an hour.
-loadViability();
-setInterval(loadViability, 120000);
+  loadSignals();
+  loadViability();
+  setInterval(loadSignals, REFRESH_MS);
+});
