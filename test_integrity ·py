@@ -1016,3 +1016,91 @@ def test_verdict_promising_is_distinct_from_insufficient():
         {"arm": "MATCHED_RANDOM_vs_SMC_MTF", **base}]}
     assert B._verdict(bad)["verdict"] == "INSUFFICIENT_SAMPLE"
     assert B._verdict(good)["profitable"] is False, "promising is not proven"
+
+
+# ═══ ENTRY QUALITY / POSITION MODES ════════════════════════════════════
+def test_entry_vs_exit_failure_is_decided_by_numbers():
+    import entry_quality as EQ
+    never_moves = [{"outcome": "TIMEOUT", "mfe_r": 0.1, "mae_r": 0.05,
+                    "bars_to_mfe": 3, "net_inr": -50.0} for _ in range(20)]
+    c = EQ.classify_failure(never_moves)
+    assert c["TIMEOUT"]["verdict"] == "ENTRY_FAILURE"
+
+    gives_back = [{"outcome": "TIMEOUT", "mfe_r": 1.6, "mae_r": 0.2,
+                   "bars_to_mfe": 5, "net_inr": -30.0} for _ in range(20)]
+    c2 = EQ.classify_failure(gives_back)
+    assert c2["TIMEOUT"]["verdict"] == "EXIT_FAILURE"
+
+
+def test_stop_group_flags_immediate_adverse_moves():
+    import entry_quality as EQ
+    wrong_way = [{"outcome": "STOP", "mfe_r": 0.1, "mae_r": 1.4,
+                  "bars_to_mfe": 1, "net_inr": -700.0} for _ in range(20)]
+    c = EQ.classify_failure(wrong_way)
+    assert "straight away" in c["STOP"]["explanation"]
+
+
+def test_excursion_profile_reports_every_threshold():
+    import entry_quality as EQ
+    rows = [{"mfe_r": x, "mae_r": 0.1, "bars_to_mfe": 1, "net_inr": 0.0}
+            for x in (0.1, 0.3, 0.6, 0.8, 1.5)]
+    p = EQ.excursion_profile(rows, "test")
+    assert p["pct_reaching_0.25R"] == 80.0
+    assert p["pct_reaching_0.5R"] == 60.0
+    assert p["pct_reaching_1.0R"] == 20.0
+
+
+def test_score_buckets_detect_a_useless_score():
+    import entry_quality as EQ
+    flat = ([{"score": 3, "net_inr": 100.0, "mfe_r": 1.0} for _ in range(10)] +
+            [{"score": 13, "net_inr": 100.0, "mfe_r": 1.0} for _ in range(10)])
+    r = EQ.score_buckets(flat)
+    assert r["predictive"] is False
+    assert "not predictive" in r["note"]
+
+    useful = ([{"score": 3, "net_inr": -200.0, "mfe_r": 0.2} for _ in range(10)] +
+              [{"score": 13, "net_inr": 300.0, "mfe_r": 1.5} for _ in range(10)])
+    assert EQ.score_buckets(useful)["predictive"] is True
+
+
+def test_score_buckets_handle_missing_scores():
+    import entry_quality as EQ
+    r = EQ.score_buckets([{"net_inr": 1.0}, {"net_inr": 2.0}])
+    assert r["predictive"] is None and "wire scoring" in r["note"]
+
+
+def test_max_concurrent_counts_overlap():
+    import entry_quality as EQ
+    seq = [{"fill_i": 0, "exit_i": 10}, {"fill_i": 20, "exit_i": 30}]
+    assert EQ._max_concurrent(seq) == 1
+    overlap = [{"fill_i": 0, "exit_i": 10}, {"fill_i": 5, "exit_i": 15},
+               {"fill_i": 6, "exit_i": 12}]
+    assert EQ._max_concurrent(overlap) == 3
+
+
+def test_concurrency_modes_change_trade_count(frames):
+    """MODE_A was discarding aligned opportunities. Relaxing it must produce
+    at least as many trades, and the peak risk must rise with it."""
+    df5, df15, df1h = frames
+    ctx = mtf.build_context(df5, df15, df1h)
+    n = len(df5)
+    split = int(n * 0.6)
+    counts = {}
+    for mode in (1, 2, "per_side"):
+        cfg = {**B.DEFAULT_CFG, "concurrency": mode}
+        tr, _ = B.run_arm("ETH", df5, ctx, "smc", cfg, split, n - 1,
+                          rng=np.random.default_rng(42))
+        counts[str(mode)] = len(tr)
+    assert counts["2"] >= counts["1"], counts
+    assert counts["per_side"] >= counts["1"], counts
+
+
+def test_gate_value_reports_what_was_removed(frames):
+    import entry_quality as EQ
+    df5, df15, df1h = frames
+    ctx = mtf.build_context(df5, df15, df1h)
+    n = len(df5)
+    r = EQ.gate_information_value("ETH", df5, ctx, B.DEFAULT_CFG,
+                                  int(n * 0.6), n - 1)
+    assert "with_all_gates" in r and "trades_removed_by_gates" in r
+    assert r["verdict"]
