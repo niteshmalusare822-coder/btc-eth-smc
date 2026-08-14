@@ -535,3 +535,57 @@ def test_gate_counters_expanded(report):
                                          g["matching_15m_setup"])
     assert g["ote_touched"] <= g["all_three_aligned"]
     assert g["entries_filled"] <= g["signals_generated"]
+
+
+# ─── DATA PROBE: the diagnosis must name the real failure mode ──────────
+def _probe_with(monkeypatch, page_behaviour, bars_available=30000):
+    """page_behaviour: 'honours_from' or 'ignores_from'."""
+    import data as D
+    import app as A
+    A._cache.clear()
+    end = 1700000000
+
+    def fake(venue, symbol, tf, target, since=None, now=None):
+        secs = D.TF_SECONDS[tf]
+        if page_behaviour == "ignores_from":
+            n, pages = min(D.PAGE_LIMIT, target), 2
+        else:
+            n, pages = min(target, bars_available), max(1, target // D.PAGE_LIMIT)
+        ts = pd.to_datetime(np.arange(end - n * secs, end, secs), unit="s")
+        px = np.full(n, 3000.0)
+        df = pd.DataFrame({"ts": ts, "open": px, "high": px + 1, "low": px - 1,
+                           "close": px, "volume": np.ones(n)})
+        return df, {"requested_bars": target, "actual_bars": n,
+                    "short_by": max(0, target - n), "source": venue,
+                    "symbol": symbol, "timeframe": tf,
+                    "coverage_start": str(ts[0]), "coverage_end": str(ts[-1]),
+                    "pages_fetched": pages}
+
+    monkeypatch.setattr(D, "fetch_ohlcv_history", fake)
+    return A.app.test_client()
+
+
+def test_probe_detects_working_pagination(monkeypatch):
+    c = _probe_with(monkeypatch, "honours_from")
+    d = c.get("/api/data-probe/ETH?bars=10000").get_json()
+    assert d["actual_bars_5m"] >= 10000
+    assert "works" in d["diagnosis"].lower()
+
+
+def test_probe_detects_venue_ignoring_from(monkeypatch):
+    """The failure mode that actually matters: the venue always returns the
+    newest window, so backward paging never advances."""
+    c = _probe_with(monkeypatch, "ignores_from")
+    d = c.get("/api/data-probe/ETH?bars=10000").get_json()
+    assert d["actual_bars_5m"] <= 1200
+    assert "ignoring" in d["diagnosis"]
+    assert d["coverage_days"] < 5
+
+
+def test_probe_reports_timing_and_all_frames(monkeypatch):
+    c = _probe_with(monkeypatch, "honours_from")
+    d = c.get("/api/data-probe/ETH?bars=8000").get_json()
+    assert set(d["per_timeframe"]) == {"5m", "15m", "1h"}
+    assert d["total_seconds"] >= 0
+    for tf, v in d["per_timeframe"].items():
+        assert "bars_per_page" in v and "seconds" in v
