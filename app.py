@@ -261,6 +261,86 @@ def report(symbol):
         return jsonify({"error": str(e)}), 500
 
 
+def probe_data(symbol, bars):
+    """Pagination only. No signals, no backtest, no metrics.
+
+    This exists to answer one question in seconds instead of minutes: when the
+    loader asks CoinDCX for N candles, how many does it actually get, how many
+    requests did that take, and how long did it hold the worker for.
+
+    It also exposes the assumption most likely to be wrong. The pager walks
+    backwards by moving the `to` parameter behind the oldest candle it already
+    holds. If the venue ignores that and keeps returning the most recent
+    window, `pages_fetched` will stop at 2 and `actual_bars` will sit near one
+    page. That pattern means the venue caps by window rather than by count and
+    the paging strategy has to change.
+    """
+    t0 = time.time()
+    per_tf = {}
+    need = D.required_bars(bars)
+
+    for tf in ("5m", "15m", "1h"):
+        t1 = time.time()
+        df, meta = D.fetch_ohlcv_history("coindcx", symbol, tf, need[tf])
+        if df is None:
+            per_tf[tf] = {"requested_bars": need[tf], "actual_bars": 0,
+                          "error": meta.get("error"),
+                          "seconds": round(time.time() - t1, 2)}
+            continue
+        pages = meta["pages_fetched"]
+        got = meta["actual_bars"]
+        per_tf[tf] = {
+            "requested_bars": need[tf], "actual_bars": got,
+            "short_by": meta["short_by"], "pages_fetched": pages,
+            "bars_per_page": round(got / pages, 1) if pages else None,
+            "coverage_start": meta["coverage_start"],
+            "coverage_end": meta["coverage_end"],
+            "seconds": round(time.time() - t1, 2),
+            "warnings": D.validate_ohlcv(df, tf),
+        }
+
+    five = per_tf.get("5m", {})
+    got, want = five.get("actual_bars", 0), five.get("requested_bars", 1)
+    pages = five.get("pages_fetched", 0)
+
+    if got == 0:
+        diag = "CoinDCX returned nothing. Check the pair string."
+    elif got >= want * 0.9:
+        diag = "Pagination works. The venue honours the from/to window."
+    elif pages <= 2 and got <= D.PAGE_LIMIT * 1.2:
+        diag = ("Paging made no progress past the first window. CoinDCX is "
+                "very likely ignoring `from` and always returning the most "
+                "recent candles. Backward paging will not work against this "
+                "endpoint and a different history source is needed.")
+    else:
+        diag = (f"Paging advanced across {pages} requests but the venue ran "
+                f"out at {got} candles. That is all the history it holds.")
+
+    return {"symbol": symbol, "source": "coindcx",
+            "requested_bars_5m": bars,
+            "actual_bars_5m": got,
+            "coverage_days": round(got * 5 / 1440.0, 1),
+            "diagnosis": diag,
+            "per_timeframe": per_tf,
+            "total_seconds": round(time.time() - t0, 2),
+            "render_timeout_seconds": 600}
+
+
+@app.route("/api/data-probe/<symbol>")
+def data_probe(symbol):
+    symbol = symbol.upper()
+    if symbol not in SYMBOLS:
+        return jsonify({"error": f"symbol must be one of {SYMBOLS}"}), 400
+    bars = D.clamp_bars(request.args.get("bars", REPORT_BARS_5M))
+    try:
+        res, hit = cached(("probe", symbol, bars), 300,
+                          lambda: probe_data(symbol, bars))
+        return jsonify({**res, "from_cache": hit})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"symbol": symbol, "error": str(e)}), 500
+
+
 @app.route("/api/trades/<symbol>")
 def trades(symbol):
     symbol = symbol.upper()
@@ -286,7 +366,8 @@ def root():
                     "endpoints": ["/api/health", "/api/config",
                                   "/api/signal/<symbol>", "/api/signals",
                                   "/api/report/<symbol>",
-                                  "/api/trades/<symbol>"]})
+                                  "/api/trades/<symbol>",
+                                  "/api/data-probe/<symbol>"]})
 
 
 if __name__ == "__main__":
