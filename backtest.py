@@ -194,7 +194,7 @@ def _find_fill(df, side, level, start, cfg):
 
 def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
                 bias=None, setup=None, trigger=None, arm="",
-                setup_ts=None, entry_reason=""):
+                setup_ts=None, entry_reason="", flags=None):
     """Place a resting limit at the close of sig_i, fill from sig_i+1 onward.
 
     Returns (trade_dict, reject_reason). trade_dict carries the full audit
@@ -238,6 +238,8 @@ def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
         "exit_ts": str(df["ts"].iat[ex]),
         "bars_to_fill": fill_i - sig_i,
         "bias_1h": bias, "setup_15m": setup, "trigger_5m": trigger,
+        "flags": dict(flags or {}),
+        "score": int(sum(v for k, v in (flags or {}).items() if v is True) * 0),
         "side": direction,
         "signal_level": round(level, 8),
         "actual_entry": round(entry, 8),
@@ -279,7 +281,10 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
     tf_min = 5
     trades, rejected = [], {}
     busy_until = -1
+    open_until = {"bull": -1, "bear": -1}     # mode B
+    open_slots = []                            # mode C/D: list of exit indices
     # FIX 12: where trades disappear, counted rather than guessed at
+    busy_side, open_until = {}, []
     gates = {"total_5m_bars": 0, "bars_with_atr": 0, "bars_not_busy": 0,
              "valid_1h_bias": 0, "matching_15m_setup": 0,
              "matching_5m_trigger": 0, "all_three_aligned": 0,
@@ -358,7 +363,16 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
             if touched:
                 gates["ote_touched"] += 1
 
-        if i <= busy_until:
+        mode = cfg.get("position_mode", "A")
+        want_side = want or "bull"
+        if mode == "A":
+            blocked = i <= busy_until
+        elif mode == "B":
+            blocked = i <= open_until.get(want_side, -1)
+        else:                                   # C and D
+            open_slots = [x for x in open_slots if x >= i]
+            blocked = len(open_slots) >= cfg.get("max_concurrent", 2)
+        if blocked:
             if has_bias and live_now and has_trig:
                 gates["duplicate_signal_rejected"] += 1
             continue
@@ -391,11 +405,21 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
                               cfg, tf_min, bias=bias_s, setup=setup_s,
                               trigger=trig_s, arm=arm,
                               setup_ts=(s.confirmed_ts, s.expires_ts),
-                              entry_reason=reason_s)
+                              entry_reason=reason_s,
+                              flags={
+                                  "htf_1h_bias": bias_s in ("BULLISH", "BEARISH"),
+                                  "structure_15m": True,
+                                  "liquidity_sweep": bool(s.swept),
+                                  "ob_fvg_15m": bool(s.has_fvg),
+                                  "imbalance": bool(s.imbalance),
+                                  "confirmation_5m": trig_s in ("bull", "bear"),
+                              })
         if tr:
             gates["entries_filled"] += 1
             trades.append(tr)
             busy_until = tr["exit_i"]   # FIX 10: keyed to the real exit index
+            busy_side[side] = tr["exit_i"]
+            open_until.append(tr["exit_i"])
         else:
             _rej(why)
             if why and "fill" in why:
@@ -487,6 +511,18 @@ DEFAULT_CFG = {"max_hold": 60, "rand_sl_atr": 1.0, "n_random": 400,
                "matched_seeds": 200,
                "bootstrap_n": 5000,
                "cooldown_bars": 3,
+               # TASK 5. On real ETH data 35 of 40 aligned bars were discarded
+               # only because a position was already open, so the constraint
+               # that decides trade count is position management, not the
+               # filters. These modes make that testable instead of assumed.
+               #   A  one position at a time            (current behaviour)
+               #   B  one position per direction
+               #   C  up to max_concurrent independent positions
+               #   D  replace a losing-so-far position if a stronger setup
+               #      appears (requires score_margin improvement)
+               "position_mode": "A",
+               "max_concurrent": 2,
+               "replace_score_margin": 2,
                "min_trades": 30,    # below this the verdict is INSUFFICIENT SAMPLE
                "log_trades": 150,   # trades returned in the audit log
                "is_frac": 0.60, "wf_folds": 4, "seed": 42}
