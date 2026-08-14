@@ -72,10 +72,11 @@ def _atr(df, period=14):
 
 # ---------------------------------------------------------------------------
 def build_signal(symbol):
-    frames, source = D.load_mtf(symbol, LIVE_BARS_5M)
+    frames, meta = D.load_mtf(symbol, LIVE_BARS_5M)
     if frames is None:
         return {"symbol": symbol, "action": "NO_TRADE",
-                "reason": "no data from any venue", "source": source}
+                "reason": meta.get("error", "no data"), "data": meta}
+    source = meta.get("source")
 
     df5, df15, df1h = frames["5m"], frames["15m"], frames["1h"]
     # calib_end=None is correct here and ONLY here: in a live scan every bar
@@ -153,22 +154,24 @@ def build_signal(symbol):
 
 
 def build_report(symbol):
-    frames, source = D.load_mtf(symbol, REPORT_BARS_5M)
+    frames, meta = D.load_mtf(symbol, REPORT_BARS_5M)
     if frames is None:
-        return {"symbol": symbol, "error": "no data", "source": source}
+        return {"symbol": symbol, "error": meta.get("error", "no data"),
+                "data": meta}
     rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["1h"])
-    rep["source"] = source
+    rep["source"] = meta.get("source")
+    rep["data"] = meta            # requested vs actual bars, coverage, warnings
     return rep
 
 
-def build_trade_log(symbol, limit=150):
+def build_trade_log(symbol, limit=150):  # noqa: C901
     """The audit trail on its own endpoint, so it can be pulled without
     re-running the whole three-arm report."""
-    frames, source = D.load_mtf(symbol, REPORT_BARS_5M)
+    frames, meta = D.load_mtf(symbol, REPORT_BARS_5M)
     if frames is None:
-        return {"symbol": symbol, "error": "no data", "source": source}
+        return {"symbol": symbol, "error": meta.get("error", "no data")}
     rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["1h"])
-    return {"symbol": symbol, "source": source,
+    return {"symbol": symbol, "source": meta.get("source"),
             "total": rep.get("trade_log_total", 0),
             "trades": (rep.get("trade_log") or [])[:limit]}
 
@@ -226,7 +229,19 @@ def report(symbol):
         return jsonify({"error": f"symbol must be one of {SYMBOLS}"}), 400
     try:
         res, hit = cached(("rep", symbol), REPORT_TTL, lambda: build_report(symbol))
-        return jsonify({**res, "from_cache": hit})
+        # FIX 9: the log is large. Opt in with ?trades=1, otherwise it is
+        # stripped so the dashboard poll stays small.
+        want = request.args.get("trades") in ("1", "true", "yes")
+        payload = dict(res)
+        if not want:
+            payload.pop("trade_log", None)
+        else:
+            try:
+                lim = min(int(request.args.get("limit", 200)), 1000)
+            except ValueError:
+                lim = 200
+            payload["trade_log"] = (payload.get("trade_log") or [])[:lim]
+        return jsonify({**payload, "from_cache": hit})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
