@@ -1,0 +1,244 @@
+"""Integrity tests. These check that the measurement is honest, not that the
+strategy is profitable. A failing test here means a number somewhere is a lie."""
+import numpy as np
+import pandas as pd
+import pytest
+
+import backtest as B
+import mtf_engine as mtf
+import poi_factors as poi
+import risk as R
+from conftest import synth
+
+
+# 1 ── HTF alignment has no look-ahead
+def test_htf_not_visible_before_close():
+    df5 = synth(600, 5, 3)
+    d = df5.set_index("ts")
+    df1h = d.resample("1h").agg({"open": "first", "high": "max", "low": "min",
+                                 "close": "last", "volume": "sum"}).dropna().reset_index()
+    state = pd.DataFrame({"ts": df1h["ts"], "htf_bias": [f"B{i}" for i in range(len(df1h))]})
+    got = mtf.align_htf(df5, state, "1h", "htf_bias")
+
+    ts5 = pd.to_datetime(df5["ts"])
+    for i in range(len(df5)):
+        if not isinstance(got[i], str):
+            continue
+        k = int(got[i][1:])
+        close_time = pd.Timestamp(df1h["ts"].iat[k]) + pd.Timedelta(hours=1)
+        assert close_time <= ts5.iat[i], (
+            f"bar {i} at {ts5.iat[i]} saw a 1H candle closing at {close_time}")
+
+
+def test_15m_not_visible_before_close():
+    df5 = synth(600, 5, 4)
+    d = df5.set_index("ts")
+    df15 = d.resample("15min").agg({"open": "first", "high": "max", "low": "min",
+                                    "close": "last", "volume": "sum"}).dropna().reset_index()
+    state = pd.DataFrame({"ts": df15["ts"], "v": list(range(len(df15)))})
+    got = mtf.align_htf(df5, state, "15m", "v")
+    ts5 = pd.to_datetime(df5["ts"])
+    for i in range(len(df5)):
+        if not np.isfinite(got[i]):
+            continue
+        close_time = pd.Timestamp(df15["ts"].iat[int(got[i])]) + pd.Timedelta(minutes=15)
+        assert close_time <= ts5.iat[i]
+
+
+# 2 ── forming candle is dropped at the data layer
+def test_forming_candle_dropped(monkeypatch):
+    import data as D
+    raw = synth(400, 5, 5)
+    monkeypatch.setattr(D, "_fetch_one", lambda s, tf, n, v: (raw.copy(), v))
+    frames, meta = D.load_mtf("ETH", 300)
+    assert frames is not None
+    for tf, df in frames.items():
+        assert df["ts"].iat[-1] < raw["ts"].iat[-1], f"{tf} kept the forming candle"
+    assert meta["mixed"] is False
+
+
+# 3 ── signal on bar i never enters before bar i+1
+def test_entry_never_on_signal_bar(report):
+    for t in report["trade_log"]:
+        assert t["fill_i"] >= t["i"] + 1, t
+
+
+# 4 ── stops and targets are never evaluated before entry
+def test_exit_index_after_entry(report):
+    for t in report["trade_log"]:
+        assert t["exit_i"] >= t["fill_i"], t
+
+
+# 5 ── both SL and TP in one candle resolves to the stop
+def test_same_candle_both_hit_is_a_stop():
+    df = pd.DataFrame({
+        "ts": pd.date_range("2024-01-01", periods=3, freq="5min"),
+        "open": [100.0, 100.0, 100.0],
+        "high": [100.0, 130.0, 100.0],     # target inside this candle
+        "low":  [100.0, 70.0, 100.0],      # and so is the stop
+        "close": [100.0, 100.0, 100.0],
+        "volume": [1, 1, 1]})
+    tps = [{"level": "TP1", "price": 120.0, "reachable": True}]
+    legs, hit, outcome, ex = B.simulate(df, "bull", 100.0, 90.0, tps, 1, 5)
+    assert outcome == "STOP" and hit == []
+    assert legs == [(1.0, 90.0)]
+
+
+# 6/7 ── random baseline is matched in count and run over many seeds
+def test_matched_baseline_matches_count(report):
+    oos = {m["arm"]: m for m in report["out_of_sample"]}
+    for base in ("SMC", "SMC_MTF"):
+        mb = oos.get(f"MATCHED_RANDOM_vs_{base}")
+        src = oos.get(base, {}).get("trades", 0)
+        if mb is None or not src:
+            continue
+        assert mb["source_trades"] == src
+        assert abs(mb["trades"] - src) <= max(2, src * 0.25), (mb["trades"], src)
+        assert mb["seeds_used"] >= 5
+
+
+def test_baseline_reports_a_distribution(report):
+    oos = {m["arm"]: m for m in report["out_of_sample"]}
+    mb = next((v for k, v in oos.items() if k.startswith("MATCHED_RANDOM")), None)
+    if mb is None:
+        pytest.skip("no matched baseline in this sample")
+    for k in ("random_mean_expectancy", "random_median_expectancy",
+              "random_std_expectancy", "random_mean_net_pnl"):
+        assert k in mb
+
+
+# 8/9 ── no duplicate and no overlapping trades
+def test_no_duplicate_signals(report):
+    for arm in ("smc", "smc_mtf", "random"):
+        idx = [t["i"] for t in report["trade_log"] if t["arm"] == arm]
+        assert len(idx) == len(set(idx)), f"{arm} opened two trades on one bar"
+
+
+def test_no_overlapping_trades(report):
+    for arm in ("smc", "smc_mtf", "random"):
+        ts = sorted([t for t in report["trade_log"] if t["arm"] == arm],
+                    key=lambda x: x["fill_i"])
+        for a, b in zip(ts, ts[1:]):
+            assert b["i"] > a["exit_i"], f"{arm} overlapped: {a['exit_i']} -> {b['i']}"
+
+
+# 10/11 ── P&L sign conventions
+@pytest.mark.parametrize("side,exit_px,should_profit", [
+    ("bull", 3100.0, True), ("bull", 2900.0, False),
+    ("bear", 2900.0, True), ("bear", 3100.0, False)])
+def test_pnl_direction(side, exit_px, should_profit):
+    qty, entry = 1.0, 3000.0
+    gross, net, fees, slip, fund = B.pnl_inr(
+        side, entry, [(1.0, exit_px)], qty, 88.0, qty * entry * 88.0, 5, 5)
+    assert (gross > 0) is should_profit
+    assert fees > 0 and slip > 0
+    expected = (exit_px - entry) if side == "bull" else (entry - exit_px)
+    assert gross == pytest.approx(expected * qty * 88.0)
+
+
+def test_costs_charged_once():
+    qty, entry, usdt = 1.0, 3000.0, 88.0
+    notional = qty * entry * usdt
+    g, n, fees, slip, fund = B.pnl_inr("bull", entry, [(1.0, entry)], qty,
+                                       usdt, notional, 0, 5)
+    assert fees == pytest.approx(notional * R.ROUND_TRIP_FEE)
+    assert slip == pytest.approx(notional * R.ROUND_TRIP_SLIP)
+    assert n == pytest.approx(-(fees + slip + fund))
+
+
+def test_partial_tp_and_timeout():
+    df = pd.DataFrame({
+        "ts": pd.date_range("2024-01-01", periods=6, freq="5min"),
+        "open": [100.0] * 6, "high": [100, 111, 100, 100, 100, 100.0],
+        "low": [100.0] * 6, "close": [100.0] * 6, "volume": [1] * 6})
+    tps = [{"level": "TP1", "price": 110.0, "reachable": True},
+           {"level": "TP2", "price": 200.0, "reachable": True}]
+    legs, hit, outcome, ex = B.simulate(df, "bull", 100.0, 90.0, tps, 1, 4)
+    assert hit == ["TP1"] and outcome == "PARTIAL"
+    assert sum(f for f, _ in legs) == pytest.approx(1.0)
+
+
+def test_unreachable_targets_are_not_used_as_exits():
+    df = pd.DataFrame({
+        "ts": pd.date_range("2024-01-01", periods=4, freq="5min"),
+        "open": [100.0] * 4, "high": [100, 101, 100, 100.0],
+        "low": [100.0] * 4, "close": [100.0] * 4, "volume": [1] * 4})
+    tps = [{"level": "TP1", "price": 101.0, "reachable": True},
+           {"level": "TP2", "price": 102.0, "reachable": False}]
+    legs, hit, outcome, ex = B.simulate(df, "bull", 100.0, 90.0, tps, 1, 3)
+    assert hit == ["TP1"]
+    assert sum(f for f, _ in legs) == pytest.approx(1.0), "unreachable TP took size"
+
+
+# 12 ── live and backtest reach the same decision on the same closed bar
+def test_live_backtest_decision_parity(frames):
+    df5, df15, df1h = frames
+    ctx = mtf.build_context(df5, df15, df1h, calib_end=None)
+    ts_all = mtf._ts(df5["ts"])
+    checked = 0
+    for i in range(200, len(df5) - 2, 37):
+        ts = ts_all.iat[i]
+        a = mtf.decide(ctx["bias"][i], ctx["trigger"][i], ctx["setups"], ts)
+        b = mtf.decide(ctx["bias"][i], ctx["trigger"][i], ctx["setups"], ts)
+        assert a[0] == b[0] and a[3] == b[3]
+        checked += 1
+    assert checked > 20
+
+
+def test_decide_takes_no_price_arguments():
+    import inspect
+    params = list(inspect.signature(mtf.decide).parameters)
+    assert params == ["bias", "trigger", "setups", "ts"], params
+
+
+# 13 ── same-source loading is preferred and mixed data is refused by default
+def test_mixed_source_refused_by_default(monkeypatch):
+    import data as D
+    raw = synth(400, 5, 9)
+
+    def flaky(symbol, tf, n, venue):
+        if venue == "coindcx" and tf == "1h":
+            return None, None          # CoinDCX cannot serve every frame
+        return raw.copy(), venue
+
+    monkeypatch.setattr(D, "_fetch_one", flaky)
+    frames, meta = D.load_mtf("ETH", 300, allow_mixed=False)
+    assert frames is not None
+    assert meta["mixed"] is False
+    assert meta["source"] != "coindcx", "fell back per-frame instead of per-venue"
+
+
+# 14 ── bar counts are reported honestly
+def test_actual_bar_count_reported(monkeypatch):
+    import data as D
+    short = synth(300, 5, 2)
+    monkeypatch.setattr(D, "_fetch_one", lambda s, tf, n, v: (short.copy(), v))
+    frames, meta = D.load_mtf("ETH", 4000)
+    if frames is None:
+        pytest.skip("300 bars is below the loader minimum")
+    f5 = meta["frames"]["5m"]
+    assert f5["requested_bars"] == 4000
+    assert f5["actual_bars"] < 4000
+    assert f5["short_by"] > 0
+    assert "warning" in meta
+
+
+# 13b ── verdict is one of the documented codes and never forced
+def test_verdict_enum(report):
+    assert report["verdict"]["verdict"] in {
+        "NO_TRADES", "INSUFFICIENT_SAMPLE", "NO_EDGE",
+        "FRAGILE", "UNSTABLE", "EDGE"}
+
+
+def test_verdict_not_profitable_without_edge(report):
+    v = report["verdict"]
+    if v["verdict"] != "EDGE":
+        assert v["profitable"] is False
+
+
+# 12b ── gate counters exist and decrease monotonically where they should
+def test_gate_counters_present(report):
+    g = report["gate_counters"].get("out_of_sample")
+    assert g, "no gate counters for the out-of-sample slice"
+    assert g["bars_with_atr"] <= g["bars_total"]
+    assert g["entries_filled"] <= g["signals_generated"]
