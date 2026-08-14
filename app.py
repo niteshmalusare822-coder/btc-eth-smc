@@ -119,8 +119,7 @@ def build_signal(symbol):
         base["action"] = "NO_TRADE"
         return base
 
-    buf = 0.10 * abs(level - setup.stop_level)
-    sl = setup.stop_level - buf if side == "bull" else setup.stop_level + buf
+    sl = setup.stop_level
     limit = level + 6 * atr if side == "bull" else level - 6 * atr
     s = R.size_position(symbol, action, level, sl, atr=atr, structure_limit=limit)
 
@@ -154,7 +153,8 @@ def build_signal(symbol):
         "distance_to_entry_pct": _f((level - price) / price * 100),
         "tradeable": bool(s.cost_in_r <= float(os.environ.get("MAX_COST_IN_R", 0.15))),
         "zone": {"top": _f(setup.zone_top), "bottom": _f(setup.zone_bottom),
-                 "has_fvg": setup.has_fvg, "swept": setup.swept},
+                 "has_fvg": setup.has_fvg, "swept": setup.swept,
+                 "imbalance": setup.imbalance, "entry_mode": setup.entry_mode},
         "reason": (f"1H {bias} + 15M {'OB+FVG' if setup.has_fvg else 'OB'} after "
                    f"liquidity sweep + 5M {trig} shift, entry at OTE"),
     })
@@ -372,3 +372,4 @@ def root():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
