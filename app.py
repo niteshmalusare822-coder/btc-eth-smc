@@ -81,9 +81,14 @@ def build_signal(symbol):
     df5, df15, df1h = frames["5m"], frames["15m"], frames["1h"]
     # calib_end=None is correct here and ONLY here: in a live scan every bar
     # in the frame is already in the past, so there is no future to leak.
-    ctx = mtf.build_context(df5, df15, df1h, calib_end=None)
+    # no calib_end: calibration is a trailing rolling window, identical to
+    # what the backtest computes on the same candles
+    ctx = mtf.build_context(df5, df15, df1h)
 
-    i = len(df5) - 2                      # last CLOSED 5M bar
+    # FIX A: data.load_mtf already dropped the forming candle, so the final
+    # row IS the last closed bar. Using len-2 here skipped it a second time
+    # and made every live signal one candle stale.
+    i = len(df5) - 1
     ts = mtf._ts(df5["ts"]).iat[i]
     atr = float(_atr(df5).iat[i])
     price = float(df5["close"].iat[i])
