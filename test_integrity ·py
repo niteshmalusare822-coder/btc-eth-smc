@@ -737,3 +737,94 @@ def test_stop_is_beyond_the_wick_not_the_body(frames):
             assert s.stop_level > s.entry_level
         checked += 1
     assert checked > 0
+
+
+# ═══ MISSED-MOVE DIAGNOSTICS ════════════════════════════════════════════
+def test_moves_are_non_overlapping(frames):
+    import diagnostics as DG
+    df5, _, _ = frames
+    moves = DG.find_significant_moves(df5)
+    assert moves
+    for a, b in zip(moves, moves[1:]):
+        assert b["start_i"] > a["end_i"], "moves overlap, so misses are double counted"
+
+
+def test_move_threshold_is_atr_relative(frames):
+    """A fixed percentage would flag everything on a volatile asset and nothing
+    on a quiet one. Raising the ATR multiple must reduce the count."""
+    import diagnostics as DG
+    df5, _, _ = frames
+    loose = DG.find_significant_moves(df5, {"move_atr_mult": 2.0})
+    tight = DG.find_significant_moves(df5, {"move_atr_mult": 5.0})
+    assert len(tight) < len(loose)
+    for m in tight:
+        assert m["mfe_atr"] >= 5.0
+
+
+def test_profitable_move_is_not_automatically_a_miss(frames):
+    """The guard that stops this tool from being used to justify loosening
+    filters: a move with no setup at all is VALID_NO_TRADE, not a miss."""
+    import diagnostics as DG
+    df5, df15, df1h = frames
+    r = DG.missed_move_report("ETH", df5, df15, df1h)
+    assert r["significant_moves"] > 0
+    assert r["true_missed_signals"] < r["significant_moves"], \
+        "every move was called a miss"
+    assert r["valid_no_trades"] > 0
+    assert sum(r["by_class"].values()) == r["significant_moves"]
+
+
+def test_every_move_gets_a_named_blocker(frames):
+    import diagnostics as DG
+    df5, df15, df1h = frames
+    r = DG.missed_move_report("ETH", df5, df15, df1h)
+    assert sum(r["blockers"].values()) == r["significant_moves"]
+    for code in r["blockers"]:
+        assert code in mtf.BLOCKERS or code == "OUT_OF_RANGE", code
+
+
+def test_traded_moves_are_not_counted_as_missed(frames):
+    import diagnostics as DG
+    df5, df15, df1h = frames
+    ctx = mtf.build_context(df5, df15, df1h)
+    moves = DG.find_significant_moves(df5)
+    fake = [{"i": moves[0]["start_i"]}, {"i": moves[1]["start_i"]}]
+    r = DG.missed_move_report("ETH", df5, df15, df1h, taken_trades=fake)
+    assert r["signals_taken_on_moves"] >= 2
+    assert r["capture_rate_pct"] > 0
+
+
+def test_portfolio_is_pooled_not_averaged():
+    """Averaging a 2-trade asset against a 200-trade asset describes nothing."""
+    import diagnostics as DG
+    big = [{"symbol": "ETH", "entry_ts": f"2024-01-01 00:{i:02d}:00",
+            "net_inr": 10.0, "gross_inr": 12.0, "fees_inr": 1.0,
+            "slippage_inr": 0.5, "funding_inr": 0.5} for i in range(50)]
+    small = [{"symbol": "BANK", "entry_ts": "2024-01-02 00:00:00",
+              "net_inr": -500.0, "gross_inr": -480.0, "fees_inr": 12.0,
+              "slippage_inr": 6.0, "funding_inr": 2.0}]
+    p = DG.portfolio_from_trades(big + small)
+    assert p["trades"] == 51
+    assert set(p["symbols"]) == {"ETH", "BANK"}
+    # pooled net is 50*10 - 500 = 0, an average of win rates would say ~50%
+    assert p["net_pnl_inr"] == 0
+    assert p["win_rate_pct"] == pytest.approx(98.0, abs=0.1)
+
+
+def test_blocker_codes_are_distinct_and_documented():
+    for code in ("HTF_NEUTRAL", "NO_TRIGGER", "TRIGGER_WRONG_WAY",
+                 "NO_SETUP", "SETUP_WRONG_WAY", "SETUP_EXPIRED",
+                 "SETUP_MITIGATED", "OK"):
+        assert code in mtf.BLOCKERS
+
+
+def test_gate_state_reports_every_condition(frames):
+    df5, df15, df1h = frames
+    ctx = mtf.build_context(df5, df15, df1h)
+    ts = mtf._ts(df5["ts"])
+    s = mtf.gate_state(ctx["bias"][500], ctx["trigger"][500], ctx["setups"],
+                       ts.iat[500])
+    for k in ("htf_bias_1h", "setup_15m", "trigger_5m", "liquidity_sweep",
+              "imbalance", "order_block", "fvg", "action", "blocker",
+              "blocker_text"):
+        assert k in s
