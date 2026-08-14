@@ -173,15 +173,54 @@ def test_costs_charged_once():
 
 
 def test_partial_tp_and_timeout():
+    """With stop management off, an unfilled remainder times out."""
     df = pd.DataFrame({
         "ts": pd.date_range("2024-01-01", periods=6, freq="5min"),
         "open": [100.0] * 6, "high": [100, 111, 100, 100, 100, 100.0],
         "low": [100.0] * 6, "close": [100.0] * 6, "volume": [1] * 6})
     tps = [{"level": "TP1", "price": 110.0, "reachable": True},
            {"level": "TP2", "price": 200.0, "reachable": True}]
-    legs, hit, outcome, ex = B.simulate(df, "bull", 100.0, 90.0, tps, 1, 4)
+    legs, hit, outcome, ex = B.simulate(df, "bull", 100.0, 90.0, tps, 1, 4,
+                                        manage=False)
     assert hit == ["TP1"] and outcome == "PARTIAL"
     assert sum(f for f, _ in legs) == pytest.approx(1.0)
+
+
+def test_stop_moves_to_breakeven_after_tp1():
+    """Spec 17. Once TP1 pays, the remainder must not be able to lose money.
+    Here price returns to the entry and the trailed stop takes it out."""
+    df = pd.DataFrame({
+        "ts": pd.date_range("2024-01-01", periods=6, freq="5min"),
+        "open": [100.0] * 6, "high": [100, 111, 100, 100, 100, 100.0],
+        "low": [100.0] * 6, "close": [100.0] * 6, "volume": [1] * 6})
+    tps = [{"level": "TP1", "price": 110.0, "reachable": True},
+           {"level": "TP2", "price": 200.0, "reachable": True}]
+    legs, hit, outcome, ex = B.simulate(df, "bull", 100.0, 90.0, tps, 1, 4,
+                                        manage=True, cost_r=0.0)
+    assert hit == ["TP1"]
+    assert outcome == "TRAILED_STOP", outcome
+    exits = [px for _, px in legs]
+    assert min(exits) >= 100.0, "remainder exited below breakeven"
+
+
+def test_stop_never_moves_away_from_price():
+    """A stop may only ever tighten. Moving it out is how a small loss becomes
+    a large one, and it must be impossible by construction."""
+    df = pd.DataFrame({
+        "ts": pd.date_range("2024-01-01", periods=8, freq="5min"),
+        "open": [100.0] * 8,
+        "high": [100, 111, 121, 112, 100, 100, 100, 100.0],
+        "low": [100.0, 100.5, 101, 95, 95, 95, 95, 95.0],
+        "close": [100.0] * 8, "volume": [1] * 8})
+    tps = [{"level": "TP1", "price": 110.0, "reachable": True},
+           {"level": "TP2", "price": 120.0, "reachable": True},
+           {"level": "TP3", "price": 500.0, "reachable": True}]
+    legs, hit, outcome, ex = B.simulate(df, "bull", 100.0, 90.0, tps, 1, 6,
+                                        manage=True, cost_r=0.0)
+    assert hit[:2] == ["TP1", "TP2"]
+    # after TP2 the stop sits at TP1 = 110, so the drop to 95 must exit there
+    assert any(px >= 110.0 for _, px in legs)
+    assert all(px >= 90.0 for _, px in legs), "exited below the original stop"
 
 
 def test_unreachable_targets_are_not_used_as_exits():
@@ -280,13 +319,13 @@ def test_actual_bar_count_reported(monkeypatch):
 # 13b ── verdict is one of the documented codes and never forced
 def test_verdict_enum(report):
     assert report["verdict"]["verdict"] in {
-        "NO_TRADES", "INSUFFICIENT_SAMPLE", "NO_EDGE",
-        "FRAGILE", "UNSTABLE", "EDGE"}
+        "NO_TRADES", "INSUFFICIENT_SAMPLE", "PROMISING_BUT_INSUFFICIENT_SAMPLE",
+        "NO_EDGE", "FRAGILE", "UNSTABLE", "PROVEN_EDGE"}
 
 
 def test_verdict_not_profitable_without_edge(report):
     v = report["verdict"]
-    if v["verdict"] != "EDGE":
+    if v["verdict"] != "PROVEN_EDGE":
         assert v["profitable"] is False
 
 
@@ -828,3 +867,152 @@ def test_gate_state_reports_every_condition(frames):
               "imbalance", "order_block", "fvg", "action", "blocker",
               "blocker_text"):
         assert k in s
+
+
+# ═══ SCORING, DAILY LOCATION, STOP VALIDATION ═══════════════════════════
+def test_previous_day_levels_never_use_today():
+    """The single most common look-ahead in daily-bias systems: reading a high
+    that has not printed yet."""
+    import scoring as S
+    ts = pd.date_range("2024-01-01", periods=576, freq="5min")   # 2 days
+    df = pd.DataFrame({"ts": ts, "open": 100.0,
+                       "high": np.r_[np.full(288, 110.0), np.full(288, 999.0)],
+                       "low": np.r_[np.full(288, 90.0), np.full(288, 1.0)],
+                       "close": 100.0, "volume": 1.0})
+    hi, lo, mid = S.previous_day_levels(df)
+    assert np.isnan(hi[0]), "day 1 has no previous day and must be NaN"
+    assert hi[300] == 110.0 and lo[300] == 90.0, "day 2 read its own range"
+    assert mid[300] == 100.0
+
+
+def test_daily_location_is_symmetric():
+    import scoring as S
+    assert S.daily_location_ok("bull", 95.0, 100.0)
+    assert not S.daily_location_ok("bull", 105.0, 100.0)
+    assert S.daily_location_ok("bear", 105.0, 100.0)
+    assert not S.daily_location_ok("bear", 95.0, 100.0)
+    assert not S.daily_location_ok("bull", 95.0, float("nan"))
+
+
+def test_stop_validation_rejects_both_extremes():
+    """Spec 14. A stop under 0.5 ATR is what made cost-in-R explode."""
+    import scoring as S
+    ok, why = S.validate_stop(100.0, 99.0, atr=10.0)
+    assert not ok and "too tight" in why
+    ok, why = S.validate_stop(100.0, 80.0, atr=10.0)
+    assert not ok and "too wide" in why
+    ok, why = S.validate_stop(100.0, 90.0, atr=10.0)
+    assert ok
+
+
+def test_hard_requirements_cannot_be_scored_around():
+    """A high score must not rescue a missing mandatory condition."""
+    import scoring as S
+    flags = {k: True for k in S.WEIGHTS}
+    score, bd, ok, blocker = S.score_setup(flags)
+    assert ok and score == S.MAX_SCORE
+
+    flags["liquidity_sweep"] = False
+    score, bd, ok, blocker = S.score_setup(flags)
+    assert not ok and blocker == "NO_LIQUIDITY_SWEEP"
+    assert score >= S.CFG["entry_score"], "score was high yet correctly refused"
+
+
+def test_score_threshold_blocks_weak_setups():
+    import scoring as S
+    flags = {"liquidity_sweep": True, "structure_15m": True,
+             "confirmation_5m": True, "daily_location": True}
+    score, bd, ok, blocker = S.score_setup(flags)
+    assert score == 8 and not ok and blocker == "SCORE_BELOW_THRESHOLD"
+    flags["htf_1h_bias"] = True
+    score, bd, ok, blocker = S.score_setup(flags)
+    assert score == 10 and ok
+
+
+def test_scoring_hard_gates_are_subset_of_old_and_gate():
+    """Scoring must never permit a trade the old AND gate refused on
+    structural grounds; it may only permit ones it refused on alignment."""
+    import scoring as S
+    flags = {"liquidity_sweep": True, "structure_15m": True,
+             "confirmation_5m": True, "daily_location": True,
+             "htf_4h_bias": False, "htf_1h_bias": False,
+             "displacement_15m": True, "ob_fvg_15m": True,
+             "retest_5m": True, "volume": True, "cvd": True,
+             "ote_location": True}
+    score, bd, ok, blocker = S.score_setup(flags)
+    assert ok, "a strong setup with neutral HTF bias should now be allowed"
+    for hard in ("liquidity_sweep", "structure_15m", "confirmation_5m"):
+        f = dict(flags); f[hard] = False
+        _, _, ok2, _ = S.score_setup(f)
+        assert not ok2, f"{hard} was treated as optional"
+
+
+def test_describe_names_what_was_missing():
+    import scoring as S
+    flags = {"liquidity_sweep": True, "structure_15m": True,
+             "confirmation_5m": True}
+    d = S.describe(*S.score_setup(flags))
+    assert d["blocker"] == "WRONG_SIDE_OF_DAILY_MID"
+    assert "daily_location" in d["absent"]
+    assert d["max_score"] == 18
+
+
+# ═══ MFE / MAE AND TIMEOUT DIAGNOSIS ═══════════════════════════════════
+def test_excursion_measures_both_directions():
+    df = pd.DataFrame({
+        "ts": pd.date_range("2024-01-01", periods=5, freq="5min"),
+        "open": [100.0] * 5, "high": [100, 105, 120, 102, 100.0],
+        "low": [100.0, 96, 99, 85, 99.0], "close": [100.0] * 5,
+        "volume": [1] * 5})
+    e = B.excursion(df, "bull", 100.0, 90.0, 1, 4)   # risk = 10
+    assert e["mfe_r"] == pytest.approx(2.0)          # high 120 -> +20 = 2R
+    assert e["mae_r"] == pytest.approx(1.5)          # low 85  -> -15 = 1.5R
+    assert e["bars_to_mfe"] == 1                     # index within the segment
+
+    s = B.excursion(df, "bear", 100.0, 110.0, 1, 4)
+    assert s["mfe_r"] == pytest.approx(1.5)
+    assert s["mae_r"] == pytest.approx(2.0)
+
+
+def test_every_trade_carries_excursion(report):
+    for t in report["trade_log"][:40]:
+        assert "mfe_r" in t and "mae_r" in t
+        assert t["mfe_r"] >= 0 and t["mae_r"] >= 0
+
+
+def test_timeout_diagnosis_picks_a_side(report):
+    """The whole point is that it answers entry-vs-exit, not both."""
+    ta = report["timeout_analysis"]
+    assert "diagnosis" in ta and ta["diagnosis"]
+    d = ta["diagnosis"].lower()
+    assert ("entry" in d or "exit" in d or "no timeout" in d), ta["diagnosis"]
+    for reason, stat in ta["by_exit_reason"].items():
+        if stat["trades"]:
+            assert 0 <= stat["pct_reaching_1R"] <= 100
+
+
+def test_funnel_conversions_are_monotonic(report):
+    f = report["signal_funnel"]["out_of_sample"]
+    counts = [s["count"] for s in f["stages"]]
+    assert counts[0] == max(counts), "a later stage exceeded total bars"
+    assert counts[-1] <= counts[-2], "more entries than signals"
+    for s in f["stages"]:
+        assert 0 <= s["pct_of_bars"] <= 100
+
+
+def test_verdict_promising_is_distinct_from_insufficient():
+    """Spec 37 wants these separated: a positive-expectancy small sample is
+    not the same finding as a negative-expectancy small sample."""
+    base = {"random_mean_expectancy": -50.0, "random_std_expectancy": 100.0}
+    good = {"out_of_sample": [
+                {"arm": "SMC_MTF", "trades": 10, "expectancy_inr": 40.0},
+                {"arm": "MATCHED_RANDOM_vs_SMC_MTF", **base}],
+            "walk_forward": {"folds_beating_random": 3, "folds_scored": 4},
+            "sensitivity": {"fragile": False}, "min_trades": 30}
+    assert B._verdict(good)["verdict"] == "PROMISING_BUT_INSUFFICIENT_SAMPLE"
+
+    bad = {**good, "out_of_sample": [
+        {"arm": "SMC_MTF", "trades": 10, "expectancy_inr": -40.0},
+        {"arm": "MATCHED_RANDOM_vs_SMC_MTF", **base}]}
+    assert B._verdict(bad)["verdict"] == "INSUFFICIENT_SAMPLE"
+    assert B._verdict(good)["profitable"] is False, "promising is not proven"
