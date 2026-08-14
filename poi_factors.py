@@ -66,6 +66,29 @@ def add_candle_metrics(df: pd.DataFrame, median_window: int = 100) -> pd.DataFra
     return out
 
 
+def rolling_body_threshold(df, window=500, target_pct=0.85, metric="body_vs_median"):
+    """Per-bar displacement threshold from a TRAILING window, shifted by one.
+
+    This replaces the single calibrate-once-per-run threshold. That approach
+    could not be made parity-safe: a backtest calibrating on its in-sample
+    slice and a live scan calibrating on its whole frame will always produce
+    different numbers, so the same candle could qualify in one and not the
+    other. Fixed splits move the problem around; they do not remove it.
+
+    A trailing rolling quantile removes it. At any bar t the threshold is
+    derived from the `window` bars strictly BEFORE t, which is causal by
+    construction and identical whether those bars arrive live or from history.
+
+    Returns a Series aligned to df, NaN until the window fills.
+    """
+    if metric not in df.columns:
+        df = add_candle_metrics(df)
+    vals = df[metric].replace([np.inf, -np.inf], np.nan)
+    vals = vals.where(vals > 0)
+    # shift(1) so the current bar never contributes to the bar it is judged by
+    return vals.shift(1).rolling(window, min_periods=100).quantile(target_pct)
+
+
 def calibrate_body_threshold(
     df: pd.DataFrame,
     target_pct: float = 0.85,
@@ -82,6 +105,17 @@ def calibrate_body_threshold(
     if len(vals) < 100:
         return 2.0  # fall back to the literal source value
     return float(np.quantile(vals, target_pct))
+
+
+def _as_array(threshold, n):
+    """Accept a scalar threshold or a per-bar Series/array. NaN (window not yet
+    full) becomes +inf so nothing qualifies rather than everything."""
+    if np.isscalar(threshold):
+        return np.full(n, float(threshold))
+    arr = np.asarray(threshold, dtype=float)
+    if arr.shape[0] != n:
+        raise ValueError(f"threshold length {arr.shape[0]} != {n} bars")
+    return np.where(np.isfinite(arr), arr, np.inf)
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +210,8 @@ def find_bos(
     lw = df["lower_wick_ratio"].to_numpy()
     n = len(df)
 
+    thr = _as_array(body_threshold, n)
+
     events: list[BOS] = []
     last_high: Optional[Swing] = None
     last_low: Optional[Swing] = None
@@ -196,7 +232,7 @@ def find_bos(
         if last_high is not None and highs[i] > last_high.price:
             broke = closes[i] > last_high.price
             if broke:
-                body_ok = (not require_displacement) or bvm[i] >= body_threshold
+                body_ok = (not require_displacement) or bvm[i] >= thr[i]
                 wick_ok = uw[i] <= max_wick_ratio
                 if body_ok and wick_ok:
                     events.append(
@@ -213,7 +249,7 @@ def find_bos(
         if last_low is not None and lows[i] < last_low.price:
             broke = closes[i] < last_low.price
             if broke:
-                body_ok = (not require_displacement) or bvm[i] >= body_threshold
+                body_ok = (not require_displacement) or bvm[i] >= thr[i]
                 wick_ok = lw[i] <= max_wick_ratio
                 if body_ok and wick_ok:
                     events.append(
@@ -273,10 +309,11 @@ def find_fvgs(
     lows = df["low"].to_numpy()
     bvm = df["body_vs_median"].to_numpy()
     rng = (df["high"] - df["low"]).to_numpy()
+    thr = _as_array(body_threshold, len(df))
     zones: list[Zone] = []
 
     for i in range(2, len(df)):
-        mid_ok = (not require_displacement) or bvm[i - 1] >= body_threshold
+        mid_ok = (not require_displacement) or bvm[i - 1] >= thr[i - 1]
         if not mid_ok:
             continue
         mid_range = rng[i - 1] if rng[i - 1] > 0 else np.nan
