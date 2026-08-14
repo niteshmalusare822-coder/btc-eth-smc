@@ -8,7 +8,7 @@ services:
     buildCommand: pip install -r requirements.txt
     # gthread, not sync. The default sync worker IGNORES --threads, so one slow
     # /api/report request blocks the whole process until gunicorn SIGKILLs it.
-    startCommand: gunicorn app:app --worker-class gthread --workers 1 --threads 8 --timeout 300 --bind 0.0.0.0:$PORT
+    startCommand: gunicorn app:app --worker-class gthread --workers 1 --threads 8 --timeout 600 --bind 0.0.0.0:$PORT
     healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION
@@ -45,9 +45,9 @@ services:
         value: "0.15"
 
       - key: LIVE_BARS_5M
-        value: "1000"
+        value: "1200"
       - key: REPORT_BARS_5M
-        value: "4000"
+        value: "10000"
       - key: SIGNAL_TTL
         value: "120"
       - key: REPORT_TTL
