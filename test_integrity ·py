@@ -50,7 +50,9 @@ def _stub_history(monkeypatch, bars=2500, fail_1h_on=None):
     """Replace the paginated fetch with a deterministic in-memory venue."""
     import data as D
 
-    def fake(venue, symbol, tf, target, since=None, now=None):
+    def fake(venue, symbol, timeframe, target_bars,
+             since=None, now=None, **kw):
+        tf, target = timeframe, target_bars
         if fail_1h_on and venue == fail_1h_on and tf == "1h":
             return None, {"error": "unavailable"}
         secs = D.TF_SECONDS[tf]
@@ -230,7 +232,9 @@ def test_mixed_source_refused_by_default(monkeypatch):
 def test_mixed_source_allowed_only_explicitly(monkeypatch):
     import data as D
 
-    def only_coindcx_5m(venue, symbol, tf, target, since=None, now=None):
+    def only_coindcx_5m(venue, symbol, timeframe, target_bars,
+                        since=None, now=None, **kw):
+        tf, target = timeframe, target_bars
         if (venue == "coindcx") != (tf == "5m"):
             return None, {"error": "unavailable"}
         secs = D.TF_SECONDS[tf]
@@ -262,8 +266,13 @@ def test_actual_bar_count_reported(monkeypatch):
     _stub_history(monkeypatch, bars=1800)      # venue cannot serve 10000
     frames, meta = D.load_mtf("ETH", 10000)
     assert frames is not None
-    assert meta["requested_bars_5m"] > meta["actual_bars_5m"]
-    assert any("only" in w and "available" in w for w in meta["warnings"]), meta["warnings"]
+    # the new schema splits the evaluation target from the warmup-inclusive
+    # request; either name must still expose the shortfall honestly
+    requested = meta.get("requested_bars_5m",
+                         meta.get("requested_with_warmup_5m"))
+    assert requested > meta["actual_bars_5m"]
+    assert any("SHORTFALL" in w.upper() or "only" in w
+               for w in meta["warnings"]), meta["warnings"]
     assert meta["coverage_days"] > 0
     assert meta["pages_fetched"]["5m"] >= 1
 
@@ -396,7 +405,7 @@ def _fake_venue(bars=5000, tf_secs=300, start_ts=1700000000):
     all_ts = np.arange(start_ts, start_ts + bars * tf_secs, tf_secs)
     px = 3000 + np.cumsum(np.random.default_rng(1).normal(0, 3, len(all_ts)))
 
-    def pager(symbol, tf, end_ts, secs, span):
+    def pager(symbol, timeframe, end_ts, span):
         lo, hi = end_ts - span, end_ts
         m = (all_ts >= lo) & (all_ts <= hi)
         if not m.any():
@@ -545,7 +554,9 @@ def _probe_with(monkeypatch, page_behaviour, bars_available=30000):
     A._cache.clear()
     end = 1700000000
 
-    def fake(venue, symbol, tf, target, since=None, now=None):
+    def fake(venue, symbol, timeframe, target_bars,
+             since=None, now=None, **kw):
+        tf, target = timeframe, target_bars
         secs = D.TF_SECONDS[tf]
         if page_behaviour == "ignores_from":
             n, pages = min(D.PAGE_LIMIT, target), 2
