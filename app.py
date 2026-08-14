@@ -28,6 +28,7 @@ from flask_cors import CORS
 
 import backtest as B
 import data as D
+import diagnostics as DG
 import mtf_engine as mtf
 import risk as R
 
@@ -326,6 +327,87 @@ def probe_data(symbol, bars):
             "render_timeout_seconds": 600}
 
 
+def build_diagnostic(symbol, bars):
+    """Missed-move analysis for one symbol, with the strategy's own trades
+    supplied so a move it actually traded is not counted as a miss."""
+    frames, meta = D.load_mtf(symbol, D.clamp_bars(bars))
+    if frames is None:
+        return {"symbol": symbol, "error": meta.get("error", "no data")}
+    rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["1h"])
+    taken = [t for t in (rep.get("trade_log") or []) if t["arm"] == "smc_mtf"]
+    oos = {m["arm"]: m for m in rep["out_of_sample"]}
+    smc_trades = [t for t in (rep.get("trade_log") or []) if t["arm"] == "smc"]
+
+    out = DG.missed_move_report(symbol, frames["5m"], frames["15m"],
+                                frames["1h"], taken_trades=taken)
+    out["source"] = meta.get("source")
+    out["coverage_days"] = meta.get("coverage_days")
+    out["per_asset"] = {
+        "SMC": DG.per_asset_stats(symbol, oos.get("SMC"), smc_trades),
+        "SMC_MTF": DG.per_asset_stats(symbol, oos.get("SMC_MTF"), taken),
+    }
+    out["_trades"] = smc_trades
+    return out
+
+
+@app.route("/api/diagnostic/<symbol>")
+def diagnostic(symbol):
+    symbol = symbol.upper()
+    if symbol not in SYMBOLS:
+        return jsonify({"error": f"symbol must be one of {SYMBOLS}"}), 400
+    bars = D.clamp_bars(request.args.get("bars", REPORT_BARS_5M))
+    try:
+        res, hit = cached(("diag", symbol, bars), REPORT_TTL,
+                          lambda: build_diagnostic(symbol, bars))
+        payload = {k: v for k, v in res.items() if k != "_trades"}
+        return jsonify({**payload, "from_cache": hit})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"symbol": symbol, "error": str(e)}), 500
+
+
+@app.route("/api/portfolio")
+def portfolio():
+    """All four assets plus a portfolio total built from pooled trades."""
+    bars = D.clamp_bars(request.args.get("bars", REPORT_BARS_5M))
+    per_asset, all_trades, diags = [], [], []
+    for s in SYMBOLS:
+        try:
+            res, _ = cached(("diag", s, bars), REPORT_TTL,
+                            lambda s=s: build_diagnostic(s, bars))
+            if res.get("error"):
+                per_asset.append({"symbol": s, "error": res["error"]})
+                continue
+            per_asset.append(res["per_asset"]["SMC"])
+            all_trades.extend(res.get("_trades") or [])
+            diags.append({k: v for k, v in res.items()
+                          if k in ("symbol", "significant_moves",
+                                   "true_missed_signals", "valid_no_trades",
+                                   "capture_rate_pct", "true_miss_rate_pct",
+                                   "blockers")})
+        except Exception as e:
+            traceback.print_exc()
+            per_asset.append({"symbol": s, "error": str(e)})
+
+    merged = {}
+    for d in diags:
+        for k, v in (d.get("blockers") or {}).items():
+            merged[k] = merged.get(k, 0) + v
+
+    return jsonify({
+        "per_asset": per_asset,
+        "portfolio": DG.portfolio_from_trades(all_trades),
+        "market_wide_diagnostic": {
+            "symbols_analysed": len(diags),
+            "total_significant_moves": sum(d["significant_moves"] for d in diags),
+            "true_missed_signals": sum(d["true_missed_signals"] for d in diags),
+            "valid_no_trades": sum(d["valid_no_trades"] for d in diags),
+            "blockers": dict(sorted(merged.items(), key=lambda kv: -kv[1])),
+            "per_symbol": diags,
+        },
+    })
+
+
 @app.route("/api/data-probe/<symbol>")
 def data_probe(symbol):
     symbol = symbol.upper()
@@ -367,9 +449,10 @@ def root():
                                   "/api/signal/<symbol>", "/api/signals",
                                   "/api/report/<symbol>",
                                   "/api/trades/<symbol>",
-                                  "/api/data-probe/<symbol>"]})
+                                  "/api/data-probe/<symbol>",
+                                  "/api/diagnostic/<symbol>",
+                                  "/api/portfolio"]})
 
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
