@@ -44,28 +44,26 @@ PARAMS = {
     "ote_high": 0.79,
     "trigger_lookback": 3,   # 5M bars the entry trigger may look back over
     "kill_on": "full",       # when a 15M zone is considered mitigated
+    "calib_window": 500,     # trailing bars behind the displacement threshold
 }
 
 
 def _calibrate(df, p, calib_end=None):
-    """Body threshold from a TRAINING slice only.
+    """Per-bar displacement threshold from a trailing window.
 
-    BUG FIX: this used to quantile the whole frame. In the backtest that meant
-    the displacement threshold applied to out-of-sample bars was derived from
-    those same out-of-sample bars — textbook look-ahead. Worse, live ran on
-    1000 bars and the backtest on 4000, so the two produced DIFFERENT
-    thresholds and were quietly running different strategies.
+    PARITY. Earlier versions calibrated once per run: the backtest used its
+    in-sample slice, live used its whole frame. Both were causal, but they
+    produced DIFFERENT numbers, so the same candle could pass the displacement
+    filter live and fail it in the backtest. Shared decide() logic does not
+    help if the two sides are fed different thresholds.
 
-    calib_end is a fraction of the frame (0.0-1.0). None means calibrate on
-    everything, which is only correct for a pure live scan where every bar is
-    already in the past.
+    A trailing rolling quantile is identical in both. At bar t the threshold
+    comes from the `calib_window` bars strictly before t, whether those bars
+    arrived from a websocket or from a CSV. calib_end is accepted and ignored,
+    kept only so older callers do not break.
     """
-    if calib_end is None:
-        slice_ = df
-    else:
-        cut = max(120, int(len(df) * float(calib_end)))
-        slice_ = df.iloc[:min(cut, len(df))]
-    return poi.calibrate_body_threshold(slice_, target_pct=p["body_pct"])
+    return poi.rolling_body_threshold(
+        df, window=p.get("calib_window", 500), target_pct=p["body_pct"])
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +192,9 @@ def find_setups(df_15m, p=None, calib_end=None):
                      if z.dead_idx is not None else None),
         ))
     setups.sort(key=lambda s: s.confirmed_ts)
-    return setups, thr
+    # report the latest usable threshold value, not the whole series
+    last = pd.Series(thr).dropna()
+    return setups, (float(last.iat[-1]) if len(last) else float("nan"))
 
 
 # ---------------------------------------------------------------------------
@@ -288,9 +288,10 @@ def align_htf(df_5m, df_htf_state, tf, col):
 def build_context(df_5m, df_15m, df_1h, p=None, calib_end=None):
     """Everything a bar-by-bar loop needs, precomputed and causal.
 
-    calib_end is passed to every frame so live and backtest calibrate the same
-    way. That is the parity guarantee: same functions, same thresholds, only
-    the data source differs.
+    calib_end is accepted and ignored. Calibration is now a trailing rolling
+    quantile computed per bar, so live and backtest produce identical
+    thresholds on identical candles. That is the parity guarantee: same
+    functions, same thresholds, only the data source differs.
     """
     p = p or PARAMS
     bias_df = htf_bias_series(df_1h, p, calib_end)
