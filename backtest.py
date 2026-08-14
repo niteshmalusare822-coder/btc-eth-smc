@@ -150,8 +150,9 @@ def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
     when and why it closed.
     """
     direction = "BUY" if side == "bull" else "SELL"
-    buf = 0.10 * abs(level - stop_level) if stop_level is not None else 0.0
-    sl = (stop_level - buf) if side == "bull" else (stop_level + buf)
+    # stop_level already sits beyond the OB wick with its own padding, so no
+    # second buffer here: doubling it silently widened every stop
+    sl = stop_level
     if (side == "bull" and level <= sl) or (side == "bear" and level >= sl):
         return None, "entry on the wrong side of the stop"
 
@@ -324,7 +325,7 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
                 continue
             s = live[0]
             side = s.side
-            level = s.ote_high if side == "bull" else s.ote_low
+            level = s.entry_level
             gates["signals_generated"] += 1
             bias_s, setup_s, trig_s = "ignored", \
                 ("OB+FVG" if s.has_fvg else "OB"), "ignored"
