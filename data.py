@@ -92,6 +92,29 @@ def fetch_coindcx(symbol, tf, bars):
         return None, None
 
 
+def fetch_ccxt_venue(symbol, tf, bars, ex_id):
+    """One named venue. load_mtf needs this so it can keep all three
+    timeframes on the same book instead of failing over per frame."""
+    try:
+        import ccxt
+    except ImportError:
+        return None, None
+    sym = CCXT_MAP.get(symbol)
+    if not sym:
+        return None, None
+    try:
+        if ex_id not in _ccxt_cache:
+            _ccxt_cache[ex_id] = getattr(ccxt, ex_id)({"enableRateLimit": True})
+        o = _ccxt_cache[ex_id].fetch_ohlcv(sym, tf, limit=min(bars, 1000))
+        if not o or len(o) < 200:
+            return None, None
+        df = pd.DataFrame(o, columns=["ts"] + OHLC)
+        df["ts"] = pd.to_datetime(df["ts"], unit="ms")
+        return _clean(df, bars), ex_id
+    except Exception:
+        return None, None
+
+
 def fetch_ccxt(symbol, tf, bars):
     try:
         import ccxt
@@ -115,26 +138,92 @@ def fetch_ccxt(symbol, tf, bars):
     return None, None
 
 
-def load(symbol, tf, bars):
+def _fetch_one(symbol, tf, bars, venue):
+    if venue == "coindcx":
+        return fetch_coindcx(symbol, tf, bars)
+    return fetch_ccxt_venue(symbol, tf, bars, venue)
+
+
+def load_mtf(symbol, bars_5m, allow_mixed=False):
+    """FIX 7 + FIX 8. All three frames from ONE venue, forming candle removed.
+
+    Old behaviour: each timeframe was fetched independently with its own
+    CoinDCX-then-ccxt failover, so 5m could come from CoinDCX while 1h came
+    from gateio. The 1H bias was then computed on different prints than the 5M
+    entries and nobody could see it. Venues are now tried whole: every frame
+    from CoinDCX, or every frame from one failover, and mixed data is refused
+    unless explicitly allowed.
+
+    FIX 8: the final candle of every frame is still forming. It is dropped
+    here, at the door, so no downstream code can accidentally read a high or
+    low that has not finished printing.
+
+    Returns (frames, meta). meta reports requested vs actual bars per frame, so
+    asking for 4000 and receiving 1000 is visible instead of silent.
+    """
+    need = {"5m": bars_5m,
+            "15m": max(400, bars_5m // 3),
+            "1h": max(300, bars_5m // 12)}
+
+    venues = ["coindcx"] + FAILOVER
+    partial = None
+
+    for venue in venues:
+        frames, ok = {}, True
+        for tf, n in need.items():
+            # +1 because the newest candle is dropped as still forming
+            df, _ = _fetch_one(symbol, tf, n + 1, venue)
+            if df is None or len(df) < 251:
+                ok = False
+                break
+            frames[tf] = df.iloc[:-1].reset_index(drop=True)   # FIX 8
+        if ok:
+            return frames, _meta(symbol, frames, venue, need, mixed=False)
+        if partial is None and frames:
+            partial = (frames, venue)
+
+    if not allow_mixed:
+        return None, {"symbol": symbol, "source": None,
+                      "error": "no single venue served all three timeframes",
+                      "mixed": False}
+
+    # explicit opt-in only, and loudly labelled
+    frames, used = {}, []
+    for tf, n in need.items():
+        df, src = load_any(symbol, tf, n + 1)
+        if df is None or len(df) < 251:
+            return None, {"symbol": symbol, "source": None,
+                          "error": f"no venue served {tf}", "mixed": True}
+        frames[tf] = df.iloc[:-1].reset_index(drop=True)
+        used.append(src)
+    meta = _meta(symbol, frames, "MIXED: " + " + ".join(sorted(set(used))),
+                 need, mixed=True)
+    meta["warning"] = ("Timeframes came from different venues. Bias and entries "
+                       "are computed on different prints; treat results as "
+                       "indicative only.")
+    return frames, meta
+
+
+def _meta(symbol, frames, source, need, mixed):
+    out = {"symbol": symbol, "source": source, "mixed": bool(mixed), "frames": {}}
+    for tf, df in frames.items():
+        out["frames"][tf] = {
+            "requested_bars": int(need[tf]),
+            "actual_bars": int(len(df)),
+            "short_by": max(0, int(need[tf]) - int(len(df))),
+            "coverage_start": str(df["ts"].iat[0]),
+            "coverage_end": str(df["ts"].iat[-1]),
+        }
+    short = [tf for tf, f in out["frames"].items() if f["short_by"] > 0]
+    if short:
+        out["warning"] = (f"Fewer bars than requested on {', '.join(short)}. "
+                          f"Report covers the actual range, not the requested one.")
+    return out
+
+
+def load_any(symbol, tf, bars):
+    """Old behaviour, kept for the mixed-source path only."""
     df, src = fetch_coindcx(symbol, tf, bars)
     if df is not None:
         return df, src
     return fetch_ccxt(symbol, tf, bars)
-
-
-def load_mtf(symbol, bars_5m):
-    """All three frames from ONE source where possible.
-
-    Mixing venues across timeframes would mean the 1H bias is computed on
-    different prints than the 5M entry, which is a subtle way to make a
-    backtest disagree with reality.
-    """
-    out, sources = {}, set()
-    need = {"5m": bars_5m, "15m": max(400, bars_5m // 3), "1h": max(300, bars_5m // 12)}
-    for tf, n in need.items():
-        df, src = load(symbol, tf, n)
-        if df is None or len(df) < 250:
-            return None, src
-        out[tf] = df
-        sources.add(src)
-    return out, "+".join(sorted(sources))
