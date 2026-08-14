@@ -242,3 +242,101 @@ def test_gate_counters_present(report):
     assert g, "no gate counters for the out-of-sample slice"
     assert g["bars_with_atr"] <= g["bars_total"]
     assert g["entries_filled"] <= g["signals_generated"]
+
+
+# ─── FIX A: the forming candle is dropped once, not twice ────────────────
+def test_loader_output_last_row_is_closed_and_usable(monkeypatch):
+    """The loader removes the forming candle, so the final row IS the last
+    closed bar. Anything that then skips len-2 loses a real candle."""
+    import data as D
+    raw = synth(400, 5, 11)
+    monkeypatch.setattr(D, "_fetch_one", lambda s, tf, n, v: (raw.copy(), v))
+    frames, _ = D.load_mtf("ETH", 300)
+    df5 = frames["5m"]
+    assert df5["ts"].iat[-1] == raw["ts"].iat[-2], "loader dropped the wrong row"
+
+
+def test_live_uses_the_last_closed_candle(monkeypatch):
+    import app as A
+    import data as D
+
+    def fake(sym, b5, allow_mixed=False):
+        d5 = synth(b5, 5, 13)
+        d = d5.set_index("ts")
+        rs = lambda r: d.resample(r).agg(
+            {"open": "first", "high": "max", "low": "min",
+             "close": "last", "volume": "sum"}).dropna().reset_index()
+        f = {"5m": d5, "15m": rs("15min"), "1h": rs("1h")}
+        return f, {"symbol": sym, "source": "synthetic", "mixed": False,
+                   "frames": {k: {"requested_bars": b5, "actual_bars": len(v),
+                                  "short_by": 0,
+                                  "coverage_start": str(v["ts"].iat[0]),
+                                  "coverage_end": str(v["ts"].iat[-1])}
+                              for k, v in f.items()}}
+
+    monkeypatch.setattr(D, "load_mtf", fake)
+    A._cache.clear()
+    res = A.build_signal("ETH")
+    frames, _ = fake("ETH", A.LIVE_BARS_5M)
+    expected = str(pd.to_datetime(frames["5m"]["ts"]).iat[-1])
+    assert res["last_closed"] == expected, (
+        f"live reported {res['last_closed']}, last closed bar is {expected}")
+
+
+# ─── FIX B: live and backtest calibrate identically ─────────────────────
+def test_calibration_is_causal():
+    """Each bar's threshold must come only from bars before it."""
+    df = poi.add_candle_metrics(synth(1200, 5, 17))
+    thr = poi.rolling_body_threshold(df, window=300, target_pct=0.85)
+
+    spike = df.copy()
+    spike.loc[spike.index[-1], "body_vs_median"] = 999.0
+    thr2 = poi.rolling_body_threshold(spike, window=300, target_pct=0.85)
+    pd.testing.assert_series_equal(thr, thr2, check_names=False)
+
+
+def test_calibration_identical_live_vs_backtest():
+    """Same candles must yield the same threshold regardless of how much
+    history sits around them. This is the parity guarantee."""
+    full = poi.add_candle_metrics(synth(3000, 5, 19))
+    thr_full = poi.rolling_body_threshold(full, window=500, target_pct=0.85)
+
+    # a "live" frame: the same tail, fewer bars of history loaded
+    tail = full.iloc[-1200:].reset_index(drop=True)
+    thr_tail = poi.rolling_body_threshold(tail, window=500, target_pct=0.85)
+
+    a = thr_full.iloc[-700:].to_numpy()
+    b = thr_tail.iloc[-700:].to_numpy()
+    assert np.allclose(a, b, equal_nan=True), "threshold depends on frame length"
+
+
+def test_build_context_ignores_calib_end():
+    df5 = synth(1500, 5, 23)
+    d = df5.set_index("ts")
+    rs = lambda r: d.resample(r).agg(
+        {"open": "first", "high": "max", "low": "min",
+         "close": "last", "volume": "sum"}).dropna().reset_index()
+    df15, df1h = rs("15min"), rs("1h")
+    a = mtf.build_context(df5, df15, df1h, calib_end=None)
+    b = mtf.build_context(df5, df15, df1h, calib_end=0.6)
+    assert list(a["bias"]) == list(b["bias"])
+    assert list(a["trigger"]) == list(b["trigger"])
+    assert len(a["setups"]) == len(b["setups"])
+
+
+# ─── FIX C: sensitivity is out-of-sample only ───────────────────────────
+def test_sensitivity_runs_out_of_sample_only(report):
+    runs = report["sensitivity"]["runs"]
+    assert runs, "no sensitivity runs"
+    for r in runs:
+        if "error" in r:
+            continue
+        assert r.get("slice") == "out_of_sample", r
+    oos = {m["arm"]: m for m in report["out_of_sample"]}
+    baseline = oos.get("SMC_MTF", {}).get("trades", 0)
+    for r in runs:
+        if "error" in r:
+            continue
+        assert r["trades"] <= max(baseline * 6, 40), (
+            f"{r['param']}={r['value']} produced {r['trades']} trades against an "
+            f"out-of-sample baseline of {baseline}; looks like a wider slice")
