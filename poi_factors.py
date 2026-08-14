@@ -276,8 +276,14 @@ class Zone:
     side: str  # 'bull' | 'bear'
     top: float
     bottom: float
-    formed_idx: int
-    confirmed_idx: int  # first bar at whose close this zone is knowable
+    # full candle extremes, kept separately from the body so the stop can sit
+    # beyond the wick no matter which entry mode is chosen
+    wick_top: Optional[float] = None
+    wick_bottom: Optional[float] = None
+    body_top: Optional[float] = None
+    body_bottom: Optional[float] = None
+    formed_idx: int = 0
+    confirmed_idx: int = 0  # first bar at whose close this zone is knowable
     tests: int = 0
     half_idx: Optional[int] = None
     dead_idx: Optional[int] = None
@@ -286,6 +292,41 @@ class Zone:
     @property
     def mid(self) -> float:
         return (self.top + self.bottom) / 2.0
+
+    def entry_at(self, mode: str = "body") -> float:
+        """The three source-defined entries.
+
+        Price returns to the block from outside it, so every mode enters at the
+        edge it reaches FIRST. For a bullish block price falls in from above,
+        so that is the upper edge; for a bearish block it rises in from below.
+
+            wick  full candle range      earliest fill, worst price
+            body  open/close only        fills less often, better price
+            50    midpoint of the block  fills least often, best price
+
+        The stop does not move between modes. It sits beyond the wick in all
+        three, which is why a deeper entry is a smaller risk rather than a
+        different trade.
+        """
+        wt = self.wick_top if self.wick_top is not None else self.top
+        wb = self.wick_bottom if self.wick_bottom is not None else self.bottom
+        bt = self.body_top if self.body_top is not None else self.top
+        bb = self.body_bottom if self.body_bottom is not None else self.bottom
+
+        if mode == "wick":
+            return wt if self.side == "bull" else wb
+        if mode == "body":
+            return bt if self.side == "bull" else bb
+        if mode in ("50", "50%", "mid"):
+            return (wt + wb) / 2.0
+        raise ValueError(f"unknown entry mode {mode!r}")
+
+    def stop_at(self, buffer_frac: float = 0.0) -> float:
+        """Beyond the wick, always. Never the body."""
+        wt = self.wick_top if self.wick_top is not None else self.top
+        wb = self.wick_bottom if self.wick_bottom is not None else self.bottom
+        pad = (wt - wb) * buffer_frac
+        return wb - pad if self.side == "bull" else wt + pad
 
     def ote(self, low: float = 0.618, high: float = 0.79) -> tuple[float, float]:
         """OTE band inside the zone, measured from the entry-side edge."""
@@ -320,17 +361,17 @@ def find_fvgs(
 
         gap = lows[i] - highs[i - 2]
         if gap > 0 and (np.isnan(mid_range) or gap / mid_range >= min_gap_frac):
-            zones.append(
-                Zone("fvg", "bull", float(lows[i]), float(highs[i - 2]), i - 1, i,
-                     meta={"displacement": float(bvm[i - 1])})
-            )
+            zones.append(Zone(
+                "fvg", "bull", float(lows[i]), float(highs[i - 2]),
+                formed_idx=i - 1, confirmed_idx=i,
+                meta={"displacement": float(bvm[i - 1])}))
 
         gap = lows[i - 2] - highs[i]
         if gap > 0 and (np.isnan(mid_range) or gap / mid_range >= min_gap_frac):
-            zones.append(
-                Zone("fvg", "bear", float(lows[i - 2]), float(highs[i]), i - 1, i,
-                     meta={"displacement": float(bvm[i - 1])})
-            )
+            zones.append(Zone(
+                "fvg", "bear", float(lows[i - 2]), float(highs[i]),
+                formed_idx=i - 1, confirmed_idx=i,
+                meta={"displacement": float(bvm[i - 1])}))
 
     return zones
 
@@ -340,11 +381,35 @@ def find_order_blocks(
     bos_events: list[BOS],
     lookback: int = 30,
     body_dominance_cut: float = 0.6,
+    require_sweep: bool = True,
+    require_imbalance: bool = True,
+    imbalance_window: int = 3,
+    min_gap_frac: float = 0.0,
 ) -> list[Zone]:
-    """Last opposite-colour candle before the leg that caused a BOS.
+    """Last opposite-colour candle before the leg that broke structure, with
+    the two validity conditions the sources insist on.
 
-    confirmed_idx = the BOS bar. The block did not exist as a tradeable object
-    before the break happened.
+    RULE 1 - LIQUIDITY SWEEP (source slides 3 and 5)
+        A bullish order block is the last BEARISH candle before the up-leg, and
+        that candle's LOW must trade below the PREVIOUS candle's low. It has to
+        take out the liquidity resting under the prior candle. If it does not,
+        the block is invalid.
+        Bearish is the mirror: the last BULLISH candle's HIGH must exceed the
+        previous candle's high.
+
+    RULE 2 - IMBALANCE (source slides 4 and 6)
+        There must be a gap near the block. For a bullish block, price must
+        leave an unfilled gap above it: some candle within imbalance_window
+        must open a hole between the block candle's high and a later candle's
+        low. No gap, no block.
+
+    Both were missing entirely before this. Every last-opposite-colour candle
+    was being accepted, which is why the zone count was high and the hit rate
+    was not.
+
+    confirmed_idx is still the BOS bar. The block does not exist as a tradeable
+    object until the break happens, and validity is judged only on candles at
+    or before that bar.
     """
     o = df["open"].to_numpy()
     c = df["close"].to_numpy()
@@ -353,33 +418,76 @@ def find_order_blocks(
     if "body_dominance" not in df.columns:
         df = add_candle_metrics(df)
     dom = df["body_dominance"].to_numpy()
+    n = len(df)
 
     zones: list[Zone] = []
     for ev in bos_events:
         if ev.is_sweep:
             continue
-        start = max(0, ev.idx - lookback)
+        start_i = max(1, ev.idx - lookback)
         want_bear = ev.side == "bull"
+
         found = None
-        for j in range(ev.idx - 1, start - 1, -1):
-            if want_bear and c[j] < o[j]:
-                found = j
-                break
-            if not want_bear and c[j] > o[j]:
-                found = j
-                break
+        for j in range(ev.idx - 1, start_i - 1, -1):
+            is_bear, is_bull = c[j] < o[j], c[j] > o[j]
+            if want_bear and not is_bear:
+                continue
+            if not want_bear and not is_bull:
+                continue
+
+            # RULE 1: this candle must have swept the previous candle
+            if require_sweep:
+                if want_bear and not (lo[j] < lo[j - 1]):
+                    continue
+                if not want_bear and not (h[j] > h[j - 1]):
+                    continue
+
+            found = j
+            break
+
         if found is None:
             continue
 
-        if dom[found] >= body_dominance_cut:
-            top, bottom = max(o[found], c[found]), min(o[found], c[found])
-        else:
-            top, bottom = h[found], lo[found]
+        # RULE 2: an unfilled gap must sit next to the block
+        gap_ok, gap_size = (not require_imbalance), 0.0
+        if require_imbalance:
+            last = min(found + imbalance_window, ev.idx, n - 1)
+            for k in range(found + 2, last + 1):
+                if want_bear:
+                    gap = lo[k] - h[found]          # hole above a bullish block
+                else:
+                    gap = lo[found] - h[k]          # hole below a bearish block
+                if gap <= 0:
+                    continue
+                rng = max(h[found] - lo[found], 1e-12)
+                if gap / rng >= min_gap_frac:
+                    gap_ok, gap_size = True, float(gap)
+                    break
+        if not gap_ok:
+            continue
 
-        zones.append(
-            Zone("ob", ev.side, float(top), float(bottom), found, ev.idx,
-                 meta={"bos_idx": ev.idx, "displacement": ev.body_vs_median})
-        )
+        wick_top, wick_bottom = float(h[found]), float(lo[found])
+        body_top = float(max(o[found], c[found]))
+        body_bottom = float(min(o[found], c[found]))
+
+        # the nominal zone still follows the source's body-dominance rule, but
+        # entry and stop now read the explicit bounds instead of guessing
+        if dom[found] >= body_dominance_cut:
+            top, bottom = body_top, body_bottom
+        else:
+            top, bottom = wick_top, wick_bottom
+
+        zones.append(Zone(
+            "ob", ev.side, top, bottom,
+            wick_top=wick_top, wick_bottom=wick_bottom,
+            body_top=body_top, body_bottom=body_bottom,
+            formed_idx=found, confirmed_idx=ev.idx,
+            meta={"bos_idx": ev.idx, "displacement": ev.body_vs_median,
+                  "swept_previous": bool(require_sweep),
+                  "imbalance": bool(require_imbalance),
+                  "gap_size": gap_size,
+                  "body_dominant": bool(dom[found] >= body_dominance_cut)},
+        ))
     return zones
 
 
