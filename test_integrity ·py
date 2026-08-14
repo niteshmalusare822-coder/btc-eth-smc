@@ -46,15 +46,39 @@ def test_15m_not_visible_before_close():
 
 
 # 2 ── forming candle is dropped at the data layer
+def _stub_history(monkeypatch, bars=2500, fail_1h_on=None):
+    """Replace the paginated fetch with a deterministic in-memory venue."""
+    import data as D
+
+    def fake(venue, symbol, tf, target, since=None, now=None):
+        if fail_1h_on and venue == fail_1h_on and tf == "1h":
+            return None, {"error": "unavailable"}
+        secs = D.TF_SECONDS[tf]
+        n = min(target, bars)
+        end = 1700000000
+        ts = pd.to_datetime(np.arange(end - n * secs, end, secs), unit="s")
+        px = 3000 + np.cumsum(np.random.default_rng(2).normal(0, 2, n))
+        df = pd.DataFrame({"ts": ts, "open": px, "high": px + 2, "low": px - 2,
+                           "close": px, "volume": np.ones(n)})
+        return df, {"requested_bars": target, "actual_bars": n,
+                    "short_by": max(0, target - n), "source": venue,
+                    "symbol": symbol, "timeframe": tf,
+                    "coverage_start": str(df["ts"].iat[0]),
+                    "coverage_end": str(df["ts"].iat[-1]), "pages_fetched": 3}
+
+    monkeypatch.setattr(D, "fetch_ohlcv_history", fake)
+    return 1700000000
+
+
 def test_forming_candle_dropped(monkeypatch):
     import data as D
-    raw = synth(400, 5, 5)
-    monkeypatch.setattr(D, "_fetch_one", lambda s, tf, n, v: (raw.copy(), v))
-    frames, meta = D.load_mtf("ETH", 300)
+    end = _stub_history(monkeypatch)
+    # the last stub candle OPENS at end-300 and closes at end, so a clock
+    # reading before `end` means it is genuinely still forming
+    frames, meta = D.load_mtf("ETH", 1000, now=end - 120)
     assert frames is not None
-    for tf, df in frames.items():
-        assert df["ts"].iat[-1] < raw["ts"].iat[-1], f"{tf} kept the forming candle"
     assert meta["mixed"] is False
+    assert meta["forming_candle_dropped"]["5m"] is True
 
 
 # 3 ── signal on bar i never enters before bar i+1
@@ -193,34 +217,55 @@ def test_decide_takes_no_price_arguments():
 
 # 13 ── same-source loading is preferred and mixed data is refused by default
 def test_mixed_source_refused_by_default(monkeypatch):
+    """CoinDCX cannot serve 1h, so the whole venue is abandoned rather than
+    stitching 5m from CoinDCX onto 1h from somewhere else."""
     import data as D
-    raw = synth(400, 5, 9)
-
-    def flaky(symbol, tf, n, venue):
-        if venue == "coindcx" and tf == "1h":
-            return None, None          # CoinDCX cannot serve every frame
-        return raw.copy(), venue
-
-    monkeypatch.setattr(D, "_fetch_one", flaky)
-    frames, meta = D.load_mtf("ETH", 300, allow_mixed=False)
+    _stub_history(monkeypatch, fail_1h_on="coindcx")
+    frames, meta = D.load_mtf("ETH", 1000, allow_mixed=False)
     assert frames is not None
     assert meta["mixed"] is False
     assert meta["source"] != "coindcx", "fell back per-frame instead of per-venue"
 
 
+def test_mixed_source_allowed_only_explicitly(monkeypatch):
+    import data as D
+
+    def only_coindcx_5m(venue, symbol, tf, target, since=None, now=None):
+        if (venue == "coindcx") != (tf == "5m"):
+            return None, {"error": "unavailable"}
+        secs = D.TF_SECONDS[tf]
+        end = 1700000000
+        n = min(target, 2000)
+        ts = pd.to_datetime(np.arange(end - n * secs, end, secs), unit="s")
+        px = np.full(n, 3000.0)
+        df = pd.DataFrame({"ts": ts, "open": px, "high": px + 1, "low": px - 1,
+                           "close": px, "volume": np.ones(n)})
+        return df, {"requested_bars": target, "actual_bars": n, "short_by": 0,
+                    "source": venue, "symbol": symbol, "timeframe": tf,
+                    "coverage_start": str(ts[0]), "coverage_end": str(ts[-1]),
+                    "pages_fetched": 1}
+
+    monkeypatch.setattr(D, "fetch_ohlcv_history", only_coindcx_5m)
+    frames, meta = D.load_mtf("ETH", 1000, allow_mixed=False)
+    assert frames is None and "no single venue" in meta["error"]
+
+    frames, meta = D.load_mtf("ETH", 1000, allow_mixed=True)
+    assert frames is not None
+    assert meta["mixed"] is True and meta["source"] == "MIXED"
+    assert set(meta["sources"]) == {"5m", "15m", "1h"}
+    assert any("MIXED SOURCE" in w for w in meta["warnings"])
+
+
 # 14 ── bar counts are reported honestly
 def test_actual_bar_count_reported(monkeypatch):
     import data as D
-    short = synth(300, 5, 2)
-    monkeypatch.setattr(D, "_fetch_one", lambda s, tf, n, v: (short.copy(), v))
-    frames, meta = D.load_mtf("ETH", 4000)
-    if frames is None:
-        pytest.skip("300 bars is below the loader minimum")
-    f5 = meta["frames"]["5m"]
-    assert f5["requested_bars"] == 4000
-    assert f5["actual_bars"] < 4000
-    assert f5["short_by"] > 0
-    assert "warning" in meta
+    _stub_history(monkeypatch, bars=1800)      # venue cannot serve 10000
+    frames, meta = D.load_mtf("ETH", 10000)
+    assert frames is not None
+    assert meta["requested_bars_5m"] > meta["actual_bars_5m"]
+    assert any("only" in w and "available" in w for w in meta["warnings"]), meta["warnings"]
+    assert meta["coverage_days"] > 0
+    assert meta["pages_fetched"]["5m"] >= 1
 
 
 # 13b ── verdict is one of the documented codes and never forced
@@ -240,20 +285,21 @@ def test_verdict_not_profitable_without_edge(report):
 def test_gate_counters_present(report):
     g = report["gate_counters"].get("out_of_sample")
     assert g, "no gate counters for the out-of-sample slice"
-    assert g["bars_with_atr"] <= g["bars_total"]
+    assert g["bars_with_atr"] <= g["total_5m_bars"]
     assert g["entries_filled"] <= g["signals_generated"]
 
 
 # ─── FIX A: the forming candle is dropped once, not twice ────────────────
 def test_loader_output_last_row_is_closed_and_usable(monkeypatch):
-    """The loader removes the forming candle, so the final row IS the last
-    closed bar. Anything that then skips len-2 loses a real candle."""
+    """After the loader runs, the final row IS the last closed bar. Anything
+    downstream that then skips len-2 loses a real candle."""
     import data as D
-    raw = synth(400, 5, 11)
-    monkeypatch.setattr(D, "_fetch_one", lambda s, tf, n, v: (raw.copy(), v))
-    frames, _ = D.load_mtf("ETH", 300)
-    df5 = frames["5m"]
-    assert df5["ts"].iat[-1] == raw["ts"].iat[-2], "loader dropped the wrong row"
+    end = _stub_history(monkeypatch)
+    # now is well past the final candle's close, so nothing should be dropped
+    frames, meta = D.load_mtf("ETH", 1000, now=end + 100000)
+    assert meta["forming_candle_dropped"]["5m"] is False
+    last = pd.Timestamp(frames["5m"]["ts"].iat[-1])
+    assert last.timestamp() + 300 <= end + 100000
 
 
 def test_live_uses_the_last_closed_candle(monkeypatch):
@@ -340,3 +386,152 @@ def test_sensitivity_runs_out_of_sample_only(report):
         assert r["trades"] <= max(baseline * 6, 40), (
             f"{r['param']}={r['value']} produced {r['trades']} trades against an "
             f"out-of-sample baseline of {baseline}; looks like a wider slice")
+
+
+# ═══ HISTORICAL DATA / SAMPLE SIZE ══════════════════════════════════════
+def _fake_venue(bars=5000, tf_secs=300, start_ts=1700000000):
+    """A venue that serves at most PAGE_LIMIT candles per request, so the
+    loader has to paginate to reach anything larger."""
+    import data as D
+    all_ts = np.arange(start_ts, start_ts + bars * tf_secs, tf_secs)
+    px = 3000 + np.cumsum(np.random.default_rng(1).normal(0, 3, len(all_ts)))
+
+    def pager(symbol, tf, end_ts, secs, span):
+        lo, hi = end_ts - span, end_ts
+        m = (all_ts >= lo) & (all_ts <= hi)
+        if not m.any():
+            return None
+        t, p = all_ts[m][-D.PAGE_LIMIT:], px[m][-D.PAGE_LIMIT:]
+        return D._clean(pd.DataFrame({
+            "ts": pd.to_datetime(t, unit="s"), "open": p, "high": p + 2,
+            "low": p - 2, "close": p, "volume": np.ones(len(t))}))
+    return pager, all_ts
+
+
+def test_pagination_reaches_target(monkeypatch):
+    import data as D
+    pager, all_ts = _fake_venue(bars=6000)
+    monkeypatch.setattr(D, "_page_coindcx", pager)
+    monkeypatch.setattr(D.time, "sleep", lambda s: None)
+    now = float(all_ts[-1]) + 300
+    df, meta = D.fetch_ohlcv_history("coindcx", "ETH", "5m", 4000, now=now)
+    assert df is not None
+    assert meta["pages_fetched"] > 1, "did not paginate"
+    assert meta["actual_bars"] == 4000
+    assert meta["short_by"] == 0
+
+
+def test_pagination_stops_when_venue_runs_out(monkeypatch):
+    import data as D
+    pager, all_ts = _fake_venue(bars=1500)
+    monkeypatch.setattr(D, "_page_coindcx", pager)
+    monkeypatch.setattr(D.time, "sleep", lambda s: None)
+    now = float(all_ts[-1]) + 300
+    df, meta = D.fetch_ohlcv_history("coindcx", "ETH", "5m", 20000, now=now)
+    assert meta["pages_fetched"] < D.MAX_PAGES, "looped instead of stopping"
+    assert meta["actual_bars"] == 1500
+    assert meta["short_by"] == 18500, "did not report the shortfall honestly"
+
+
+def test_history_is_deduplicated_and_chronological(monkeypatch):
+    import data as D
+    pager, all_ts = _fake_venue(bars=3000)
+    monkeypatch.setattr(D, "_page_coindcx", pager)
+    monkeypatch.setattr(D.time, "sleep", lambda s: None)
+    df, _ = D.fetch_ohlcv_history("coindcx", "ETH", "5m", 2500,
+                                  now=float(all_ts[-1]) + 300)
+    assert not df["ts"].duplicated().any()
+    assert df["ts"].is_monotonic_increasing
+
+
+def test_forming_candle_removed_only_when_incomplete():
+    import data as D
+    ts = pd.date_range("2024-01-01", periods=10, freq="5min")
+    df = pd.DataFrame({"ts": ts, "open": 1.0, "high": 1.0, "low": 1.0,
+                       "close": 1.0, "volume": 1.0})
+    mid = ts[-1].timestamp() + 100          # last candle still forming
+    out, dropped = D.drop_forming(df, "5m", now=mid)
+    assert dropped and len(out) == 9
+
+    after = ts[-1].timestamp() + 400        # it has since closed
+    out2, dropped2 = D.drop_forming(df, "5m", now=after)
+    assert not dropped2 and len(out2) == 10, "threw away a closed candle"
+
+
+def test_bar_limits_are_validated():
+    import data as D
+    assert D.clamp_bars(50) == D.MIN_BACKTEST_BARS
+    assert D.clamp_bars(999999) == D.MAX_BACKTEST_BARS
+    assert D.clamp_bars("abc") == D.DEFAULT_BACKTEST_BARS
+    assert D.clamp_bars(None) == D.DEFAULT_BACKTEST_BARS
+    assert D.clamp_bars(12000) == 12000
+
+
+def test_required_bars_scale_with_timeframe():
+    import data as D
+    need = D.required_bars(12000)
+    assert need["5m"] > need["15m"] > need["1h"]
+    assert need["15m"] >= 12000 // 3
+    assert need["1h"] >= 12000 // 12
+    for tf in ("5m", "15m", "1h"):
+        assert need[tf] > 12000 // {"5m": 1, "15m": 3, "1h": 12}[tf], "no warmup"
+
+
+def test_common_window_trims_to_the_shortest_frame():
+    import data as D
+    long5 = pd.DataFrame({"ts": pd.date_range("2024-01-01", periods=2000, freq="5min"),
+                          "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0})
+    short1h = pd.DataFrame({"ts": pd.date_range("2024-01-04", periods=40, freq="1h"),
+                            "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0})
+    frames, start, end = D.align_common_window({"5m": long5, "1h": short1h})
+    assert start == short1h["ts"].iat[0]
+    assert frames["5m"]["ts"].iat[0] >= start
+    assert frames["5m"]["ts"].iat[-1] <= end
+
+
+def test_validation_flags_bad_data():
+    import data as D
+    ts = pd.date_range("2024-01-01", periods=20, freq="5min")
+    df = pd.DataFrame({"ts": ts, "open": 1.0, "high": 1.0, "low": 1.0,
+                       "close": 1.0, "volume": 1.0})
+    assert D.validate_ohlcv(df, "5m") == []
+
+    bad = df.copy()
+    bad.loc[5, "high"] = 0.5                # high below low
+    assert any("impossible" in w for w in D.validate_ohlcv(bad, "5m"))
+
+    gap = df.drop(index=range(5, 12)).reset_index(drop=True)
+    assert any("gap" in w for w in D.validate_ohlcv(gap, "5m"))
+
+    neg = df.copy()
+    neg.loc[3, "close"] = -1.0
+    assert any("non-positive" in w for w in D.validate_ohlcv(neg, "5m"))
+
+
+def test_report_exposes_split_periods(report):
+    s = report["split"]
+    for k in ("is_start", "is_end", "oos_start", "oos_end", "is_bars", "oos_bars"):
+        assert k in s
+    assert pd.Timestamp(s["is_end"]) < pd.Timestamp(s["oos_start"]), "split overlaps"
+    assert s["is_bars"] > 0 and s["oos_bars"] > 0
+
+
+def test_walk_forward_reports_periods_and_seeds(report):
+    for f in report["walk_forward"]["folds"]:
+        assert "period_start" in f and "period_end" in f
+        assert pd.Timestamp(f["period_start"]) <= pd.Timestamp(f["period_end"])
+        if f["random_runs"]:
+            assert f["random_runs"] >= 5
+
+
+def test_gate_counters_expanded(report):
+    g = report["gate_counters"]["out_of_sample"]
+    for k in ("total_5m_bars", "valid_1h_bias", "matching_15m_setup",
+              "matching_5m_trigger", "all_three_aligned", "ote_touched",
+              "signals_generated", "entries_filled", "rejected_by_sizing",
+              "expired_setup", "duplicate_signal_rejected"):
+        assert k in g, k
+    assert g["all_three_aligned"] <= min(g["valid_1h_bias"],
+                                         g["matching_15m_setup"])
+    assert g["ote_touched"] <= g["all_three_aligned"]
+    assert g["entries_filled"] <= g["signals_generated"]
