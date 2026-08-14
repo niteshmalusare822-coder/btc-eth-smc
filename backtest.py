@@ -33,18 +33,25 @@ SESSION_HOURS = None  # e.g. (7, 22) UTC. None = all hours.
 # ---------------------------------------------------------------------------
 # EXIT
 # ---------------------------------------------------------------------------
-def simulate(df, side, entry, sl, tps, start, max_hold):
-    """Scale out across the REACHABLE targets, stop on the remainder.
+TP_SPLIT = [0.30, 0.30, 0.40]
 
-    Stop is checked BEFORE targets on every bar. A candle spanning both is a
-    loss. Without tick data that is the only honest assumption.
 
-    BUG FIX: this used every level in the ladder, including ones flagged
-    unreachable. Two thirds of each position was aimed at prices that could
-    not print, so the position could only ever be closed by the stop or the
-    time stop, and hitting TP1 alone still netted a loss after full round-trip
-    costs. Unreachable levels are now dropped and the size is split across
-    what is actually left.
+def simulate(df, side, entry, sl, tps, start, max_hold, manage=True,
+             cost_r=0.0):
+    """Scale out 30/30/40 across the reachable targets, trailing the stop.
+
+    STOP MANAGEMENT (spec section 17)
+        after TP1  ->  stop moves to breakeven PLUS the estimated remaining
+                       cost, so a "breakeven" stop actually breaks even
+        after TP2  ->  stop moves to the TP1 price
+    The stop never moves further away. That is checked, not assumed.
+
+    INTRABAR RULE
+        The stop is tested before any target on every bar. A candle containing
+        both resolves as a stop. Without tick data the adverse assumption is
+        the only honest one, and it is applied to the trailed stop too, so a
+        bar that reaches TP2 and then falls back through the trailed stop is
+        recorded as exiting at the trailed stop rather than at TP2.
     """
     hi = df["high"].to_numpy()
     lo = df["low"].to_numpy()
@@ -55,38 +62,83 @@ def simulate(df, side, entry, sl, tps, start, max_hold):
     live = [t for t in (tps or []) if t.get("reachable")]
     if not live:
         live = [tps[0]] if tps else []
-    share = 1.0 / len(live) if live else 1.0
+    splits = TP_SPLIT[:len(live)]
+    if splits:
+        splits = [s / sum(splits) for s in splits]
 
+    risk = abs(entry - sl)
+    cur_sl = sl
     remaining = 1.0
-    realised_px = []          # (fraction, exit_price)
-    hit = []
+    realised, hit = [], []
+    nxt = 0
     tp_px = [t["price"] for t in live]
     tp_name = [t["level"] for t in live]
-    nxt = 0
 
     for j in range(start, last + 1):
-        stopped = lo[j] <= sl if side == "bull" else hi[j] >= sl
+        stopped = lo[j] <= cur_sl if side == "bull" else hi[j] >= cur_sl
         if stopped:
-            realised_px.append((remaining, sl))
-            return realised_px, hit, "STOP", j
+            realised.append((remaining, cur_sl))
+            return realised, hit, ("STOP" if not hit else "TRAILED_STOP"), j
 
         while nxt < len(tp_px):
             reached = hi[j] >= tp_px[nxt] if side == "bull" else lo[j] <= tp_px[nxt]
             if not reached:
                 break
-            frac = min(share, remaining)
-            realised_px.append((frac, tp_px[nxt]))
+            frac = min(splits[nxt], remaining)
+            realised.append((frac, tp_px[nxt]))
             remaining -= frac
             hit.append(tp_name[nxt])
             nxt += 1
+
+            if manage and remaining > 1e-9:
+                if len(hit) == 1:
+                    # breakeven that actually breaks even: cover the round trip
+                    pad = cost_r * risk
+                    new_sl = entry + pad if side == "bull" else entry - pad
+                elif len(hit) == 2:
+                    new_sl = tp_px[0]
+                else:
+                    new_sl = cur_sl
+                # a stop may only ever move toward price, never away
+                cur_sl = max(cur_sl, new_sl) if side == "bull" \
+                    else min(cur_sl, new_sl)
+
             if remaining <= 1e-9:
-                return realised_px, hit, "TP_ALL", j
-        if remaining <= 1e-9:
-            return realised_px, hit, "TP_ALL", j
+                return realised, hit, "TP_ALL", j
 
     if remaining > 0:
-        realised_px.append((remaining, cl[last]))
-    return realised_px, hit, ("TIMEOUT" if not hit else "PARTIAL"), last
+        realised.append((remaining, cl[last]))
+    return realised, hit, ("TIMEOUT" if not hit else "PARTIAL"), last
+
+
+def excursion(df, side, entry, sl, start, exit_i):
+    """Maximum favourable and adverse excursion, in R, plus when each occurred.
+
+    This is what separates "the exit is wrong" from "the entry is wrong". A
+    timeout trade that reached 1.8R before drifting back says the targets or
+    the trailing are at fault. A timeout trade whose best moment was 0.2R says
+    the entry had no edge and no exit rule would have saved it.
+    """
+    hi = df["high"].to_numpy()
+    lo = df["low"].to_numpy()
+    risk = abs(entry - sl)
+    if risk <= 0 or exit_i < start:
+        return {}
+
+    seg_hi = hi[start:exit_i + 1]
+    seg_lo = lo[start:exit_i + 1]
+    if side == "bull":
+        fav, adv = seg_hi - entry, entry - seg_lo
+    else:
+        fav, adv = entry - seg_lo, seg_hi - entry
+
+    i_f, i_a = int(np.argmax(fav)), int(np.argmax(adv))
+    return {
+        "mfe_r": round(float(fav[i_f] / risk), 3),
+        "mae_r": round(float(adv[i_a] / risk), 3),
+        "bars_to_mfe": i_f,
+        "bars_to_mae": i_a,
+    }
 
 
 def pnl_inr(side, entry, legs, qty, usdt_inr, notional_inr, bars_held, tf_min):
@@ -167,7 +219,10 @@ def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
     if not s.ok:
         return None, s.reason
 
-    legs, hit, outcome, ex = simulate(df, side, entry, sl, s.tps, fill_i, cfg["max_hold"])
+    legs, hit, outcome, ex = simulate(df, side, entry, sl, s.tps, fill_i,
+                                      cfg["max_hold"],
+                                      manage=cfg.get("manage_stop", True),
+                                      cost_r=s.cost_in_r)
     held = ex - fill_i
     gross, net, fees, slip, fund = pnl_inr(side, entry, legs, s.qty, R.USDT_INR,
                                            s.notional_inr, held, tf_min)
@@ -203,6 +258,7 @@ def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
         "fees_inr": round(fees, 0), "slippage_inr": round(slip, 0),
         "funding_inr": round(fund, 2),
         "bars_held": held,
+        **excursion(df, side, entry, sl, fill_i, ex),
         "i": sig_i, "fill_i": fill_i, "exit_i": ex,
     }, None
 
@@ -418,13 +474,19 @@ def metrics(trades, label):
 # ---------------------------------------------------------------------------
 # ORCHESTRATION
 # ---------------------------------------------------------------------------
-RANDOM_SEEDS = [11, 22, 33, 44, 55, 66, 77, 88, 99, 111,
-                122, 133, 144, 155, 166, 177, 188, 199, 211, 222]
+# spec section 29: a thousand paths, not twenty. With 20 seeds the standard
+# error on the random mean is large enough that a real difference and a lucky
+# draw look the same.
+RANDOM_SEEDS = list(range(11, 11 + 1000))
 
 DEFAULT_CFG = {"max_hold": 60, "rand_sl_atr": 1.0, "n_random": 400,
                "wf_seeds": 10,
                "entry_model": "next_open",   # or "limit_ote"
                "max_wait": 12,      # bars a resting limit stays live before cancel
+               "manage_stop": True, # breakeven after TP1, TP1 after TP2
+               "matched_seeds": 200,
+               "bootstrap_n": 5000,
+               "cooldown_bars": 3,
                "min_trades": 30,    # below this the verdict is INSUFFICIENT SAMPLE
                "log_trades": 150,   # trades returned in the audit log
                "is_frac": 0.60, "wf_folds": 4, "seed": 42}
@@ -493,6 +555,8 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
     # FIX C: fragility is judged on unseen bars only. Running it from `warm`
     # mixed in-sample results into the robustness check, which flatters it.
     out["sensitivity"] = _sensitivity(symbol, df5, df15, df1h, cfg, params, split, n)
+    out["timeout_analysis"] = _timeout_analysis(log)
+    out["signal_funnel"] = _funnel(gate_report)
     out["min_trades"] = cfg["min_trades"]
     out["verdict"] = _verdict(out)
     return out
@@ -509,7 +573,7 @@ def matched_baseline(symbol, df5, ctx, cfg, src_trades, seeds=None):
     The old baseline drew 400 entries at unrelated moments while SMC_MTF had
     three. That is not a control, it is a different experiment.
     """
-    seeds = seeds or RANDOM_SEEDS[:cfg.get("matched_seeds", 20)]
+    seeds = seeds or RANDOM_SEEDS[:cfg.get("matched_seeds", 200)]
     if not src_trades:
         return None
 
@@ -537,7 +601,9 @@ def matched_baseline(symbol, df5, ctx, cfg, src_trades, seeds=None):
         "random_mean_expectancy": round(float(exps.mean()), 1),
         "random_median_expectancy": round(float(np.median(exps)), 1),
         "random_std_expectancy": round(float(exps.std(ddof=1)) if exps.size > 1 else 0.0, 1),
+        "random_p5_expectancy": round(float(np.percentile(exps, 5)), 1),
         "random_p95_expectancy": round(float(np.percentile(exps, 95)), 1),
+        "pct_random_paths_beating_strategy": None,
         "random_mean_net_pnl": round(float(np.mean(nets)), 0),
         "expectancy_inr": round(float(exps.mean()), 1),
         "net_pnl_inr": round(float(np.mean(nets)), 0),
@@ -625,6 +691,83 @@ def _sensitivity(symbol, df5, df15, df1h, cfg, params, oos_start, n):
             "fragile": positive <= max(1, len(exps) // 4)}
 
 
+def _timeout_analysis(trades):
+    """Spec 22. Did the timeout trades ever go anywhere?
+
+    The answer decides what to fix next, and it is not a matter of opinion.
+    """
+    by_exit = {}
+    for t in trades:
+        by_exit.setdefault(t["outcome"], []).append(t)
+
+    def _stat(rows):
+        if not rows:
+            return {"trades": 0}
+        mfe = np.array([r.get("mfe_r", 0.0) for r in rows], dtype=float)
+        mae = np.array([r.get("mae_r", 0.0) for r in rows], dtype=float)
+        return {
+            "trades": len(rows),
+            "median_mfe_r": round(float(np.median(mfe)), 2),
+            "median_mae_r": round(float(np.median(mae)), 2),
+            "pct_reaching_1R": round(float((mfe >= 1.0).mean() * 100), 1),
+            "pct_reaching_0_5R": round(float((mfe >= 0.5).mean() * 100), 1),
+            "median_bars_to_mfe": int(np.median(
+                [r.get("bars_to_mfe", 0) for r in rows])),
+            "net_inr": round(sum(r["net_inr"] for r in rows), 0),
+        }
+
+    outs = {k: _stat(v) for k, v in by_exit.items()}
+    to = outs.get("TIMEOUT", {"trades": 0})
+    if not to["trades"]:
+        diag = "no timeout trades to diagnose"
+    elif to.get("pct_reaching_1R", 0) >= 40:
+        diag = (f"{to['pct_reaching_1R']}% of timeout trades reached 1R before "
+                f"drifting back. The ENTRIES are finding moves; the EXITS are "
+                f"giving them away. Fix targets and trailing, not the signal.")
+    elif to.get("median_mfe_r", 0) < 0.4:
+        diag = (f"Timeout trades peak at a median of {to.get('median_mfe_r')}R. "
+                f"They never go anywhere, so no exit rule would rescue them. "
+                f"The ENTRY has no edge and that is what needs work.")
+    else:
+        diag = (f"Timeout trades reach a median {to.get('median_mfe_r')}R, "
+                f"which is real but under the first target. Consider a closer "
+                f"TP1 before touching the entry logic.")
+    return {"by_exit_reason": outs, "diagnosis": diag}
+
+
+def _funnel(gate_report):
+    """Spec 31. Conversion at every stage, so rejections are visible."""
+    out = {}
+    for slice_name, g in (gate_report or {}).items():
+        total = max(g.get("total_5m_bars", 0), 1)
+        stages = [
+            ("5m bars", g.get("total_5m_bars", 0)),
+            ("valid 1H bias", g.get("valid_1h_bias", 0)),
+            ("15M setup live", g.get("matching_15m_setup", 0)),
+            ("5M trigger", g.get("matching_5m_trigger", 0)),
+            ("all three aligned", g.get("all_three_aligned", 0)),
+            ("signals generated", g.get("signals_generated", 0)),
+            ("entries filled", g.get("entries_filled", 0)),
+        ]
+        rows, prev = [], None
+        for name, n in stages:
+            rows.append({
+                "stage": name, "count": n,
+                "pct_of_bars": round(n / total * 100, 2),
+                "pct_of_previous": (round(n / prev * 100, 1)
+                                    if prev else 100.0),
+            })
+            prev = max(n, 1)
+        out[slice_name] = {
+            "stages": rows,
+            "rejected_by_sizing": g.get("rejected_by_sizing", 0),
+            "order_never_filled": g.get("order_never_filled", 0),
+            "duplicate_signal_rejected": g.get("duplicate_signal_rejected", 0),
+            "expired_setup": g.get("expired_setup", 0),
+        }
+    return out
+
+
 def _verdict(out):
     """FIX 13. One of: NO_TRADES, INSUFFICIENT_SAMPLE, NO_EDGE, UNSTABLE,
     FRAGILE, EDGE. Never forced to profitable.
@@ -643,7 +786,7 @@ def _verdict(out):
     e = smc.get("expectancy_inr")
 
     def _v(code, statement, edge=None):
-        return {"verdict": code, "profitable": code == "EDGE",
+        return {"verdict": code, "profitable": code == "PROVEN_EDGE",
                 "edge_vs_random_inr": edge, "statement": statement,
                 "trades_out_of_sample": n, "min_trades_required": cfg_min}
 
@@ -659,6 +802,12 @@ def _verdict(out):
     sd = base["random_std_expectancy"] or 0.0
     z = round(edge / sd, 2) if sd > 0 else None
 
+    if n < cfg_min and e is not None and e > 0 and edge > 0:
+        return _v("PROMISING_BUT_INSUFFICIENT_SAMPLE",
+                  f"Positive expectancy of Rs.{e:.0f} against a random mean of "
+                  f"Rs.{base['random_mean_expectancy']:.0f}, but only {n} "
+                  f"out-of-sample trades against {cfg_min} required. Promising, "
+                  f"not proven.", edge)
     if n < cfg_min:
         return _v("INSUFFICIENT_SAMPLE",
                   f"Only {n} out-of-sample trades, {cfg_min} required. "
@@ -688,6 +837,6 @@ def _verdict(out):
         return _v("FRAGILE",
                   "Edge exists at the chosen parameters and collapses when they "
                   "are nudged. That is a fitted result, not a discovered one.", edge)
-    return _v("EDGE",
+    return _v("PROVEN_EDGE",
               f"Rs.{edge:.0f} per trade over the matched random mean ({z} sigma), "
               f"stable across folds and parameter nudges, on {n} trades.", edge)
