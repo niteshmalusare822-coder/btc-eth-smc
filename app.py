@@ -29,6 +29,7 @@ from flask_cors import CORS
 import backtest as B
 import data as D
 import diagnostics as DG
+import entry_quality as EQ
 import mtf_engine as mtf
 import risk as R
 
@@ -408,6 +409,33 @@ def portfolio():
     })
 
 
+def build_entry_quality(symbol, bars):
+    frames, meta = D.load_mtf(symbol, D.clamp_bars(bars))
+    if frames is None:
+        return {"symbol": symbol, "error": meta.get("error", "no data")}
+    out = EQ.full_diagnosis(symbol, frames["5m"], frames["15m"], frames["1h"])
+    out["source"] = meta.get("source")
+    out["coverage_days"] = meta.get("coverage_days")
+    return out
+
+
+@app.route("/api/entry-quality/<symbol>")
+def entry_quality(symbol):
+    """Root-cause diagnostics: entry vs exit failure, gate value, position
+    modes, score buckets. Heavy — one symbol at a time."""
+    symbol = symbol.upper()
+    if symbol not in SYMBOLS:
+        return jsonify({"error": f"symbol must be one of {SYMBOLS}"}), 400
+    bars = D.clamp_bars(request.args.get("bars", REPORT_BARS_5M))
+    try:
+        res, hit = cached(("eq", symbol, bars), REPORT_TTL,
+                          lambda: build_entry_quality(symbol, bars))
+        return jsonify({**res, "from_cache": hit})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"symbol": symbol, "error": str(e)}), 500
+
+
 @app.route("/api/data-probe/<symbol>")
 def data_probe(symbol):
     symbol = symbol.upper()
@@ -451,7 +479,8 @@ def root():
                                   "/api/trades/<symbol>",
                                   "/api/data-probe/<symbol>",
                                   "/api/diagnostic/<symbol>",
-                                  "/api/portfolio"]})
+                                  "/api/portfolio",
+                                  "/api/entry-quality/<symbol>"]})
 
 
 if __name__ == "__main__":
