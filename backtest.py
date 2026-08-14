@@ -223,10 +223,12 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
     trades, rejected = [], {}
     busy_until = -1
     # FIX 12: where trades disappear, counted rather than guessed at
-    gates = {"bars_total": 0, "bars_with_atr": 0, "bars_not_busy": 0,
-             "bars_with_1h_bias": 0, "bars_with_15m_setup": 0,
-             "bars_with_5m_trigger": 0, "signals_generated": 0,
-             "entries_filled": 0}
+    gates = {"total_5m_bars": 0, "bars_with_atr": 0, "bars_not_busy": 0,
+             "valid_1h_bias": 0, "matching_15m_setup": 0,
+             "matching_5m_trigger": 0, "all_three_aligned": 0,
+             "ote_touched": 0, "signals_generated": 0, "entries_filled": 0,
+             "rejected_by_sizing": 0, "expired_setup": 0,
+             "duplicate_signal_rejected": 0, "order_never_filled": 0}
 
     def _rej(why):
         rejected[why] = rejected.get(why, 0) + 1
@@ -271,23 +273,37 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
         return trades, rejected
 
     for i in range(lo_i, hi_i):
-        gates["bars_total"] += 1
+        gates["total_5m_bars"] += 1
         if not np.isfinite(atr[i]) or atr[i] <= 0:
             continue
         gates["bars_with_atr"] += 1
 
         ts = ts_all.iat[i]
         bias_here = ctx["bias"][i]
-        if bias_here in ("BULLISH", "BEARISH"):
-            gates["bars_with_1h_bias"] += 1
+        has_bias = bias_here in ("BULLISH", "BEARISH")
+        if has_bias:
+            gates["valid_1h_bias"] += 1
         want = "bull" if bias_here == "BULLISH" else \
                "bear" if bias_here == "BEARISH" else None
-        if mtf.active_setups_at(ctx["setups"], ts, want):
-            gates["bars_with_15m_setup"] += 1
+        live_now = mtf.active_setups_at(ctx["setups"], ts, want)
+        if live_now:
+            gates["matching_15m_setup"] += 1
+        elif has_bias and mtf.active_setups_at(ctx["setups"], ts):
+            gates["expired_setup"] += 1
+        has_trig = ctx["trigger"][i] == want and want is not None
         if ctx["trigger"][i] in ("bull", "bear"):
-            gates["bars_with_5m_trigger"] += 1
+            gates["matching_5m_trigger"] += 1
+        if has_bias and live_now and has_trig:
+            gates["all_three_aligned"] += 1
+            lv = live_now[0].ote_high if want == "bull" else live_now[0].ote_low
+            touched = (df5["low"].iat[i] <= lv) if want == "bull" \
+                else (df5["high"].iat[i] >= lv)
+            if touched:
+                gates["ote_touched"] += 1
 
         if i <= busy_until:
+            if has_bias and live_now and has_trig:
+                gates["duplicate_signal_rejected"] += 1
             continue
         gates["bars_not_busy"] += 1
         if not _in_session(ts):
@@ -325,6 +341,10 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
             busy_until = tr["exit_i"]   # FIX 10: keyed to the real exit index
         else:
             _rej(why)
+            if why and "fill" in why:
+                gates["order_never_filled"] += 1
+            elif why:
+                gates["rejected_by_sizing"] += 1
 
     rejected["_gates"] = gates
     return trades, rejected
@@ -401,6 +421,7 @@ RANDOM_SEEDS = [11, 22, 33, 44, 55, 66, 77, 88, 99, 111,
                 122, 133, 144, 155, 166, 177, 188, 199, 211, 222]
 
 DEFAULT_CFG = {"max_hold": 60, "rand_sl_atr": 1.0, "n_random": 400,
+               "wf_seeds": 10,
                "entry_model": "next_open",   # or "limit_ote"
                "max_wait": 12,      # bars a resting limit stays live before cancel
                "min_trades": 30,    # below this the verdict is INSUFFICIENT SAMPLE
@@ -421,7 +442,15 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
     # no split to get wrong and live computes the identical number.
     ctx = mtf.build_context(df5, df15, df1h, params)
 
+    ts = mtf._ts(df5["ts"])
     out = {"symbol": symbol, "bars_5m": n,
+           "split": {
+               "is_start": str(ts.iat[warm]), "is_end": str(ts.iat[split - 1]),
+               "oos_start": str(ts.iat[split]), "oos_end": str(ts.iat[n - 1]),
+               "is_bars": split - warm, "oos_bars": n - split,
+               "is_frac": cfg["is_frac"], "warmup_bars": warm,
+               "note": "strict chronological split, never shuffled",
+           },
            "in_sample_bars": split - warm, "out_of_sample_bars": n - split,
            "costs": R.cost_summary(), "params": params}
 
@@ -437,6 +466,10 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
                 gate_report[name] = g
             m = metrics(tr, arm.upper())
             m["rejected"] = rej
+            m["rejected_by_sizing"] = sum(
+                v for k, v in rej.items()
+                if k != "_gates" and ("size" in k or "notional" in k
+                                      or "risk" in k or "minimum" in k))
             arms.append(m)
 
         for base in ("smc_mtf", "smc"):
@@ -511,34 +544,51 @@ def matched_baseline(symbol, df5, ctx, cfg, src_trades, seeds=None):
 
 
 def _walk_forward(symbol, df5, ctx, cfg, warm, n):
-    """FIX 4. Per fold: take the strategy's trades, then match the random
-    baseline to THAT fold's trade count across many seeds."""
+    """Anchored walk-forward. Each fold TESTS a later slice while everything
+    before it is history the strategy has already lived through.
+
+    Parameters are identical in every fold. Nothing is refitted; calibration is
+    a trailing rolling window, so a later fold simply has more past behind it.
+    """
     folds = cfg["wf_folds"]
+    ts = mtf._ts(df5["ts"])
     edges = np.linspace(warm, n - 1, folds + 1).astype(int)
     res, beat = [], 0
+
     for k in range(folds):
         lo, hi = int(edges[k]), int(edges[k + 1])
         tr, _ = run_arm(symbol, df5, ctx, "smc_mtf", cfg, lo, hi,
                         rng=np.random.default_rng(cfg["seed"] + k))
         m = metrics(tr, "smc_mtf")
+        sm, _ = run_arm(symbol, df5, ctx, "smc", cfg, lo, hi,
+                        rng=np.random.default_rng(cfg["seed"] + k))
+        msm = metrics(sm, "smc")
         base = matched_baseline(symbol, df5, ctx, cfg, tr,
                                 seeds=RANDOM_SEEDS[:cfg.get("wf_seeds", 10)])
-        row = {"fold": k + 1, "bars": hi - lo,
-               "smc_trades": m.get("trades", 0),
-               "smc_expectancy_inr": m.get("expectancy_inr"),
-               "random_mean_expectancy": base and base["random_mean_expectancy"],
-               "random_median_expectancy": base and base["random_median_expectancy"],
-               "random_std_expectancy": base and base["random_std_expectancy"]}
+        row = {
+            "fold": k + 1,
+            "period_start": str(ts.iat[lo]), "period_end": str(ts.iat[hi - 1]),
+            "train_bars": lo - warm, "test_bars": hi - lo,
+            "smc_mtf_trades": m.get("trades", 0),
+            "smc_mtf_expectancy_inr": m.get("expectancy_inr"),
+            "smc_trades": msm.get("trades", 0),
+            "smc_expectancy_inr": msm.get("expectancy_inr"),
+            "random_mean_expectancy": base and base["random_mean_expectancy"],
+            "random_median_expectancy": base and base["random_median_expectancy"],
+            "random_std_expectancy": base and base["random_std_expectancy"],
+            "random_runs": base and base["seeds_used"],
+        }
         if base and m.get("expectancy_inr") is not None:
             row["difference_inr"] = round(
                 m["expectancy_inr"] - base["random_mean_expectancy"], 1)
-            row["beats_random_mean"] = bool(row["difference_inr"] > 0)
-            beat += int(row["beats_random_mean"])
+            row["beat_random"] = bool(row["difference_inr"] > 0)
+            beat += int(row["beat_random"])
         else:
             row["difference_inr"] = None
-            row["beats_random_mean"] = None
+            row["beat_random"] = None
         res.append(row)
-    scored = sum(1 for r in res if r["beats_random_mean"] is not None)
+
+    scored = sum(1 for r in res if r["beat_random"] is not None)
     return {"folds": res, "folds_beating_random": beat,
             "folds_scored": scored, "total_folds": folds}
 
