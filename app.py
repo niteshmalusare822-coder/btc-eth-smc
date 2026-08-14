@@ -37,8 +37,11 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 SYMBOLS = ["BTC", "ETH", "DEXE", "BANK"]
 SIGNAL_TTL = int(os.environ.get("SIGNAL_TTL", 120))
 REPORT_TTL = int(os.environ.get("REPORT_TTL", 3600))
-LIVE_BARS_5M = int(os.environ.get("LIVE_BARS_5M", 1000))
-REPORT_BARS_5M = int(os.environ.get("REPORT_BARS_5M", 4000))
+LIVE_BARS_5M = int(os.environ.get("LIVE_BARS_5M", 1200))
+# FIX 5: a 4000-bar default was about two weeks of 5m data. 10000 is the new
+# floor and the caller may ask for more, bounded by data.MAX_BACKTEST_BARS.
+REPORT_BARS_5M = D.clamp_bars(os.environ.get("REPORT_BARS_5M",
+                                             D.DEFAULT_BACKTEST_BARS))
 
 _cache, _lock = {}, threading.Lock()
 
@@ -158,21 +161,22 @@ def build_signal(symbol):
     return base
 
 
-def build_report(symbol):
-    frames, meta = D.load_mtf(symbol, REPORT_BARS_5M)
+def build_report(symbol, bars=None):
+    bars = D.clamp_bars(bars if bars is not None else REPORT_BARS_5M)
+    frames, meta = D.load_mtf(symbol, bars)
     if frames is None:
         return {"symbol": symbol, "error": meta.get("error", "no data"),
                 "data": meta}
     rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["1h"])
     rep["source"] = meta.get("source")
-    rep["data"] = meta            # requested vs actual bars, coverage, warnings
+    rep["data_quality"] = meta    # FIX 13
     return rep
 
 
-def build_trade_log(symbol, limit=150):  # noqa: C901
+def build_trade_log(symbol, limit=150, bars=None):
     """The audit trail on its own endpoint, so it can be pulled without
     re-running the whole three-arm report."""
-    frames, meta = D.load_mtf(symbol, REPORT_BARS_5M)
+    frames, meta = D.load_mtf(symbol, D.clamp_bars(bars or REPORT_BARS_5M))
     if frames is None:
         return {"symbol": symbol, "error": meta.get("error", "no data")}
     rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["1h"])
@@ -186,6 +190,9 @@ def build_trade_log(symbol, limit=150):  # noqa: C901
 def health():
     return jsonify({"status": "ok", "service": "smc-mtf-scanner",
                     "symbols": SYMBOLS, "cached": len(_cache),
+                    "default_report_bars": REPORT_BARS_5M,
+                    "min_report_bars": D.MIN_BACKTEST_BARS,
+                    "max_report_bars": D.MAX_BACKTEST_BARS,
                     "time": int(time.time())})
 
 
@@ -233,7 +240,9 @@ def report(symbol):
     if symbol not in SYMBOLS:
         return jsonify({"error": f"symbol must be one of {SYMBOLS}"}), 400
     try:
-        res, hit = cached(("rep", symbol), REPORT_TTL, lambda: build_report(symbol))
+        bars = D.clamp_bars(request.args.get("bars", REPORT_BARS_5M))
+        res, hit = cached(("rep", symbol, bars), REPORT_TTL,
+                          lambda: build_report(symbol, bars))
         # FIX 9: the log is large. Opt in with ?trades=1, otherwise it is
         # stripped so the dashboard poll stays small.
         want = request.args.get("trades") in ("1", "true", "yes")
@@ -262,8 +271,9 @@ def trades(symbol):
     except ValueError:
         limit = 150
     try:
-        res, hit = cached(("log", symbol, limit), REPORT_TTL,
-                          lambda: build_trade_log(symbol, limit))
+        bars = D.clamp_bars(request.args.get("bars", REPORT_BARS_5M))
+        res, hit = cached(("log", symbol, limit, bars), REPORT_TTL,
+                          lambda: build_trade_log(symbol, limit, bars))
         return jsonify({**res, "from_cache": hit})
     except Exception as e:
         traceback.print_exc()
