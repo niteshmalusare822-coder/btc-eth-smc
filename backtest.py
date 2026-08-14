@@ -177,7 +177,7 @@ def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
               "TIMEOUT": "time stop, no target reached"}.get(outcome, outcome)
 
     return {
-        "arm": arm,
+        "arm": arm, "symbol": symbol,
         "signal_ts": str(df["ts"].iat[sig_i]),
         "entry_ts": str(df["ts"].iat[fill_i]),
         "exit_ts": str(df["ts"].iat[ex]),
