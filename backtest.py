@@ -417,17 +417,16 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
     warm = 100
     split = int(n * cfg["is_frac"])
 
-    # thresholds derived from the in-sample slice ONLY, then frozen and applied
-    # to both halves. Calibrating on everything was leaking out-of-sample bars
-    # into the very filter that decides whether an out-of-sample bar qualifies.
-    ctx = mtf.build_context(df5, df15, df1h, params, calib_end=cfg["is_frac"])
+    # Calibration is a trailing rolling quantile computed per bar, so there is
+    # no split to get wrong and live computes the identical number.
+    ctx = mtf.build_context(df5, df15, df1h, params)
 
     out = {"symbol": symbol, "bars_5m": n,
            "in_sample_bars": split - warm, "out_of_sample_bars": n - split,
            "costs": R.cost_summary(), "params": params}
 
     log, gate_report = [], {}
-    for name, lo, hi in [("in_sample", warm, split), ("out_of_sample", split, n - 2)]:
+    for name, lo, hi in [("in_sample", warm, split), ("out_of_sample", split, n - 1)]:
         arms, by_arm = [], {}
         for arm in ("random", "smc", "smc_mtf"):
             tr, rej = run_arm(symbol, df5, ctx, arm, cfg, lo, hi,
@@ -457,7 +456,9 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
     out["trade_log_total"] = len(log)
 
     out["walk_forward"] = _walk_forward(symbol, df5, ctx, cfg, warm, n)
-    out["sensitivity"] = _sensitivity(symbol, df5, df15, df1h, cfg, params, warm, n)
+    # FIX C: fragility is judged on unseen bars only. Running it from `warm`
+    # mixed in-sample results into the robustness check, which flatters it.
+    out["sensitivity"] = _sensitivity(symbol, df5, df15, df1h, cfg, params, split, n)
     out["min_trades"] = cfg["min_trades"]
     out["verdict"] = _verdict(out)
     return out
@@ -513,7 +514,7 @@ def _walk_forward(symbol, df5, ctx, cfg, warm, n):
     """FIX 4. Per fold: take the strategy's trades, then match the random
     baseline to THAT fold's trade count across many seeds."""
     folds = cfg["wf_folds"]
-    edges = np.linspace(warm, n - 2, folds + 1).astype(int)
+    edges = np.linspace(warm, n - 1, folds + 1).astype(int)
     res, beat = [], 0
     for k in range(folds):
         lo, hi = int(edges[k]), int(edges[k + 1])
@@ -542,9 +543,13 @@ def _walk_forward(symbol, df5, ctx, cfg, warm, n):
             "folds_scored": scored, "total_folds": folds}
 
 
-def _sensitivity(symbol, df5, df15, df1h, cfg, params, warm, n):
-    """Nudge one parameter at a time. A result that only survives one exact
-    setting is fragile, whatever the headline number says."""
+def _sensitivity(symbol, df5, df15, df1h, cfg, params, oos_start, n):
+    """Nudge one parameter at a time, OUT OF SAMPLE ONLY.
+
+    A result that survives only one exact setting is fragile whatever the
+    headline number says. Measuring that on in-sample bars would be measuring
+    how well the parameters fit the data they were chosen on.
+    """
     grid = {"max_age": [40, 60, 90], "sweep_window": [10, 20, 30],
             "ote_high": [0.705, 0.79, 0.886]}
     rows = []
@@ -552,17 +557,17 @@ def _sensitivity(symbol, df5, df15, df1h, cfg, params, warm, n):
         for v in vals:
             p = {**params, key: v}
             try:
-                ctx = mtf.build_context(df5, df15, df1h, p, calib_end=cfg["is_frac"])
-                tr, _ = run_arm(symbol, df5, ctx, "smc_mtf", cfg, warm, n - 2)
+                ctx = mtf.build_context(df5, df15, df1h, p)
+                tr, _ = run_arm(symbol, df5, ctx, "smc_mtf", cfg, oos_start, n - 1)
                 m = metrics(tr, "smc_mtf")
-                rows.append({"param": key, "value": v,
+                rows.append({"param": key, "value": v, "slice": "out_of_sample",
                              "trades": m.get("trades", 0),
                              "win_rate_pct": m.get("win_rate_pct"),
                              "profit_factor": m.get("profit_factor"),
                              "expectancy_inr": m.get("expectancy_inr", 0),
                              "net_inr": m.get("net_pnl_inr", 0)})
             except Exception as e:
-                rows.append({"param": key, "value": v, "error": str(e)})
+                rows.append({"param": key, "value": v, "slice": "out_of_sample", "error": str(e)})
     exps = [r.get("expectancy_inr", 0) for r in rows if "error" not in r]
     positive = sum(1 for e in exps if e > 0)
     return {"runs": rows, "positive_of_total": f"{positive}/{len(exps)}",
