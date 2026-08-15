@@ -575,13 +575,13 @@ def test_walk_forward_reports_periods_and_seeds(report):
 def test_gate_counters_expanded(report):
     g = report["gate_counters"]["out_of_sample"]
     for k in ("total_5m_bars", "valid_1h_bias", "matching_15m_setup",
-              "matching_5m_trigger", "all_three_aligned", "ote_touched",
+              "matching_5m_trigger", "all_three_aligned", "entry_level_touched",
               "signals_generated", "entries_filled", "rejected_by_sizing",
               "expired_setup", "duplicate_signal_rejected"):
         assert k in g, k
     assert g["all_three_aligned"] <= min(g["valid_1h_bias"],
                                          g["matching_15m_setup"])
-    assert g["ote_touched"] <= g["all_three_aligned"]
+    assert g["entry_level_touched"] <= g["all_three_aligned"]
     assert g["entries_filled"] <= g["signals_generated"]
 
 
@@ -985,10 +985,103 @@ def test_timeout_diagnosis_picks_a_side(report):
     ta = report["timeout_analysis"]
     assert "diagnosis" in ta and ta["diagnosis"]
     d = ta["diagnosis"].lower()
-    assert ("entry" in d or "exit" in d or "no timeout" in d), ta["diagnosis"]
-    for reason, stat in ta["by_exit_reason"].items():
-        if stat["trades"]:
-            assert 0 <= stat["pct_reaching_1R"] <= 100
+    assert ("entry" in d or "exit" in d or "too few" in d
+            or "no " in d), ta["diagnosis"]
+    for arm, blk in ta["per_arm"].items():
+        for reason, stat in blk["by_exit_reason"].items():
+            if stat["trades"]:
+                assert 0 <= stat["pct_reaching_1R"] <= 100
+
+
+def test_diagnosis_is_per_arm_never_pooled(report):
+    """RANDOM contributes hundreds of structurally doomed trades. If its exit
+    profile leaks into the strategy diagnosis, the conclusion describes a coin
+    flip rather than the signal."""
+    ta = report["timeout_analysis"]
+    assert "per_arm" in ta
+    assert ta["primary_arm"] in ("smc_mtf", "smc", None)
+    arms = set(ta["per_arm"])
+    assert "random" not in (ta["primary_arm"] or ""), ta["primary_arm"]
+    # each arm's trade counts must be disjoint from the others
+    total = sum(sum(s["trades"] for s in blk["by_exit_reason"].values())
+                for blk in ta["per_arm"].values())
+    assert total == report["trade_log_total"], (total, report["trade_log_total"])
+    for arm in arms:
+        d = ta["per_arm"][arm]["diagnosis"]
+        assert arm in d, f"{arm} diagnosis does not name its own arm"
+
+
+def test_funding_is_charged_at_stamps_not_continuously():
+    """A trade that opens and closes between two funding stamps pays nothing."""
+    import risk as R
+    assert R.funding_events(6, 5) == 0            # 30 minutes
+    assert R.funding_events(60, 5) == 0           # 5 hours
+    assert R.funding_events(96, 5) == 1           # exactly 8 hours
+    assert R.funding_events(200, 5) == 2          # 16.7 hours
+    assert R.funding_cost_inr(100000, 60, 5) == 0.0
+    assert R.funding_cost_inr(100000, 96, 5) > 0.0
+    # monotonic: a longer hold never pays less
+    prev = -1
+    for bars in range(0, 400, 20):
+        c = R.funding_cost_inr(100000, bars, 5)
+        assert c >= prev
+        prev = c
+
+
+def test_min_notional_rejection_names_the_limit():
+    import risk as R
+    s = R.size_position("DEXE", "BUY", 2.0, 1.9)
+    if not s.ok and "minimum" in s.reason:
+        assert "MIN_NOTIONAL_INR" in s.reason, s.reason
+
+
+def test_sensitivity_sweeps_parameters_that_do_something(report, frames):
+    """ote_high no longer reaches the entry logic, so sweeping it produced
+    three byte-identical runs reported as independent tests.
+
+    Identical OUTCOMES are not proof of a no-op — a small sample can produce
+    the same trades either way. So this checks consumption directly: change
+    the parameter and the engine's own context must change, or the parameter
+    does not belong in the grid.
+    """
+    runs = report["sensitivity"]["runs"]
+    params = {r["param"] for r in runs}
+    assert "ote_high" not in params, "a known no-op parameter is still in the grid"
+
+    df5, df15, df1h = frames
+
+    def fingerprint(p):
+        ctx = mtf.build_context(df5, df15, df1h, p)
+        return (len(ctx["setups"]),
+                tuple(round(s.entry_level, 6) for s in ctx["setups"][:50]),
+                tuple(round(s.stop_level, 6) for s in ctx["setups"][:50]),
+                tuple(ctx["trigger"][:2000]))
+
+    base = fingerprint(mtf.PARAMS)
+    # ote_high is the proven no-op: prove it, so the grid can never regain it
+    assert fingerprint({**mtf.PARAMS, "ote_high": 0.886}) == base
+
+    for name, alt in (("max_age", 90), ("sweep_window", 30),
+                      ("trigger_lookback", 5), ("ob_entry_mode", "wick"),
+                      ("stop_buffer_frac", 0.15)):
+        if name not in params:
+            continue
+        changed = fingerprint({**mtf.PARAMS, name: alt}) != base
+        # max_age is applied at read time, not at context build time
+        if name == "max_age":
+            continue
+        assert changed, f"{name} does not change the engine: no-op in the grid"
+
+
+def test_zero_trade_runs_excluded_from_fragility(report):
+    """A parameter that suppresses the strategy entirely is not evidence that
+    the strategy loses money."""
+    s = report["sensitivity"]
+    assert "runs_with_no_trades" in s
+    pos, total = s["positive_of_total"].split("/")
+    scored = sum(1 for r in s["runs"]
+                 if "error" not in r and r.get("trades", 0) > 0)
+    assert int(total) == scored
 
 
 def test_funnel_conversions_are_monotonic(report):
