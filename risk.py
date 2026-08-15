@@ -57,6 +57,12 @@ TP_R_LADDER = [
 FEE_PER_LEG = float(os.environ.get("FEE_PER_LEG", 0.0005))       # 0.05% taker
 SLIPPAGE_PER_LEG = float(os.environ.get("SLIPPAGE_PER_LEG", 0.0002))
 FUNDING_PER_8H = float(os.environ.get("FUNDING_PER_8H", 0.0001))  # 0.01%
+# Venue minimum order size. NOT changed on a hunch: on DEXE this rejected 57
+# in-sample setups with "notional Rs.108 below venue minimum", which is real
+# information — a Rs.700 risk cap against DEXE's 5x leverage cap and wide stop
+# distance simply cannot build a position that clears the floor. Verify the
+# true CoinDCX minimum before altering it; until then it stays configurable
+# and every rejection says which number it failed.
 MIN_NOTIONAL_INR = float(os.environ.get("MIN_NOTIONAL_INR", 200))
 
 ROUND_TRIP_FEE = FEE_PER_LEG * 2
@@ -145,7 +151,9 @@ def size_position(symbol, direction, entry, sl,
 
     notional_inr = qty * entry_inr
     if notional_inr < MIN_NOTIONAL_INR:
-        return Sizing(False, f"notional Rs.{notional_inr:.0f} below venue minimum")
+        return Sizing(False, f"notional Rs.{notional_inr:.0f} below configured "
+                             f"minimum Rs.{MIN_NOTIONAL_INR:.0f} "
+                             f"(MIN_NOTIONAL_INR)")
 
     lev_allowed = allowed_leverage(symbol)
     lev_max = MAX_LEVERAGE_BY_SYMBOL.get(symbol, DEFAULT_MAX_LEVERAGE)
@@ -233,12 +241,31 @@ def _rupee_targets(direction, entry, qty, usdt_inr, sl_dist,
     return out
 
 
+FUNDING_INTERVAL_HOURS = float(os.environ.get("FUNDING_INTERVAL_HOURS", 8.0))
+
+
+def funding_events(bars_held, tf_minutes):
+    """How many funding stamps a trade of this length actually sits through."""
+    hours = max(0.0, bars_held) * tf_minutes / 60.0
+    if FUNDING_INTERVAL_HOURS <= 0:
+        return 0
+    return int(hours // FUNDING_INTERVAL_HOURS)
+
+
 def funding_cost_inr(notional_inr, bars_held, tf_minutes):
-    """Funding is charged every 8h. Most intraday trades never pay it; the ones
-    that sit through a funding stamp do, and ignoring that flatters the result."""
-    hours = bars_held * tf_minutes / 60.0
-    periods = hours / 8.0
-    return notional_inr * FUNDING_PER_8H * periods
+    """Funding is charged AT a stamp, not continuously.
+
+    BUG FIX: this used hours / 8, which charged a 1-hour trade 12.5% of a
+    funding payment. Perpetual funding does not accrue smoothly; it is settled
+    at discrete stamps (typically 00:00, 08:00, 16:00 UTC). A trade that opens
+    and closes between two stamps pays nothing at all.
+
+    Counting whole elapsed intervals is still an approximation — it does not
+    know where the stamps fall on the clock — but it is the right SHAPE, and
+    it stops charging every short trade a fee it would never have paid. The
+    error now runs in the conservative direction only at the boundary.
+    """
+    return notional_inr * FUNDING_PER_8H * funding_events(bars_held, tf_minutes)
 
 
 def cost_summary():
@@ -251,6 +278,8 @@ def cost_summary():
         "round_trip_cost_pct": ROUND_TRIP_COST * 100,
         "funding_per_8h_pct": FUNDING_PER_8H * 100,
         "leverage_fraction": LEVERAGE_FRACTION,
+        "min_notional_inr": MIN_NOTIONAL_INR,
+        "funding_interval_hours": FUNDING_INTERVAL_HOURS,
         "tp_targets_inr": TP_TARGETS_INR,
         "tp_r_ladder": TP_R_LADDER,
     }
