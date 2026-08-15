@@ -23,6 +23,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+import features as FEAT
 import mtf_engine as mtf
 import poi_factors as poi
 import risk as R
@@ -194,7 +195,8 @@ def _find_fill(df, side, level, start, cfg):
 
 def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
                 bias=None, setup=None, trigger=None, arm="",
-                setup_ts=None, entry_reason="", flags=None):
+                setup_ts=None, entry_reason="", flags=None,
+                feature_snapshot=None):
     """Place a resting limit at the close of sig_i, fill from sig_i+1 onward.
 
     Returns (trade_dict, reject_reason). trade_dict carries the full audit
@@ -239,7 +241,16 @@ def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
         "bars_to_fill": fill_i - sig_i,
         "bias_1h": bias, "setup_15m": setup, "trigger_5m": trigger,
         "flags": dict(flags or {}),
-        "score": int(sum(v for k, v in (flags or {}).items() if v is True) * 0),
+        # "score" was int(sum(...) * 0) — always zero, which is why every
+        # score bucket looked flat. Kept for backward compatibility, but the
+        # real value now lives in feature_snapshot.diagnostic_score.
+        # "score" was int(sum(...) * 0) — literally multiplied by zero, so every
+        # score bucket was flat by construction and the "score is not
+        # predictive" conclusion was an artefact. Kept for backward
+        # compatibility; the real value lives in the snapshot.
+        "score": ((feature_snapshot or {}).get("diagnostic_score")
+                  if feature_snapshot else 0),
+        "feature_snapshot": feature_snapshot,
         "side": direction,
         "signal_level": round(level, 8),
         "actual_entry": round(entry, 8),
@@ -285,6 +296,9 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
     open_slots = []                            # mode C/D: list of exit indices
     # FIX 12: where trades disappear, counted rather than guessed at
     busy_side, open_until = {}, []
+    # DIAGNOSTIC ONLY. Built once per run and indexed at the signal bar, never
+    # recomputed per trade. Nothing read from here can change a decision.
+    fcache = FEAT.build_indicator_cache(df5)
     gates = {"total_5m_bars": 0, "bars_with_atr": 0, "bars_not_busy": 0,
              "valid_1h_bias": 0, "matching_15m_setup": 0,
              "matching_5m_trigger": 0, "all_three_aligned": 0,
@@ -408,11 +422,18 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
                 ("OB+FVG" if s.has_fvg else "OB"), "ignored"
             reason_s = f"15M {setup_s} only, 1H and 5M gates bypassed"
 
+        # DIAGNOSTIC ONLY. Built AFTER the decision is already made, from a
+        # cache indexed at the signal bar. No branch that decides whether or
+        # how to trade ever reads it.
+        snap = FEAT.build_feature_snapshot(fcache, i, s, side,
+                                           ctx["bias"][i], ctx["trigger"][i],
+                                           arm)
         tr, why = _open_trade(symbol, df5, i, side, level, s.stop_level, atr[i],
                               cfg, tf_min, bias=bias_s, setup=setup_s,
                               trigger=trig_s, arm=arm,
                               setup_ts=(s.confirmed_ts, s.expires_ts),
                               entry_reason=reason_s,
+                              feature_snapshot=snap,
                               flags={
                                   "htf_1h_bias": bias_s in ("BULLISH", "BEARISH"),
                                   "structure_15m": True,
@@ -599,6 +620,8 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
     # mixed in-sample results into the robustness check, which flatters it.
     out["sensitivity"] = _sensitivity(symbol, df5, df15, df1h, cfg, params, split, n)
     out["timeout_analysis"] = _timeout_analysis(log)
+    # additive: the excursion analysis above is untouched
+    out["timeout_feature_analysis"] = FEAT.timeout_feature_analysis(log)
     out["signal_funnel"] = _funnel(gate_report)
     out["min_trades"] = cfg["min_trades"]
     out["verdict"] = _verdict(out)
