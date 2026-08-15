@@ -288,7 +288,8 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
     gates = {"total_5m_bars": 0, "bars_with_atr": 0, "bars_not_busy": 0,
              "valid_1h_bias": 0, "matching_15m_setup": 0,
              "matching_5m_trigger": 0, "all_three_aligned": 0,
-             "ote_touched": 0, "signals_generated": 0, "entries_filled": 0,
+             "entry_level_touched": 0, "entry_level_touched_applies": False,
+             "signals_generated": 0, "entries_filled": 0,
              "rejected_by_sizing": 0, "expired_setup": 0,
              "duplicate_signal_rejected": 0, "order_never_filled": 0}
 
@@ -357,11 +358,17 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
             gates["matching_5m_trigger"] += 1
         if has_bias and live_now and has_trig:
             gates["all_three_aligned"] += 1
-            lv = live_now[0].ote_high if want == "bull" else live_now[0].ote_low
-            touched = (df5["low"].iat[i] <= lv) if want == "bull" \
-                else (df5["high"].iat[i] >= lv)
-            if touched:
-                gates["ote_touched"] += 1
+            # Only meaningful under a limit entry model. With next_open the
+            # order fills at the following bar's open regardless of whether
+            # price touched the level, so a touch counter reported a constant
+            # zero and looked like a bug. It is now flagged not-applicable.
+            if cfg.get("entry_model") == "limit_ote":
+                gates["entry_level_touched_applies"] = True
+                lv = live_now[0].entry_level
+                touched = (df5["low"].iat[i] <= lv) if want == "bull" \
+                    else (df5["high"].iat[i] >= lv)
+                if touched:
+                    gates["entry_level_touched"] += 1
 
         mode = cfg.get("position_mode", "A")
         want_side = want or "bull"
@@ -703,8 +710,17 @@ def _sensitivity(symbol, df5, df15, df1h, cfg, params, oos_start, n):
     headline number says. Measuring that on in-sample bars would be measuring
     how well the parameters fit the data they were chosen on.
     """
-    grid = {"max_age": [40, 60, 90], "sweep_window": [10, 20, 30],
-            "ote_high": [0.705, 0.79, 0.886]}
+    # ote_high was in this grid but no longer reaches the entry logic: since
+    # order block entries replaced OTE, find_setups sets ote_low = ote_high =
+    # entry_level. All three values produced byte-identical runs, so three of
+    # nine "independent tests" were duplicates and the fragility score was
+    # computed against an inflated denominator. Replaced with parameters that
+    # are genuinely read by the engine.
+    grid = {"max_age": [40, 60, 90],
+            "sweep_window": [10, 20, 30],
+            "trigger_lookback": [2, 3, 5],
+            "ob_entry_mode": ["wick", "body", "50"],
+            "stop_buffer_frac": [0.05, 0.10, 0.15]}
     rows = []
     for key, vals in grid.items():
         for v in vals:
@@ -721,54 +737,104 @@ def _sensitivity(symbol, df5, df15, df1h, cfg, params, oos_start, n):
                              "net_inr": m.get("net_pnl_inr", 0)})
             except Exception as e:
                 rows.append({"param": key, "value": v, "slice": "out_of_sample", "error": str(e)})
-    exps = [r.get("expectancy_inr", 0) for r in rows if "error" not in r]
+    scored = [r for r in rows if "error" not in r and r.get("trades", 0) > 0]
+    exps = [r.get("expectancy_inr", 0) for r in scored]
     positive = sum(1 for e in exps if e > 0)
-    return {"runs": rows, "positive_of_total": f"{positive}/{len(exps)}",
-            "fragile": positive <= max(1, len(exps) // 4)}
+    # runs that produced no trades are not evidence either way; counting them
+    # as failures made every sparse strategy look fragile by construction
+    skipped = len(rows) - len(scored)
+    return {"runs": rows,
+            "positive_of_total": f"{positive}/{len(exps)}" if exps else "0/0",
+            "runs_with_no_trades": skipped,
+            "distinct_params": len(set(r["param"] for r in rows)),
+            "fragile": bool(exps) and positive <= max(1, len(exps) // 4),
+            "note": ("runs producing zero trades are excluded from the ratio. "
+                     "They mean the parameter suppressed the strategy, not "
+                     "that it lost money.")}
+
+
+def _excursion_stat(rows):
+    if not rows:
+        return {"trades": 0}
+    mfe = np.array([r.get("mfe_r", 0.0) for r in rows], dtype=float)
+    mae = np.array([r.get("mae_r", 0.0) for r in rows], dtype=float)
+    return {
+        "trades": len(rows),
+        "median_mfe_r": round(float(np.median(mfe)), 2),
+        "median_mae_r": round(float(np.median(mae)), 2),
+        "pct_reaching_0_5R": round(float((mfe >= 0.5).mean() * 100), 1),
+        "pct_reaching_1R": round(float((mfe >= 1.0).mean() * 100), 1),
+        "median_bars_to_mfe": int(np.median(
+            [r.get("bars_to_mfe", 0) for r in rows])),
+        "net_inr": round(sum(r["net_inr"] for r in rows), 0),
+    }
+
+
+def _diagnose_arm(rows, arm):
+    """Entry failure or exit failure, for ONE arm.
+
+    BUG FIX: this used to be computed on the pooled trade log of all three
+    arms. RANDOM contributes several hundred trades with a cost-in-R above 1.0
+    that are structurally doomed, so the pooled numbers described RANDOM, not
+    the strategy — and the conclusion "the ENTRY has no edge" was being drawn
+    from coin-flip entries. Each arm is now diagnosed on its own trades.
+    """
+    stops = [t for t in rows if t["outcome"] == "STOP"]
+    timeouts = [t for t in rows if t["outcome"] == "TIMEOUT"]
+    out = {"arm": arm,
+           "by_exit_reason": {k: _excursion_stat([t for t in rows
+                                                  if t["outcome"] == k])
+                              for k in {t["outcome"] for t in rows}}}
+
+    if not timeouts and not stops:
+        out["diagnosis"] = f"{arm}: no stop or timeout trades to diagnose"
+        return out
+
+    t = _excursion_stat(timeouts) if timeouts else {"trades": 0}
+    s = _excursion_stat(stops) if stops else {"trades": 0}
+    n = t.get("trades", 0) + s.get("trades", 0)
+
+    if n < 10:
+        out["diagnosis"] = (f"{arm}: only {n} stop/timeout trades. Too few to "
+                            f"attribute failure to entries or exits.")
+        return out
+
+    if t.get("trades", 0) and t.get("pct_reaching_1R", 0) >= 40:
+        d = (f"{arm}: {t['pct_reaching_1R']}% of timeout trades reached 1R and "
+             f"gave it back. EXIT problem.")
+    elif t.get("trades", 0) and t.get("median_mfe_r", 0) < 0.4:
+        d = (f"{arm}: timeout trades peak at a median {t['median_mfe_r']}R. No "
+             f"exit rule rescues trades that never move. ENTRY problem.")
+    elif s.get("trades", 0) and s.get("median_mae_r", 0) > 2 * max(
+            s.get("median_mfe_r", 0), 0.01):
+        d = (f"{arm}: stopped trades show MAE {s['median_mae_r']}R against MFE "
+             f"{s['median_mfe_r']}R — they went adverse immediately. ENTRY "
+             f"problem, and a wider stop would only enlarge the same loss.")
+    else:
+        d = (f"{arm}: timeout trades reach a median "
+             f"{t.get('median_mfe_r', 0)}R, real but under the first target. "
+             f"Test a nearer TP1 before touching the entry.")
+    out["diagnosis"] = d
+    return out
 
 
 def _timeout_analysis(trades):
-    """Spec 22. Did the timeout trades ever go anywhere?
-
-    The answer decides what to fix next, and it is not a matter of opinion.
-    """
-    by_exit = {}
+    """Per arm, never pooled. SMC_MTF is the strategy; the rest are controls."""
+    by_arm = {}
     for t in trades:
-        by_exit.setdefault(t["outcome"], []).append(t)
+        by_arm.setdefault(t.get("arm", "unknown"), []).append(t)
 
-    def _stat(rows):
-        if not rows:
-            return {"trades": 0}
-        mfe = np.array([r.get("mfe_r", 0.0) for r in rows], dtype=float)
-        mae = np.array([r.get("mae_r", 0.0) for r in rows], dtype=float)
-        return {
-            "trades": len(rows),
-            "median_mfe_r": round(float(np.median(mfe)), 2),
-            "median_mae_r": round(float(np.median(mae)), 2),
-            "pct_reaching_1R": round(float((mfe >= 1.0).mean() * 100), 1),
-            "pct_reaching_0_5R": round(float((mfe >= 0.5).mean() * 100), 1),
-            "median_bars_to_mfe": int(np.median(
-                [r.get("bars_to_mfe", 0) for r in rows])),
-            "net_inr": round(sum(r["net_inr"] for r in rows), 0),
-        }
-
-    outs = {k: _stat(v) for k, v in by_exit.items()}
-    to = outs.get("TIMEOUT", {"trades": 0})
-    if not to["trades"]:
-        diag = "no timeout trades to diagnose"
-    elif to.get("pct_reaching_1R", 0) >= 40:
-        diag = (f"{to['pct_reaching_1R']}% of timeout trades reached 1R before "
-                f"drifting back. The ENTRIES are finding moves; the EXITS are "
-                f"giving them away. Fix targets and trailing, not the signal.")
-    elif to.get("median_mfe_r", 0) < 0.4:
-        diag = (f"Timeout trades peak at a median of {to.get('median_mfe_r')}R. "
-                f"They never go anywhere, so no exit rule would rescue them. "
-                f"The ENTRY has no edge and that is what needs work.")
-    else:
-        diag = (f"Timeout trades reach a median {to.get('median_mfe_r')}R, "
-                f"which is real but under the first target. Consider a closer "
-                f"TP1 before touching the entry logic.")
-    return {"by_exit_reason": outs, "diagnosis": diag}
+    per_arm = {arm: _diagnose_arm(rows, arm) for arm, rows in by_arm.items()}
+    primary = per_arm.get("smc_mtf") or per_arm.get("smc")
+    return {
+        "per_arm": per_arm,
+        "primary_arm": (primary or {}).get("arm"),
+        "diagnosis": (primary or {}).get(
+            "diagnosis", "no strategy trades to diagnose"),
+        "note": ("RANDOM and MATCHED_RANDOM are controls. Their exit profile "
+                 "describes the benchmark, not the strategy, and must not be "
+                 "read as a diagnosis of the signal."),
+    }
 
 
 def _funnel(gate_report):
