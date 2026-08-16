@@ -53,16 +53,13 @@ PARAMS = {
     "kill_on": "full",       # when a 15M zone is considered mitigated
     "calib_window": 500,     # trailing bars behind the displacement threshold
 
-    # ── STRUCTURE CONFIRMATION (off by default so A/B stays possible) ──
-    # A BOS says a level broke. It does not say the market accepted the break.
-    # Requiring a fresh HH+HL (bull) or LL+LH (bear) afterwards is the
-    # difference between "a level broke" and "structure shifted".
-    #
-    # OFF by default. Turning it on must be justified out of sample against
-    # the unchanged baseline, not assumed.
+    # Experimental architecture gate.
+    # False = frozen baseline behaviour.
+    # True  = Sweep -> BOS -> structure acceptance -> POI.
     "require_structure_confirmation": False,
-    "confirm_bars": 2,          # closed 15M candles the shift must survive
-    "confirm_max_wait": 12,     # bars allowed to complete confirmation
+
+    "structure_confirm_bars": 2,  # closed 15M bars required after structure forms
+    "structure_max_bars": 12,     # maximum 15M bars allowed after BOS
 }
 
 
@@ -159,6 +156,133 @@ class Setup:
     dead_ts: object = None    # when price invalidated the zone, if it did
 
 
+
+def _structure_confirmed_after_bos(
+    df,
+    swings,
+    bos,
+    confirm_bars=2,
+    max_structure_bars=12,
+):
+    """Post-BOS structural confirmation.
+
+    Bull:
+      - new high above BOS level
+      - higher low above the last protected low
+      - confirm_bars closes remain above BOS level
+
+    Bear:
+      - new low below BOS level
+      - lower high below the last protected high
+      - confirm_bars closes remain below BOS level
+    """
+    if bos.is_sweep:
+        return None
+
+    start = bos.idx + 1
+    end = min(start + max_structure_bars, len(df) - 1)
+
+    prior = [
+        s for s in swings
+        if s.confirmed_idx <= bos.idx
+    ]
+
+    if bos.side == "bull":
+        protected_lows = [
+            s for s in prior
+            if s.kind == "low"
+        ]
+        if not protected_lows:
+            return None
+
+        protected_low = protected_lows[-1]
+
+        hh = next(
+            (
+                s for s in swings
+                if s.kind == "high"
+                and s.confirmed_idx > bos.idx
+                and s.confirmed_idx <= end
+                and s.price > bos.level
+            ),
+            None,
+        )
+        if hh is None:
+            return None
+
+        hl = next(
+            (
+                s for s in swings
+                if s.kind == "low"
+                and s.confirmed_idx > hh.confirmed_idx
+                and s.confirmed_idx <= end
+                and s.price > protected_low.price
+            ),
+            None,
+        )
+        if hl is None:
+            return None
+
+        persist_start = hl.confirmed_idx + 1
+        persist_end = hl.confirmed_idx + confirm_bars
+
+        if persist_end >= len(df):
+            return None
+
+        for j in range(persist_start, persist_end + 1):
+            if float(df["close"].iat[j]) <= bos.level:
+                return None
+
+        return persist_end
+
+    protected_highs = [
+        s for s in prior
+        if s.kind == "high"
+    ]
+    if not protected_highs:
+        return None
+
+    protected_high = protected_highs[-1]
+
+    ll = next(
+        (
+            s for s in swings
+            if s.kind == "low"
+            and s.confirmed_idx > bos.idx
+            and s.confirmed_idx <= end
+            and s.price < bos.level
+        ),
+        None,
+    )
+    if ll is None:
+        return None
+
+    lh = next(
+        (
+            s for s in swings
+            if s.kind == "high"
+            and s.confirmed_idx > ll.confirmed_idx
+            and s.confirmed_idx <= end
+            and s.price < protected_high.price
+        ),
+        None,
+    )
+    if lh is None:
+        return None
+
+    persist_start = lh.confirmed_idx + 1
+    persist_end = lh.confirmed_idx + confirm_bars
+
+    if persist_end >= len(df):
+        return None
+
+    for j in range(persist_start, persist_end + 1):
+        if float(df["close"].iat[j]) >= bos.level:
+            return None
+
+    return persist_end
+
+
 def find_setups(df_15m, p=None, calib_end=None):
     """Sweep -> BOS -> order block, with the FVG overlap flagged.
 
@@ -176,14 +300,39 @@ def find_setups(df_15m, p=None, calib_end=None):
     sweeps = [b for b in bos if b.is_sweep]
 
     kept = []
+    structure_confirmed = {}
+
     for b in breaks:
         want = "bear" if b.side == "bull" else "bull"
-        if any(s.side == want and 0 < b.idx - s.idx <= p["sweep_window"] for s in sweeps):
-            kept.append(b)
 
-    confirm_at = {}
-    if p.get("require_structure_confirmation"):
-        kept, confirm_at = _confirm_structure(df, kept, swings, p)
+        has_sweep = any(
+            s.side == want
+            and 0 < b.idx - s.idx <= p["sweep_window"]
+            for s in sweeps
+        )
+
+        if not has_sweep:
+            continue
+
+        # Frozen baseline:
+        # Sweep -> BOS -> POI
+        if p.get("require_structure_confirmation", False):
+            confirmed_idx = _structure_confirmed_after_bos(
+                df,
+                swings,
+                b,
+                confirm_bars=p.get("structure_confirm_bars", 2),
+                max_structure_bars=p.get("structure_max_bars", 12),
+            )
+
+            if confirmed_idx is None:
+                continue
+        else:
+            # No experimental gate: BOS itself is the confirmation point.
+            confirmed_idx = b.idx
+
+        kept.append(b)
+        structure_confirmed[b.idx] = confirmed_idx
 
     obs = poi.find_order_blocks(
         df, kept,
@@ -202,13 +351,6 @@ def find_setups(df_15m, p=None, calib_end=None):
 
     ts = _ts(df["ts"]).to_numpy()
     bar = pd.Timedelta(minutes=TF_MINUTES["15m"])
-    if confirm_at:
-        # a zone cannot be traded before its structure shift completed
-        for z in obs:
-            c = confirm_at.get(z.confirmed_idx)
-            if c is not None and c > z.confirmed_idx:
-                z.confirmed_idx = c
-
     setups = []
     for z in obs:
         has_fvg = any(f.confirmed_idx <= z.confirmed_idx and poi.dragon_fruit(z, f)
@@ -217,6 +359,14 @@ def find_setups(df_15m, p=None, calib_end=None):
         entry = z.entry_at(mode)
         stop = z.stop_at(p.get("stop_buffer_frac", 0.10))
         exp_idx = min(z.confirmed_idx + p["max_age"], len(df) - 1)
+
+        bos_idx = z.meta.get("bos_idx")
+        structure_idx = structure_confirmed.get(bos_idx, z.confirmed_idx)
+
+        # In Gate-2, the POI becomes eligible only after the
+        # structural-acceptance sequence has completed.
+        activation_idx = max(z.confirmed_idx, structure_idx)
+
         setups.append(Setup(
             ts=pd.Timestamp(ts[z.formed_idx]),
             side=z.side,
@@ -226,8 +376,7 @@ def find_setups(df_15m, p=None, calib_end=None):
             stop_level=stop,
             swept=bool(z.meta.get("swept_previous")),
             imbalance=bool(z.meta.get("imbalance")),
-            # confirmed only once the 15M candle that broke structure CLOSED
-            confirmed_ts=pd.Timestamp(ts[z.confirmed_idx]) + bar,
+            confirmed_ts=pd.Timestamp(ts[activation_idx]) + bar,
             expires_ts=pd.Timestamp(ts[exp_idx]) + bar,
             has_fvg=has_fvg,
             dead_ts=(pd.Timestamp(ts[z.dead_idx]) + bar
@@ -237,83 +386,6 @@ def find_setups(df_15m, p=None, calib_end=None):
     # report the latest usable threshold value, not the whole series
     last = pd.Series(thr).dropna()
     return setups, (float(last.iat[-1]) if len(last) else float("nan"))
-
-
-def _confirm_structure(df, breaks, swings, p):
-    """A break is only a structure SHIFT once the market builds on it.
-
-    For a bull BOS at bar b, all three must happen within confirm_max_wait
-    bars, and only then is the setup tradeable:
-
-        1. no candle CLOSES back below the broken level
-        2. a higher low forms   (a pullback low above the break bar's low)
-        3. a higher high prints (above the high of the break candle)
-
-    Bear is the mirror.
-
-    THE COST, STATED PLAINLY. The expensive part is not the rejected breaks,
-    it is the DELAY. A setup confirmed at bar b+5 cannot be traded at bar b,
-    so price has already moved by the time the zone opens. The confirmation
-    bar is returned separately and applied to the zone, because leaving the
-    zone tradeable from b would let the backtest act on a confirmation that
-    had not happened yet.
-
-    b.idx is deliberately NOT moved: find_order_blocks searches backwards from
-    b.idx for the last opposite-colour candle, so shifting it would select a
-    candle from inside the post-break move instead of the one that caused it.
-
-    Returns (confirmed_breaks, {break_idx: confirmation_idx}).
-    """
-    highs = df["high"].to_numpy()
-    lows = df["low"].to_numpy()
-    closes = df["close"].to_numpy()
-    n = len(df)
-    need = int(p.get("confirm_bars", 2))
-    wait = int(p.get("confirm_max_wait", 12))
-
-    kept, at = [], {}
-    for b in breaks:
-        i = b.idx
-        last = min(i + wait, n - 1)
-        if last - i < need:
-            continue
-
-        ref_high, ref_low, level = highs[i], lows[i], b.level
-        survived, got_pullback, pull_extreme, done = 0, False, None, None
-
-        for j in range(i + 1, last + 1):
-            # 1. the break must hold on a CLOSING basis
-            if b.side == "bull" and closes[j] < level:
-                break
-            if b.side == "bear" and closes[j] > level:
-                break
-            survived += 1
-
-            if b.side == "bull":
-                if not got_pullback:
-                    if lows[j] < lows[j - 1]:
-                        got_pullback, pull_extreme = True, lows[j]
-                else:
-                    pull_extreme = min(pull_extreme, lows[j])
-                    if (pull_extreme > ref_low and highs[j] > ref_high
-                            and survived >= need):
-                        done = j
-                        break
-            else:
-                if not got_pullback:
-                    if highs[j] > highs[j - 1]:
-                        got_pullback, pull_extreme = True, highs[j]
-                else:
-                    pull_extreme = max(pull_extreme, highs[j])
-                    if (pull_extreme < ref_high and lows[j] < ref_low
-                            and survived >= need):
-                        done = j
-                        break
-
-        if done is not None:
-            kept.append(b)
-            at[b.idx] = done
-    return kept, at
 
 
 # ---------------------------------------------------------------------------
