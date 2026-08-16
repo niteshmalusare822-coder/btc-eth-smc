@@ -316,7 +316,7 @@ def find_setups(df_15m, p=None, calib_end=None):
 
         # Frozen baseline:
         # Sweep -> BOS -> POI
-        if p.get("require_structure_confirmation", False):
+        if p.get("require_structure_confirmation", True):
             confirmed_idx = _structure_confirmed_after_bos(
                 df,
                 swings,
