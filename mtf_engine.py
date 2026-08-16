@@ -140,7 +140,7 @@ def htf_bias_series(df_1h, p=None, calib_end=None):
 @dataclass
 class Setup:
     ts: pd.Timestamp
-    side: str            # 'bull' | 'bear'
+    side: str
     zone_top: float
     zone_bottom: float
     ote_low: float
@@ -149,11 +149,20 @@ class Setup:
     entry_level: float
     entry_mode: str
     imbalance: bool
+
+    # 15M structure state
+    bos_confirmed: bool
+    bos_level: float | None
+    bos_ts: pd.Timestamp | None
+
+    structure_confirmed: bool
+    structure_confirmed_ts: pd.Timestamp | None
+
     confirmed_ts: pd.Timestamp
     expires_ts: pd.Timestamp
     has_fvg: bool
     swept: bool
-    dead_ts: object = None    # when price invalidated the zone, if it did
+    dead_ts: object = None
 
 
 
@@ -283,106 +292,105 @@ def _structure_confirmed_after_bos(
     return persist_end
 
 
-def find_setups(df_15m, p=None, calib_end=None):
-    """Sweep -> BOS -> order block, with the FVG overlap flagged.
+    setups = []
 
-    A setup is only emitted when a liquidity sweep of the OPPOSITE side
-    happened within sweep_window bars before the break. That is the whole
-    SMC premise: liquidity is taken, then structure shifts.
-    """
-    p = p or PARAMS
-    df = poi.add_candle_metrics(df_15m)
-    thr = _calibrate(df, p, calib_end)
-    swings = poi.find_swings(df, p["swing_left"], p["swing_right"])
-    bos = poi.find_bos(df, swings, body_threshold=thr, require_displacement=True)
-
-    breaks = [b for b in bos if not b.is_sweep]
-    sweeps = [b for b in bos if b.is_sweep]
-
-    kept = []
-    structure_confirmed = {}
-
-    for b in breaks:
-        want = "bear" if b.side == "bull" else "bull"
-
-        has_sweep = any(
-            s.side == want
-            and 0 < b.idx - s.idx <= p["sweep_window"]
-            for s in sweeps
+    for z in obs:
+        has_fvg = any(
+            f.confirmed_idx <= z.confirmed_idx
+            and poi.dragon_fruit(z, f)
+            for f in fvgs
         )
 
-        if not has_sweep:
-            continue
-
-        # Frozen baseline:
-        # Sweep -> BOS -> POI
-        if p.get("require_structure_confirmation", True):
-            confirmed_idx = _structure_confirmed_after_bos(
-                df,
-                swings,
-                b,
-                confirm_bars=p.get("structure_confirm_bars", 2),
-                max_structure_bars=p.get("structure_max_bars", 12),
-            )
-
-            if confirmed_idx is None:
-                continue
-        else:
-            # No experimental gate: BOS itself is the confirmation point.
-            confirmed_idx = b.idx
-
-        kept.append(b)
-        structure_confirmed[b.idx] = confirmed_idx
-
-    obs = poi.find_order_blocks(
-        df, kept,
-        lookback=p.get("ob_lookback", 30),
-        require_sweep=p.get("require_ob_sweep", True),
-        require_imbalance=p.get("require_ob_imbalance", True),
-        imbalance_window=p.get("imbalance_window", 3))
-    fvgs = poi.find_fvgs(df, body_threshold=thr, require_displacement=True)
-
-    # BUG FIX: mitigation was never applied on the 15M frame. A zone that price
-    # had already torn straight through stayed "active" until its age expired,
-    # so entries were being taken into dead levels. Replaying bar by bar is the
-    # only safe way to do this — vectorising it would leak future bars in.
-    for i in range(len(df)):
-        poi.update_zones(obs, df, i, p.get("kill_on", "full"))
-
-    ts = _ts(df["ts"]).to_numpy()
-    bar = pd.Timedelta(minutes=TF_MINUTES["15m"])
-    setups = []
-    for z in obs:
-        has_fvg = any(f.confirmed_idx <= z.confirmed_idx and poi.dragon_fruit(z, f)
-                      for f in fvgs)
         mode = p.get("ob_entry_mode", "body")
         entry = z.entry_at(mode)
         stop = z.stop_at(p.get("stop_buffer_frac", 0.10))
-        exp_idx = min(z.confirmed_idx + p["max_age"], len(df) - 1)
 
+        exp_idx = min(
+            z.confirmed_idx + p["max_age"],
+            len(df) - 1
+        )
+
+        # The order-block stores the BOS index created by poi_factors.
         bos_idx = z.meta.get("bos_idx")
-        structure_idx = structure_confirmed.get(bos_idx, z.confirmed_idx)
+        bos = bos_by_idx.get(bos_idx)
 
-        # In Gate-2, the POI becomes eligible only after the
-        # structural-acceptance sequence has completed.
-        activation_idx = max(z.confirmed_idx, structure_idx)
+        # Actual BOS information comes from the BOS object itself.
+        bos_level = float(bos.level) if bos is not None else None
+        bos_ts = (
+            pd.Timestamp(ts[bos.idx])
+            if bos is not None
+            else None
+        )
 
-        setups.append(Setup(
-            ts=pd.Timestamp(ts[z.formed_idx]),
-            side=z.side,
-            zone_top=z.top, zone_bottom=z.bottom,
-            ote_low=entry, ote_high=entry,
-            entry_level=entry, entry_mode=mode,
-            stop_level=stop,
-            swept=bool(z.meta.get("swept_previous")),
-            imbalance=bool(z.meta.get("imbalance")),
-            confirmed_ts=pd.Timestamp(ts[activation_idx]) + bar,
-            expires_ts=pd.Timestamp(ts[exp_idx]) + bar,
-            has_fvg=has_fvg,
-            dead_ts=(pd.Timestamp(ts[z.dead_idx]) + bar
-                     if z.dead_idx is not None else None),
-        ))
-    setups.sort(key=lambda s: s.confirmed_ts)
+        # Structure-confirmation index is causal and was calculated above.
+        structure_idx = (
+            structure_confirmed.get(
+                bos_idx,
+                z.confirmed_idx
+            )
+            if bos_idx is not None
+            else z.confirmed_idx
+        )
+
+        activation_idx = max(
+            z.confirmed_idx,
+            structure_idx
+        )
+
+        structure_confirmed_flag = (
+            bos is not None
+            and structure_idx > bos.idx
+        )
+
+        structure_ts = (
+            pd.Timestamp(ts[structure_idx])
+            if structure_confirmed_flag
+            else None
+        )
+
+        setups.append(
+            Setup(
+                ts=pd.Timestamp(ts[z.formed_idx]),
+                side=z.side,
+                zone_top=z.top,
+                zone_bottom=z.bottom,
+                ote_low=entry,
+                ote_high=entry,
+                stop_level=stop,
+                entry_level=entry,
+                entry_mode=mode,
+                imbalance=bool(
+                    z.meta.get("imbalance")
+                ),
+
+                # Actual BOS
+                bos_confirmed=(bos is not None),
+                bos_level=bos_level,
+                bos_ts=bos_ts,
+
+                # Structure acceptance
+                structure_confirmed=structure_confirmed_flag,
+                structure_confirmed_ts=structure_ts,
+
+                # The setup becomes usable only at activation_idx.
+                confirmed_ts=(
+                    pd.Timestamp(ts[activation_idx]) + bar
+                ),
+                expires_ts=(
+                    pd.Timestamp(ts[exp_idx]) + bar
+                ),
+
+                has_fvg=has_fvg,
+                swept=bool(
+                    z.meta.get("swept_previous")
+                ),
+                dead_ts=(
+                    pd.Timestamp(ts[z.dead_idx]) + bar
+                    if z.dead_idx is not None
+                    else None
+                ),
+            )
+        )
     # report the latest usable threshold value, not the whole series
     last = pd.Series(thr).dropna()
     return setups, (float(last.iat[-1]) if len(last) else float("nan"))
@@ -570,16 +578,164 @@ def gate_state(bias, trigger, setups, ts):
     want = "bull" if bias == "BULLISH" else "bear" if bias == "BEARISH" else None
     live_side = active_setups_at(setups, ts, want) if want else []
     s = live_side[0] if live_side else (live_any[0] if live_any else None)
-    action, _, _, _, code = _evaluate(bias, trigger, setups, ts)
+    adef gate_state(bias, trigger, setups, ts):
+    """Every condition evaluated, whether or not it blocked."""
+    live_any = active_setups_at(setups, ts)
+
+    want = (
+        "bull"
+        if bias == "BULLISH"
+        else "bear"
+        if bias == "BEARISH"
+        else None
+    )
+
+    live_side = (
+        active_setups_at(setups, ts, want)
+        if want
+        else []
+    )
+
+    s = (
+        live_side[0]
+        if live_side
+        else (live_any[0] if live_any else None)
+    )
+
+    action, _, _, _, code = _evaluate(
+        bias,
+        trigger,
+        setups,
+        ts,
+    )
+
     return {
+        # ---------------------------------------------------------
+        # 1H CONTEXT
+        # ---------------------------------------------------------
+        "htf_context": bias,
         "htf_bias_1h": bias,
+
+        # ---------------------------------------------------------
+        # 15M STRUCTURE
+        # ---------------------------------------------------------
+        "sweep_15m": bool(s.swept) if s else False,
+
+        "bos_15m": (
+            bool(s.bos_confirmed)
+            if s
+            else False
+        ),
+
+        "bos_level_15m": (
+            s.bos_level
+            if s
+            else None
+        ),
+
+        "bos_ts_15m": (
+            str(s.bos_ts)
+            if s and s.bos_ts is not None
+            else None
+        ),
+
+        "setup_15m": bool(live_any),
+
+        "setup_15m_side": (
+            s.side
+            if s
+            else None
+        ),
+
+        "order_block_15m": (
+            bool(s)
+            if s
+            else False
+        ),
+
+        "fvg_15m": (
+            bool(s.has_fvg)
+            if s
+            else False
+        ),
+
+        "imbalance_15m": (
+            bool(s.imbalance)
+            if s
+            else False
+        ),
+
+        # ---------------------------------------------------------
+        # STRUCTURE ACCEPTANCE
+        # ---------------------------------------------------------
+        "structure_confirmed_15m": (
+            bool(s.structure_confirmed)
+            if s
+            else False
+        ),
+
+        "structure_confirmed_ts_15m": (
+            str(s.structure_confirmed_ts)
+            if (
+                s
+                and s.structure_confirmed_ts is not None
+            )
+            else None
+        ),
+
+        # ---------------------------------------------------------
+        # 5M ENTRY TRIGGER
+        # ---------------------------------------------------------
+        "trigger_5m": (
+            trigger or "none"
+        ),
+
+        "trigger_5m_confirmed": (
+            trigger == want
+            if want is not None
+            else False
+        ),
+
+        # ---------------------------------------------------------
+        # FINAL DECISION
+        # ---------------------------------------------------------
+        "action": action,
+        "blocker": code,
+        "blocker_text": BLOCKERS.get(
+            code,
+            code,
+        ),
+    }
+        # ---------------------------------------------------------
+        # 1H CONTEXT
+        # ---------------------------------------------------------
+        "htf_context": bias,
+        "htf_bias_1h": bias,
+
+        # ---------------------------------------------------------
+        # 15M STRUCTURE / LOCATION
+        # ---------------------------------------------------------
+        "sweep_15m": bool(s.swept) if s else False,
+        "bos_15m": bool(s) if s else False,
+
         "setup_15m": bool(live_any),
         "setup_15m_side": (s.side if s else None),
+
+        "order_block_15m": bool(s) if s else False,
+        "fvg_15m": bool(s.has_fvg) if s else False,
+        "imbalance_15m": bool(s.imbalance) if s else False,
+
+        # ---------------------------------------------------------
+        # 5M ENTRY TRIGGER
+        # ---------------------------------------------------------
         "trigger_5m": trigger or "none",
-        "liquidity_sweep": bool(s.swept) if s else False,
-        "imbalance": bool(s.imbalance) if s else False,
-        "order_block": bool(s) ,
-        "fvg": bool(s.has_fvg) if s else False,
+        "trigger_5m_confirmed": (
+            trigger == want if want is not None else False
+        ),
+
+        # ---------------------------------------------------------
+        # FINAL DECISION
+        # ---------------------------------------------------------
         "action": action,
         "blocker": code,
         "blocker_text": BLOCKERS.get(code, code),
