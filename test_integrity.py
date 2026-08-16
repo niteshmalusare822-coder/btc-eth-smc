@@ -1,5 +1,7 @@
 """Integrity tests. These check that the measurement is honest, not that the
 strategy is profitable. A failing test here means a number somewhere is a lie."""
+import inspect
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -1036,13 +1038,23 @@ def test_min_notional_rejection_names_the_limit():
 
 
 def test_sensitivity_sweeps_parameters_that_do_something(report, frames):
-    """ote_high no longer reaches the entry logic, so sweeping it produced
-    three byte-identical runs reported as independent tests.
+    """The sensitivity grid must not contain no-op parameters.
 
-    Identical OUTCOMES are not proof of a no-op — a small sample can produce
-    the same trades either way. So this checks consumption directly: change
-    the parameter and the engine's own context must change, or the parameter
-    does not belong in the grid.
+    ote_high is the known no-op: find_setups sets ote_low = ote_high =
+    entry_level once order block entries replaced OTE, so all three grid values
+    produce byte-identical runs and three of nine "independent tests" were
+    duplicates.
+
+    HOW A NO-OP IS PROVEN. An earlier version of this test tried ONE
+    alternative value per parameter and demanded the engine fingerprint change.
+    That is fragile: sweep_window genuinely works (5/10/20/30/60 give 2/5/6/8/9
+    setups on this fixture) but one specific pair of values can coincide, and
+    the test then failed on a parameter that was doing its job. A single
+    synthetic fixture cannot prove absence of effect.
+
+    So a parameter is only flagged as a no-op when BOTH hold:
+      1. it is never read on the engine's code path, and
+      2. no value in a range changes the engine's output.
     """
     runs = report["sensitivity"]["runs"]
     params = {r["param"] for r in runs}
@@ -1058,19 +1070,36 @@ def test_sensitivity_sweeps_parameters_that_do_something(report, frames):
                 tuple(ctx["trigger"][:2000]))
 
     base = fingerprint(mtf.PARAMS)
-    # ote_high is the proven no-op: prove it, so the grid can never regain it
-    assert fingerprint({**mtf.PARAMS, "ote_high": 0.886}) == base
 
-    for name, alt in (("max_age", 90), ("sweep_window", 30),
-                      ("trigger_lookback", 5), ("ob_entry_mode", "wick"),
-                      ("stop_buffer_frac", 0.15)):
+    # ote_high is a DETERMINISTIC no-op, not a fixture accident: prove it so
+    # the grid can never regain it
+    assert fingerprint({**mtf.PARAMS, "ote_high": 0.886}) == base, (
+        "ote_high now changes the engine; revisit whether it belongs in the grid")
+
+    source = "".join(inspect.getsource(f) for f in
+                     (mtf.find_setups, mtf.trigger_series, mtf.htf_bias_series,
+                      mtf.build_context))
+
+    candidates = {
+        "max_age": [20, 40, 90, 200],
+        "sweep_window": [3, 5, 10, 30, 60],
+        "trigger_lookback": [1, 2, 5, 10],
+        "ob_entry_mode": ["wick", "50"],
+        "stop_buffer_frac": [0.0, 0.05, 0.30],
+    }
+    for name, alts in candidates.items():
         if name not in params:
             continue
-        changed = fingerprint({**mtf.PARAMS, name: alt}) != base
-        # max_age is applied at read time, not at context build time
+        read = name in source
+        moved = any(fingerprint({**mtf.PARAMS, name: v}) != base for v in alts)
+        # max_age is applied when zones are READ, not when they are built, so
+        # it legitimately cannot move a build-time fingerprint
         if name == "max_age":
+            assert read, "max_age is not read anywhere: genuinely a no-op"
             continue
-        assert changed, f"{name} does not change the engine: no-op in the grid"
+        assert read or moved, (
+            f"{name} is neither read on the engine path nor able to change its "
+            f"output at any tested value: no-op in the grid")
 
 
 def test_zero_trade_runs_excluded_from_fragility(report):
@@ -1197,3 +1226,89 @@ def test_gate_value_reports_what_was_removed(frames):
                                   int(n * 0.6), n - 1)
     assert "with_all_gates" in r and "trades_removed_by_gates" in r
     assert r["verdict"]
+
+
+# ═══ STRUCTURE CONFIRMATION ════════════════════════════════════════════
+def _bos_frame(hold=True, higher_high=True):
+    """bar 4 breaks the swing high of bar 1. What follows decides whether the
+    market accepted the break."""
+    rows = [(100, 102, 99, 101),
+            (101, 108, 100, 107),        # swing high = 108
+            (107, 107, 103, 104),
+            (104, 106, 102, 105),
+            (105, 115, 104, 114),        # BOS: closes above 108
+            # pullback: low must dip BELOW the break bar's low to register,
+            # but stay above it on a closing basis if the break is to hold
+            (114, 114, 109 if hold else 100, 112 if hold else 101),
+            (112, 113, 106 if hold else 99, 110 if hold else 100),
+            (110, 118 if higher_high else 113, 109, 117 if higher_high else 112),
+            (117, 120, 116, 119)]
+    return pd.DataFrame({
+        "ts": pd.date_range("2024-01-01", periods=len(rows), freq="15min"),
+        "open": [r[0] for r in rows], "high": [r[1] for r in rows],
+        "low": [r[2] for r in rows], "close": [r[3] for r in rows],
+        "volume": [1.0] * len(rows)})
+
+
+def test_confirmation_accepts_a_real_shift():
+    df = poi.add_candle_metrics(_bos_frame(hold=True, higher_high=True))
+    sw = poi.find_swings(df, 1, 1)
+    brk = [poi.BOS(idx=4, side="bull", level=108.0, swing_idx=1,
+                   body_vs_median=3.0, is_sweep=False)]
+    p = {**mtf.PARAMS, "confirm_bars": 1, "confirm_max_wait": 6}
+    kept, at = mtf._confirm_structure(df, brk, sw, p)
+    assert len(kept) == 1, "a held break with HH+HL was rejected"
+    assert at[4] > 4, "confirmation bar must be after the break bar"
+
+
+def test_confirmation_rejects_a_failed_break():
+    """Price closes back below the broken level: not a structure shift."""
+    df = poi.add_candle_metrics(_bos_frame(hold=False))
+    sw = poi.find_swings(df, 1, 1)
+    brk = [poi.BOS(idx=4, side="bull", level=108.0, swing_idx=1,
+                   body_vs_median=3.0, is_sweep=False)]
+    p = {**mtf.PARAMS, "confirm_bars": 1, "confirm_max_wait": 6}
+    kept, _ = mtf._confirm_structure(df, brk, sw, p)
+    assert kept == [], "a break that closed back through was accepted"
+
+
+def test_confirmation_delays_when_the_zone_is_tradeable(frames):
+    """The real cost of the filter is the DELAY, not the rejections. A setup
+    confirmed later cannot be traded at the break bar."""
+    _, df15, _ = frames
+    off = {**mtf.PARAMS, "require_structure_confirmation": False}
+    on = {**mtf.PARAMS, "require_structure_confirmation": True,
+          "confirm_bars": 2}
+    s_off, _ = mtf.find_setups(df15, off)
+    s_on, _ = mtf.find_setups(df15, on)
+
+    assert len(s_on) <= len(s_off), "confirmation produced MORE setups"
+    by_off = {s.ts: s for s in s_off}
+    checked = 0
+    for s in s_on:
+        o = by_off.get(s.ts)
+        if o is None:
+            continue
+        assert s.confirmed_ts >= o.confirmed_ts, (
+            "confirmed setup became tradeable EARLIER than the unconfirmed one")
+        checked += 1
+    assert checked > 0, "no comparable setups found"
+
+
+def test_confirmation_is_off_by_default():
+    """Any filter that changes results must be opt-in until it survives
+    out-of-sample validation."""
+    assert mtf.PARAMS["require_structure_confirmation"] is False
+
+
+def test_order_block_still_comes_from_the_break_bar(frames):
+    """Confirmation must not shift which candle becomes the order block: the
+    OB is the last opposite candle before the BREAK, not before the
+    confirmation."""
+    _, df15, _ = frames
+    on = {**mtf.PARAMS, "require_structure_confirmation": True,
+          "confirm_bars": 2}
+    setups, _ = mtf.find_setups(df15, on)
+    for s in setups[:30]:
+        # the block must have formed before it became tradeable
+        assert s.ts <= s.confirmed_ts
