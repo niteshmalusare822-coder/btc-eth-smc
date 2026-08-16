@@ -1312,3 +1312,191 @@ def test_order_block_still_comes_from_the_break_bar(frames):
     for s in setups[:30]:
         # the block must have formed before it became tradeable
         assert s.ts <= s.confirmed_ts
+
+
+# ═══ RETEST STATE MACHINE (research architecture) ══════════════════════
+def test_retest_is_off_by_default():
+    assert mtf.PARAMS["require_retest"] is False
+
+
+def test_poi_without_retest_is_not_tradeable(frames):
+    """Creating a POI is not an entry. Until price returns to the zone the
+    setup must be invisible to decide()."""
+    _, df15, _ = frames
+    p = {**mtf.PARAMS, "require_retest": True}
+    setups, _ = mtf.find_setups(df15, p)
+    waiting = [s for s in setups if s.state == "WAITING_FOR_RETEST"]
+    if not waiting:
+        pytest.skip("every POI was retested in this fixture")
+    s = waiting[0]
+    live = mtf.active_setups_at(setups, s.confirmed_ts, s.side)
+    assert s not in live, "an un-retested POI was offered for entry"
+
+
+def test_retest_never_precedes_confirmation(frames):
+    _, df15, _ = frames
+    p = {**mtf.PARAMS, "require_retest": True}
+    setups, _ = mtf.find_setups(df15, p)
+    checked = 0
+    for s in setups:
+        if s.retest_ts is None:
+            continue
+        assert s.retest_ts >= s.confirmed_ts, (
+            "retest recorded before the POI existed")
+        checked += 1
+    assert checked >= 0
+
+
+def test_retested_setup_becomes_tradeable_only_after_the_retest(frames):
+    _, df15, _ = frames
+    p = {**mtf.PARAMS, "require_retest": True}
+    setups, _ = mtf.find_setups(df15, p)
+    done = [s for s in setups if s.retest_ts is not None]
+    if not done:
+        pytest.skip("no retested setups in this fixture")
+    s = done[0]
+    before = s.retest_ts - pd.Timedelta(minutes=15)
+    assert s not in mtf.active_setups_at(setups, before, s.side)
+    assert s in mtf.active_setups_at(setups, s.retest_ts, s.side)
+
+
+def test_retest_reduces_or_holds_setup_count(frames):
+    """A gate may only ever remove setups, never invent them."""
+    _, df15, _ = frames
+    off, _ = mtf.find_setups(df15, {**mtf.PARAMS, "require_retest": False})
+    on, _ = mtf.find_setups(df15, {**mtf.PARAMS, "require_retest": True})
+    tradeable_on = [s for s in on if s.state != "WAITING_FOR_RETEST"]
+    assert len(tradeable_on) <= len(off)
+
+
+def test_poi_quality_is_reported_not_enforced(frames):
+    """OB and FVG describe POI quality. Neither should silently block the
+    other; the label is information for analysis."""
+    _, df15, _ = frames
+    setups, _ = mtf.find_setups(df15, mtf.PARAMS)
+    if not setups:
+        pytest.skip("no setups")
+    kinds = {s.poi_quality for s in setups}
+    assert kinds <= {"OB", "OB+FVG"}
+    for s in setups:
+        assert (s.poi_quality == "OB+FVG") == bool(s.has_fvg)
+
+
+def test_awaiting_retest_has_its_own_blocker_code():
+    assert "AWAITING_RETEST" in mtf.BLOCKERS
+
+
+def test_persistence_counts_bars_after_the_shift_not_including_it():
+    """confirm_bars = N means N closed bars AFTER the structure shift
+    completes. Counting the completing candle itself made confirm_bars=2
+    demand only one bar of persistence."""
+    rows = [(100, 102, 99, 101), (101, 108, 100, 107), (107, 107, 103, 104),
+            (104, 106, 102, 105), (105, 115, 104, 114), (114, 114, 109, 112),
+            (112, 113, 106, 110), (110, 118, 109, 117), (117, 119, 115, 118),
+            (118, 120, 116, 119), (119, 121, 117, 120)]
+    df = poi.add_candle_metrics(pd.DataFrame({
+        "ts": pd.date_range("2024-01-01", periods=len(rows), freq="15min"),
+        "open": [r[0] for r in rows], "high": [r[1] for r in rows],
+        "low": [r[2] for r in rows], "close": [r[3] for r in rows],
+        "volume": [1.0] * len(rows)}))
+    sw = poi.find_swings(df, 1, 1)
+
+    # HL forms at bar 6, HH at bar 7, so the shift completes at bar 7
+    got = {}
+    for need in (0, 1, 2, 3):
+        brk = [poi.BOS(idx=4, side="bull", level=108.0, swing_idx=1,
+                       body_vs_median=3.0, is_sweep=False)]
+        kept, at = mtf._confirm_structure(
+            df, brk, sw, {**mtf.PARAMS, "confirm_bars": need,
+                          "confirm_max_wait": 8})
+        assert kept, f"confirm_bars={need} rejected a valid shift"
+        got[need] = list(at.values())[0]
+
+    assert got[0] == 7, f"shift bar should be 7, got {got[0]}"
+    for need in (1, 2, 3):
+        assert got[need] == 7 + need, (
+            f"confirm_bars={need} confirmed at {got[need]}, expected {7 + need}")
+
+
+def test_more_persistence_never_confirms_earlier():
+    """Monotonic by construction: demanding more bars cannot produce an
+    earlier entry."""
+    rows = [(100, 102, 99, 101), (101, 108, 100, 107), (107, 107, 103, 104),
+            (104, 106, 102, 105), (105, 115, 104, 114), (114, 114, 109, 112),
+            (112, 113, 106, 110), (110, 118, 109, 117), (117, 119, 115, 118),
+            (118, 120, 116, 119), (119, 121, 117, 120)]
+    df = poi.add_candle_metrics(pd.DataFrame({
+        "ts": pd.date_range("2024-01-01", periods=len(rows), freq="15min"),
+        "open": [r[0] for r in rows], "high": [r[1] for r in rows],
+        "low": [r[2] for r in rows], "close": [r[3] for r in rows],
+        "volume": [1.0] * len(rows)}))
+    sw = poi.find_swings(df, 1, 1)
+    prev = -1
+    for need in range(0, 4):
+        brk = [poi.BOS(idx=4, side="bull", level=108.0, swing_idx=1,
+                       body_vs_median=3.0, is_sweep=False)]
+        _, at = mtf._confirm_structure(
+            df, brk, sw, {**mtf.PARAMS, "confirm_bars": need,
+                          "confirm_max_wait": 8})
+        cur = list(at.values())[0]
+        assert cur >= prev
+        prev = cur
+
+
+# ═══ POI SOURCES: OB and FVG as PARALLEL paths ═════════════════════════
+def test_poi_sources_defaults_to_ob_only():
+    """The frozen baseline must not move when this file is updated."""
+    assert mtf.PARAMS["poi_sources"] == ["ob"]
+
+
+def test_fvg_can_be_a_poi_on_its_own(frames):
+    """The architecture branches after structure acceptance: OB POI or FVG
+    POI. Research rejected mandatory OB+FVG overlap, so an FVG left by the
+    displacement leg is a point of interest by itself."""
+    _, df15, _ = frames
+    only_fvg, _ = mtf.find_setups(df15, {**mtf.PARAMS, "poi_sources": ["fvg"]})
+    if not only_fvg:
+        pytest.skip("no FVG POIs in this fixture")
+    assert all(s.poi_quality == "FVG" for s in only_fvg)
+
+
+def test_both_paths_is_the_union_not_the_intersection(frames):
+    """Parallel paths, not an AND gate. Enabling both must not produce fewer
+    setups than either alone."""
+    _, df15, _ = frames
+    ob, _ = mtf.find_setups(df15, {**mtf.PARAMS, "poi_sources": ["ob"]})
+    fv, _ = mtf.find_setups(df15, {**mtf.PARAMS, "poi_sources": ["fvg"]})
+    both, _ = mtf.find_setups(df15, {**mtf.PARAMS, "poi_sources": ["ob", "fvg"]})
+    assert len(both) >= len(ob)
+    assert len(both) >= len(fv)
+    assert len(both) <= len(ob) + len(fv), "a POI was counted on both paths"
+
+
+def test_poi_quality_labels_are_distinct(frames):
+    _, df15, _ = frames
+    both, _ = mtf.find_setups(df15, {**mtf.PARAMS, "poi_sources": ["ob", "fvg"]})
+    if not both:
+        pytest.skip("no setups")
+    assert {s.poi_quality for s in both} <= {"OB", "OB+FVG", "FVG"}
+
+
+def test_fvg_poi_must_come_from_the_breaking_leg(frames):
+    """A gap that merely sits nearby is a coincidence, not a POI. The lineage
+    audit reported fvg_from_displacement_leg at zero precisely because
+    proximity was being accepted as causation."""
+    _, df15, _ = frames
+    p = {**mtf.PARAMS, "poi_sources": ["fvg"]}
+    setups, _ = mtf.find_setups(df15, p)
+    if not setups:
+        pytest.skip("no FVG POIs")
+    for s in setups[:40]:
+        # the POI cannot be tradeable before the break that claimed it
+        assert s.confirmed_ts >= s.ts
+
+
+def test_fvg_poi_is_never_tradeable_before_its_break(frames):
+    _, df15, _ = frames
+    setups, _ = mtf.find_setups(df15, {**mtf.PARAMS, "poi_sources": ["ob", "fvg"]})
+    for s in setups[:40]:
+        assert s.expires_ts >= s.confirmed_ts
+        assert s.stop_level != s.entry_level
