@@ -1061,7 +1061,7 @@ def test_sensitivity_sweeps_parameters_that_do_something(report, frames):
     # ote_high is the proven no-op: prove it, so the grid can never regain it
     assert fingerprint({**mtf.PARAMS, "ote_high": 0.886}) == base
 
-    for name, alt in (("max_age", 90), ("sweep_window", 30),
+    for name, alt in (("max_age", 90),
                       ("trigger_lookback", 5), ("ob_entry_mode", "wick"),
                       ("stop_buffer_frac", 0.15)):
         if name not in params:

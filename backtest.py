@@ -654,54 +654,137 @@ def matched_baseline(symbol, df5, ctx, cfg, src_trades, seeds=None):
 
 
 def _walk_forward(symbol, df5, ctx, cfg, warm, n):
-    """Anchored walk-forward. Each fold TESTS a later slice while everything
-    before it is history the strategy has already lived through.
+    """Anchored walk-forward.
 
-    Parameters are identical in every fold. Nothing is refitted; calibration is
-    a trailing rolling window, so a later fold simply has more past behind it.
+    Each fold tests a later unseen slice. Every test slice has a real
+    historical period before it, so fold 1 no longer has train_bars=0.
+
+    Parameters are identical in every fold. Nothing is refitted; calibration
+    is a trailing rolling window, so each later fold simply has more history
+    behind it.
     """
     folds = cfg["wf_folds"]
     ts = mtf._ts(df5["ts"])
-    edges = np.linspace(warm, n - 1, folds + 1).astype(int)
+
+    if folds <= 0 or n <= warm:
+        return {
+            "folds": [],
+            "folds_beating_random": 0,
+            "folds_scored": 0,
+            "total_folds": 0,
+        }
+
+    # Reserve an initial historical window before the first test fold.
+    # This prevents the invalid situation where fold 1 has zero training bars.
+    available = n - warm
+
+    # Keep approximately equal test windows while ensuring that the first
+    # fold has genuine history before it.
+    initial_train = max(warm, warm + available // (folds + 1))
+    test_start = initial_train
+
+    remaining = n - test_start
+    test_size = max(1, remaining // folds)
+
     res, beat = [], 0
 
     for k in range(folds):
-        lo, hi = int(edges[k]), int(edges[k + 1])
-        tr, _ = run_arm(symbol, df5, ctx, "smc_mtf", cfg, lo, hi,
-                        rng=np.random.default_rng(cfg["seed"] + k))
+        lo = test_start + k * test_size
+
+        if k == folds - 1:
+            hi = n
+        else:
+            hi = min(n, test_start + (k + 1) * test_size)
+
+        if lo >= n or hi <= lo:
+            continue
+
+        tr, _ = run_arm(
+            symbol,
+            df5,
+            ctx,
+            "smc_mtf",
+            cfg,
+            lo,
+            hi,
+            rng=np.random.default_rng(cfg["seed"] + k),
+        )
+
         m = metrics(tr, "smc_mtf")
-        sm, _ = run_arm(symbol, df5, ctx, "smc", cfg, lo, hi,
-                        rng=np.random.default_rng(cfg["seed"] + k))
+
+        sm, _ = run_arm(
+            symbol,
+            df5,
+            ctx,
+            "smc",
+            cfg,
+            lo,
+            hi,
+            rng=np.random.default_rng(cfg["seed"] + k),
+        )
+
         msm = metrics(sm, "smc")
-        base = matched_baseline(symbol, df5, ctx, cfg, tr,
-                                seeds=RANDOM_SEEDS[:cfg.get("wf_seeds", 10)])
+
+        base = matched_baseline(
+            symbol,
+            df5,
+            ctx,
+            cfg,
+            tr,
+            seeds=RANDOM_SEEDS[:cfg.get("wf_seeds", 10)],
+        )
+
         row = {
             "fold": k + 1,
-            "period_start": str(ts.iat[lo]), "period_end": str(ts.iat[hi - 1]),
-            "train_bars": lo - warm, "test_bars": hi - lo,
+            "period_start": str(ts.iat[lo]),
+            "period_end": str(ts.iat[hi - 1]),
+            "train_bars": lo - warm,
+            "test_bars": hi - lo,
+
             "smc_mtf_trades": m.get("trades", 0),
             "smc_mtf_expectancy_inr": m.get("expectancy_inr"),
+
             "smc_trades": msm.get("trades", 0),
             "smc_expectancy_inr": msm.get("expectancy_inr"),
-            "random_mean_expectancy": base and base["random_mean_expectancy"],
-            "random_median_expectancy": base and base["random_median_expectancy"],
-            "random_std_expectancy": base and base["random_std_expectancy"],
-            "random_runs": base and base["seeds_used"],
+
+            "random_mean_expectancy": (
+                base["random_mean_expectancy"] if base else None
+            ),
+            "random_median_expectancy": (
+                base["random_median_expectancy"] if base else None
+            ),
+            "random_std_expectancy": (
+                base["random_std_expectancy"] if base else None
+            ),
+            "random_runs": (
+                base["seeds_used"] if base else None
+            ),
         }
+
         if base and m.get("expectancy_inr") is not None:
             row["difference_inr"] = round(
-                m["expectancy_inr"] - base["random_mean_expectancy"], 1)
+                m["expectancy_inr"] - base["random_mean_expectancy"],
+                1,
+            )
             row["beat_random"] = bool(row["difference_inr"] > 0)
             beat += int(row["beat_random"])
         else:
             row["difference_inr"] = None
             row["beat_random"] = None
+
         res.append(row)
 
-    scored = sum(1 for r in res if r["beat_random"] is not None)
-    return {"folds": res, "folds_beating_random": beat,
-            "folds_scored": scored, "total_folds": folds}
+    scored = sum(
+        1 for r in res
+        if r["beat_random"] is not None
+    )
 
+    return {
+        "folds": res,
+        "folds_beating_random": beat,
+        "folds_scored": scored,
+        "total_folds": folds,
+    }
 
 def _sensitivity(symbol, df5, df15, df1h, cfg, params, oos_start, n):
     """Nudge one parameter at a time, OUT OF SAMPLE ONLY.
