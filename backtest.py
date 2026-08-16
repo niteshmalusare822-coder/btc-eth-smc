@@ -23,7 +23,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-import features as FEAT
 import mtf_engine as mtf
 import poi_factors as poi
 import risk as R
@@ -195,8 +194,7 @@ def _find_fill(df, side, level, start, cfg):
 
 def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
                 bias=None, setup=None, trigger=None, arm="",
-                setup_ts=None, entry_reason="", flags=None,
-                feature_snapshot=None):
+                setup_ts=None, entry_reason="", flags=None):
     """Place a resting limit at the close of sig_i, fill from sig_i+1 onward.
 
     Returns (trade_dict, reject_reason). trade_dict carries the full audit
@@ -241,16 +239,7 @@ def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
         "bars_to_fill": fill_i - sig_i,
         "bias_1h": bias, "setup_15m": setup, "trigger_5m": trigger,
         "flags": dict(flags or {}),
-        # "score" was int(sum(...) * 0) — always zero, which is why every
-        # score bucket looked flat. Kept for backward compatibility, but the
-        # real value now lives in feature_snapshot.diagnostic_score.
-        # "score" was int(sum(...) * 0) — literally multiplied by zero, so every
-        # score bucket was flat by construction and the "score is not
-        # predictive" conclusion was an artefact. Kept for backward
-        # compatibility; the real value lives in the snapshot.
-        "score": ((feature_snapshot or {}).get("diagnostic_score")
-                  if feature_snapshot else 0),
-        "feature_snapshot": feature_snapshot,
+        "score": int(sum(v for k, v in (flags or {}).items() if v is True) * 0),
         "side": direction,
         "signal_level": round(level, 8),
         "actual_entry": round(entry, 8),
@@ -296,9 +285,6 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
     open_slots = []                            # mode C/D: list of exit indices
     # FIX 12: where trades disappear, counted rather than guessed at
     busy_side, open_until = {}, []
-    # DIAGNOSTIC ONLY. Built once per run and indexed at the signal bar, never
-    # recomputed per trade. Nothing read from here can change a decision.
-    fcache = FEAT.build_indicator_cache(df5)
     gates = {"total_5m_bars": 0, "bars_with_atr": 0, "bars_not_busy": 0,
              "valid_1h_bias": 0, "matching_15m_setup": 0,
              "matching_5m_trigger": 0, "all_three_aligned": 0,
@@ -422,18 +408,11 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
                 ("OB+FVG" if s.has_fvg else "OB"), "ignored"
             reason_s = f"15M {setup_s} only, 1H and 5M gates bypassed"
 
-        # DIAGNOSTIC ONLY. Built AFTER the decision is already made, from a
-        # cache indexed at the signal bar. No branch that decides whether or
-        # how to trade ever reads it.
-        snap = FEAT.build_feature_snapshot(fcache, i, s, side,
-                                           ctx["bias"][i], ctx["trigger"][i],
-                                           arm)
         tr, why = _open_trade(symbol, df5, i, side, level, s.stop_level, atr[i],
                               cfg, tf_min, bias=bias_s, setup=setup_s,
                               trigger=trig_s, arm=arm,
                               setup_ts=(s.confirmed_ts, s.expires_ts),
                               entry_reason=reason_s,
-                              feature_snapshot=snap,
                               flags={
                                   "htf_1h_bias": bias_s in ("BULLISH", "BEARISH"),
                                   "structure_15m": True,
@@ -620,8 +599,6 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
     # mixed in-sample results into the robustness check, which flatters it.
     out["sensitivity"] = _sensitivity(symbol, df5, df15, df1h, cfg, params, split, n)
     out["timeout_analysis"] = _timeout_analysis(log)
-    # additive: the excursion analysis above is untouched
-    out["timeout_feature_analysis"] = FEAT.timeout_feature_analysis(log)
     out["signal_funnel"] = _funnel(gate_report)
     out["min_trades"] = cfg["min_trades"]
     out["verdict"] = _verdict(out)
@@ -677,54 +654,137 @@ def matched_baseline(symbol, df5, ctx, cfg, src_trades, seeds=None):
 
 
 def _walk_forward(symbol, df5, ctx, cfg, warm, n):
-    """Anchored walk-forward. Each fold TESTS a later slice while everything
-    before it is history the strategy has already lived through.
+    """Anchored walk-forward.
 
-    Parameters are identical in every fold. Nothing is refitted; calibration is
-    a trailing rolling window, so a later fold simply has more past behind it.
+    Each fold tests a later unseen slice. Every test slice has a real
+    historical period before it, so fold 1 no longer has train_bars=0.
+
+    Parameters are identical in every fold. Nothing is refitted; calibration
+    is a trailing rolling window, so each later fold simply has more history
+    behind it.
     """
     folds = cfg["wf_folds"]
     ts = mtf._ts(df5["ts"])
-    edges = np.linspace(warm, n - 1, folds + 1).astype(int)
+
+    if folds <= 0 or n <= warm:
+        return {
+            "folds": [],
+            "folds_beating_random": 0,
+            "folds_scored": 0,
+            "total_folds": 0,
+        }
+
+    # Reserve an initial historical window before the first test fold.
+    # This prevents the invalid situation where fold 1 has zero training bars.
+    available = n - warm
+
+    # Keep approximately equal test windows while ensuring that the first
+    # fold has genuine history before it.
+    initial_train = max(warm, warm + available // (folds + 1))
+    test_start = initial_train
+
+    remaining = n - test_start
+    test_size = max(1, remaining // folds)
+
     res, beat = [], 0
 
     for k in range(folds):
-        lo, hi = int(edges[k]), int(edges[k + 1])
-        tr, _ = run_arm(symbol, df5, ctx, "smc_mtf", cfg, lo, hi,
-                        rng=np.random.default_rng(cfg["seed"] + k))
+        lo = test_start + k * test_size
+
+        if k == folds - 1:
+            hi = n
+        else:
+            hi = min(n, test_start + (k + 1) * test_size)
+
+        if lo >= n or hi <= lo:
+            continue
+
+        tr, _ = run_arm(
+            symbol,
+            df5,
+            ctx,
+            "smc_mtf",
+            cfg,
+            lo,
+            hi,
+            rng=np.random.default_rng(cfg["seed"] + k),
+        )
+
         m = metrics(tr, "smc_mtf")
-        sm, _ = run_arm(symbol, df5, ctx, "smc", cfg, lo, hi,
-                        rng=np.random.default_rng(cfg["seed"] + k))
+
+        sm, _ = run_arm(
+            symbol,
+            df5,
+            ctx,
+            "smc",
+            cfg,
+            lo,
+            hi,
+            rng=np.random.default_rng(cfg["seed"] + k),
+        )
+
         msm = metrics(sm, "smc")
-        base = matched_baseline(symbol, df5, ctx, cfg, tr,
-                                seeds=RANDOM_SEEDS[:cfg.get("wf_seeds", 10)])
+
+        base = matched_baseline(
+            symbol,
+            df5,
+            ctx,
+            cfg,
+            tr,
+            seeds=RANDOM_SEEDS[:cfg.get("wf_seeds", 10)],
+        )
+
         row = {
             "fold": k + 1,
-            "period_start": str(ts.iat[lo]), "period_end": str(ts.iat[hi - 1]),
-            "train_bars": lo - warm, "test_bars": hi - lo,
+            "period_start": str(ts.iat[lo]),
+            "period_end": str(ts.iat[hi - 1]),
+            "train_bars": lo - warm,
+            "test_bars": hi - lo,
+
             "smc_mtf_trades": m.get("trades", 0),
             "smc_mtf_expectancy_inr": m.get("expectancy_inr"),
+
             "smc_trades": msm.get("trades", 0),
             "smc_expectancy_inr": msm.get("expectancy_inr"),
-            "random_mean_expectancy": base and base["random_mean_expectancy"],
-            "random_median_expectancy": base and base["random_median_expectancy"],
-            "random_std_expectancy": base and base["random_std_expectancy"],
-            "random_runs": base and base["seeds_used"],
+
+            "random_mean_expectancy": (
+                base["random_mean_expectancy"] if base else None
+            ),
+            "random_median_expectancy": (
+                base["random_median_expectancy"] if base else None
+            ),
+            "random_std_expectancy": (
+                base["random_std_expectancy"] if base else None
+            ),
+            "random_runs": (
+                base["seeds_used"] if base else None
+            ),
         }
+
         if base and m.get("expectancy_inr") is not None:
             row["difference_inr"] = round(
-                m["expectancy_inr"] - base["random_mean_expectancy"], 1)
+                m["expectancy_inr"] - base["random_mean_expectancy"],
+                1,
+            )
             row["beat_random"] = bool(row["difference_inr"] > 0)
             beat += int(row["beat_random"])
         else:
             row["difference_inr"] = None
             row["beat_random"] = None
+
         res.append(row)
 
-    scored = sum(1 for r in res if r["beat_random"] is not None)
-    return {"folds": res, "folds_beating_random": beat,
-            "folds_scored": scored, "total_folds": folds}
+    scored = sum(
+        1 for r in res
+        if r["beat_random"] is not None
+    )
 
+    return {
+        "folds": res,
+        "folds_beating_random": beat,
+        "folds_scored": scored,
+        "total_folds": folds,
+    }
 
 def _sensitivity(symbol, df5, df15, df1h, cfg, params, oos_start, n):
     """Nudge one parameter at a time, OUT OF SAMPLE ONLY.
