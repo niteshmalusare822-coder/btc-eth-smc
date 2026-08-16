@@ -74,9 +74,9 @@ TF_SECONDS = {
 PAGE_LIMIT = 1000
 MAX_PAGES = 60
 
-DEFAULT_BACKTEST_BARS = 10000
+DEFAULT_BACKTEST_BARS = 30000
 MIN_BACKTEST_BARS = 500
-MAX_BACKTEST_BARS = 30000
+MAX_BACKTEST_BARS = 60000
 
 
 # =============================================================================
