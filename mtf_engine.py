@@ -52,6 +52,17 @@ PARAMS = {
     "trigger_lookback": 3,   # 5M bars the entry trigger may look back over
     "kill_on": "full",       # when a 15M zone is considered mitigated
     "calib_window": 500,     # trailing bars behind the displacement threshold
+
+    # ── STRUCTURE CONFIRMATION (off by default so A/B stays possible) ──
+    # A BOS says a level broke. It does not say the market accepted the break.
+    # Requiring a fresh HH+HL (bull) or LL+LH (bear) afterwards is the
+    # difference between "a level broke" and "structure shifted".
+    #
+    # OFF by default. Turning it on must be justified out of sample against
+    # the unchanged baseline, not assumed.
+    "require_structure_confirmation": False,
+    "confirm_bars": 2,          # closed 15M candles the shift must survive
+    "confirm_max_wait": 12,     # bars allowed to complete confirmation
 }
 
 
@@ -170,6 +181,10 @@ def find_setups(df_15m, p=None, calib_end=None):
         if any(s.side == want and 0 < b.idx - s.idx <= p["sweep_window"] for s in sweeps):
             kept.append(b)
 
+    confirm_at = {}
+    if p.get("require_structure_confirmation"):
+        kept, confirm_at = _confirm_structure(df, kept, swings, p)
+
     obs = poi.find_order_blocks(
         df, kept,
         lookback=p.get("ob_lookback", 30),
@@ -187,6 +202,13 @@ def find_setups(df_15m, p=None, calib_end=None):
 
     ts = _ts(df["ts"]).to_numpy()
     bar = pd.Timedelta(minutes=TF_MINUTES["15m"])
+    if confirm_at:
+        # a zone cannot be traded before its structure shift completed
+        for z in obs:
+            c = confirm_at.get(z.confirmed_idx)
+            if c is not None and c > z.confirmed_idx:
+                z.confirmed_idx = c
+
     setups = []
     for z in obs:
         has_fvg = any(f.confirmed_idx <= z.confirmed_idx and poi.dragon_fruit(z, f)
@@ -215,6 +237,83 @@ def find_setups(df_15m, p=None, calib_end=None):
     # report the latest usable threshold value, not the whole series
     last = pd.Series(thr).dropna()
     return setups, (float(last.iat[-1]) if len(last) else float("nan"))
+
+
+def _confirm_structure(df, breaks, swings, p):
+    """A break is only a structure SHIFT once the market builds on it.
+
+    For a bull BOS at bar b, all three must happen within confirm_max_wait
+    bars, and only then is the setup tradeable:
+
+        1. no candle CLOSES back below the broken level
+        2. a higher low forms   (a pullback low above the break bar's low)
+        3. a higher high prints (above the high of the break candle)
+
+    Bear is the mirror.
+
+    THE COST, STATED PLAINLY. The expensive part is not the rejected breaks,
+    it is the DELAY. A setup confirmed at bar b+5 cannot be traded at bar b,
+    so price has already moved by the time the zone opens. The confirmation
+    bar is returned separately and applied to the zone, because leaving the
+    zone tradeable from b would let the backtest act on a confirmation that
+    had not happened yet.
+
+    b.idx is deliberately NOT moved: find_order_blocks searches backwards from
+    b.idx for the last opposite-colour candle, so shifting it would select a
+    candle from inside the post-break move instead of the one that caused it.
+
+    Returns (confirmed_breaks, {break_idx: confirmation_idx}).
+    """
+    highs = df["high"].to_numpy()
+    lows = df["low"].to_numpy()
+    closes = df["close"].to_numpy()
+    n = len(df)
+    need = int(p.get("confirm_bars", 2))
+    wait = int(p.get("confirm_max_wait", 12))
+
+    kept, at = [], {}
+    for b in breaks:
+        i = b.idx
+        last = min(i + wait, n - 1)
+        if last - i < need:
+            continue
+
+        ref_high, ref_low, level = highs[i], lows[i], b.level
+        survived, got_pullback, pull_extreme, done = 0, False, None, None
+
+        for j in range(i + 1, last + 1):
+            # 1. the break must hold on a CLOSING basis
+            if b.side == "bull" and closes[j] < level:
+                break
+            if b.side == "bear" and closes[j] > level:
+                break
+            survived += 1
+
+            if b.side == "bull":
+                if not got_pullback:
+                    if lows[j] < lows[j - 1]:
+                        got_pullback, pull_extreme = True, lows[j]
+                else:
+                    pull_extreme = min(pull_extreme, lows[j])
+                    if (pull_extreme > ref_low and highs[j] > ref_high
+                            and survived >= need):
+                        done = j
+                        break
+            else:
+                if not got_pullback:
+                    if highs[j] > highs[j - 1]:
+                        got_pullback, pull_extreme = True, highs[j]
+                else:
+                    pull_extreme = max(pull_extreme, highs[j])
+                    if (pull_extreme < ref_high and lows[j] < ref_low
+                            and survived >= need):
+                        done = j
+                        break
+
+        if done is not None:
+            kept.append(b)
+            at[b.idx] = done
+    return kept, at
 
 
 # ---------------------------------------------------------------------------
