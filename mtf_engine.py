@@ -52,6 +52,14 @@ PARAMS = {
     "trigger_lookback": 3,   # 5M bars the entry trigger may look back over
     "kill_on": "full",       # when a 15M zone is considered mitigated
     "calib_window": 500,     # trailing bars behind the displacement threshold
+
+    # Experimental architecture gate.
+    # False = frozen baseline behaviour.
+    # True  = Sweep -> BOS -> structure acceptance -> POI.
+    "require_structure_confirmation": False,
+
+    "structure_confirm_bars": 2,  # closed 15M bars required after structure forms
+    "structure_max_bars": 12,     # maximum 15M bars allowed after BOS
 }
 
 
@@ -148,6 +156,133 @@ class Setup:
     dead_ts: object = None    # when price invalidated the zone, if it did
 
 
+
+def _structure_confirmed_after_bos(
+    df,
+    swings,
+    bos,
+    confirm_bars=2,
+    max_structure_bars=12,
+):
+    """Post-BOS structural confirmation.
+
+    Bull:
+      - new high above BOS level
+      - higher low above the last protected low
+      - confirm_bars closes remain above BOS level
+
+    Bear:
+      - new low below BOS level
+      - lower high below the last protected high
+      - confirm_bars closes remain below BOS level
+    """
+    if bos.is_sweep:
+        return None
+
+    start = bos.idx + 1
+    end = min(start + max_structure_bars, len(df) - 1)
+
+    prior = [
+        s for s in swings
+        if s.confirmed_idx <= bos.idx
+    ]
+
+    if bos.side == "bull":
+        protected_lows = [
+            s for s in prior
+            if s.kind == "low"
+        ]
+        if not protected_lows:
+            return None
+
+        protected_low = protected_lows[-1]
+
+        hh = next(
+            (
+                s for s in swings
+                if s.kind == "high"
+                and s.confirmed_idx > bos.idx
+                and s.confirmed_idx <= end
+                and s.price > bos.level
+            ),
+            None,
+        )
+        if hh is None:
+            return None
+
+        hl = next(
+            (
+                s for s in swings
+                if s.kind == "low"
+                and s.confirmed_idx > hh.confirmed_idx
+                and s.confirmed_idx <= end
+                and s.price > protected_low.price
+            ),
+            None,
+        )
+        if hl is None:
+            return None
+
+        persist_start = hl.confirmed_idx + 1
+        persist_end = hl.confirmed_idx + confirm_bars
+
+        if persist_end >= len(df):
+            return None
+
+        for j in range(persist_start, persist_end + 1):
+            if float(df["close"].iat[j]) <= bos.level:
+                return None
+
+        return persist_end
+
+    protected_highs = [
+        s for s in prior
+        if s.kind == "high"
+    ]
+    if not protected_highs:
+        return None
+
+    protected_high = protected_highs[-1]
+
+    ll = next(
+        (
+            s for s in swings
+            if s.kind == "low"
+            and s.confirmed_idx > bos.idx
+            and s.confirmed_idx <= end
+            and s.price < bos.level
+        ),
+        None,
+    )
+    if ll is None:
+        return None
+
+    lh = next(
+        (
+            s for s in swings
+            if s.kind == "high"
+            and s.confirmed_idx > ll.confirmed_idx
+            and s.confirmed_idx <= end
+            and s.price < protected_high.price
+        ),
+        None,
+    )
+    if lh is None:
+        return None
+
+    persist_start = lh.confirmed_idx + 1
+    persist_end = lh.confirmed_idx + confirm_bars
+
+    if persist_end >= len(df):
+        return None
+
+    for j in range(persist_start, persist_end + 1):
+        if float(df["close"].iat[j]) >= bos.level:
+            return None
+
+    return persist_end
+
+
 def find_setups(df_15m, p=None, calib_end=None):
     """Sweep -> BOS -> order block, with the FVG overlap flagged.
 
@@ -165,10 +300,39 @@ def find_setups(df_15m, p=None, calib_end=None):
     sweeps = [b for b in bos if b.is_sweep]
 
     kept = []
+    structure_confirmed = {}
+
     for b in breaks:
         want = "bear" if b.side == "bull" else "bull"
-        if any(s.side == want and 0 < b.idx - s.idx <= p["sweep_window"] for s in sweeps):
-            kept.append(b)
+
+        has_sweep = any(
+            s.side == want
+            and 0 < b.idx - s.idx <= p["sweep_window"]
+            for s in sweeps
+        )
+
+        if not has_sweep:
+            continue
+
+        # Frozen baseline:
+        # Sweep -> BOS -> POI
+        if p.get("require_structure_confirmation", False):
+            confirmed_idx = _structure_confirmed_after_bos(
+                df,
+                swings,
+                b,
+                confirm_bars=p.get("structure_confirm_bars", 2),
+                max_structure_bars=p.get("structure_max_bars", 12),
+            )
+
+            if confirmed_idx is None:
+                continue
+        else:
+            # No experimental gate: BOS itself is the confirmation point.
+            confirmed_idx = b.idx
+
+        kept.append(b)
+        structure_confirmed[b.idx] = confirmed_idx
 
     obs = poi.find_order_blocks(
         df, kept,
@@ -195,6 +359,14 @@ def find_setups(df_15m, p=None, calib_end=None):
         entry = z.entry_at(mode)
         stop = z.stop_at(p.get("stop_buffer_frac", 0.10))
         exp_idx = min(z.confirmed_idx + p["max_age"], len(df) - 1)
+
+        bos_idx = z.meta.get("bos_idx")
+        structure_idx = structure_confirmed.get(bos_idx, z.confirmed_idx)
+
+        # In Gate-2, the POI becomes eligible only after the
+        # structural-acceptance sequence has completed.
+        activation_idx = max(z.confirmed_idx, structure_idx)
+
         setups.append(Setup(
             ts=pd.Timestamp(ts[z.formed_idx]),
             side=z.side,
@@ -204,8 +376,7 @@ def find_setups(df_15m, p=None, calib_end=None):
             stop_level=stop,
             swept=bool(z.meta.get("swept_previous")),
             imbalance=bool(z.meta.get("imbalance")),
-            # confirmed only once the 15M candle that broke structure CLOSED
-            confirmed_ts=pd.Timestamp(ts[z.confirmed_idx]) + bar,
+            confirmed_ts=pd.Timestamp(ts[activation_idx]) + bar,
             expires_ts=pd.Timestamp(ts[exp_idx]) + bar,
             has_fvg=has_fvg,
             dead_ts=(pd.Timestamp(ts[z.dead_idx]) + bar
