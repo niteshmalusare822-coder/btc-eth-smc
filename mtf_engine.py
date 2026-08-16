@@ -58,7 +58,7 @@ PARAMS = {
     # True  = Sweep -> BOS -> structure acceptance -> POI.
     "require_structure_confirmation": True,
 
-    "structure_confirm_bars": 2,  # closed 15M bars required after structure forms
+    "structure_confirm_bars": 1,  # closed 15M bars required after structure forms
     "structure_max_bars": 12,     # maximum 15M bars allowed after BOS
 }
 
