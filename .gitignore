@@ -5,3 +5,8 @@ venv/
 *.csv
 *.parquet
 data/candles/
+*.bak
+*.before-*
+*.pre-*
+__pycache__/
+*.json
