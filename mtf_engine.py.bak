@@ -57,24 +57,17 @@ PARAMS = {
     # OB          = Order Block only
     # FVG         = Fair Value Gap only
     # OB_OR_FVG   = independent alternative POI paths
-    # Research architecture: OB/FVG are alternative POI paths.
-    # Keep default OB so the frozen baseline remains unchanged.
-    "poi_mode": "OB",
+    # Research architecture: OB/FVG are alternative POI paths.\n    # Keep default OB so the frozen baseline remains unchanged.\n    # Research architecture: OB/FVG are alternative POI paths.\n    # Keep default OB so the frozen baseline remains unchanged.\n    # Research architecture: OB/FVG are alternative POI paths.\n    # Keep default OB so the frozen baseline remains unchanged.\n    "poi_mode": "OB",
 
     # Experimental architecture gate.
     # False = frozen baseline behaviour.
     # True  = Sweep -> BOS -> structure acceptance -> POI.
-    "require_structure_confirmation": False,  # explicit experiment flag
+    "require_structure_confirmation": False,  # explicit experiment flag  # explicit experiment flag  # explicit experiment flag
 
     "structure_confirm_bars": 2,  # report starting hypothesis
     "structure_max_bars": 12,     # maximum 15M bars allowed after BOS
 
-    # Retest is part of the research architecture, but remains opt-in
-    # so baseline A/B comparisons remain possible.
-    "require_retest": False,
-    "retest_max_wait": 40,
-    "retest_depth": 0.0,
-}
+    # Retest is part of the research architecture, but remains opt-in\n    # so baseline A/B comparisons remain possible.\n    "require_retest": False,\n    "retest_max_wait": 40,\n    "retest_depth": 0.0,\n}
 
 
 def _calibrate(df, p, calib_end=None):
@@ -168,9 +161,7 @@ class Setup:
     has_fvg: bool
     swept: bool
     poi_quality: str = "OB"   # OB | FVG | OB+FVG
-    retest_ts: object = None   # first 15M bar that returns to the POI
-    state: str = "READY"       # READY | WAITING_FOR_RETEST | RETESTED | DEAD
-    dead_ts: object = None     # when price invalidated the zone, if it did
+    dead_ts: object = None    # when price invalidated the zone, if it did
 
 
 
@@ -434,61 +425,6 @@ def find_setups(df_15m, p=None, calib_end=None):
 
     ts = _ts(df["ts"]).to_numpy()
     bar = pd.Timedelta(minutes=TF_MINUTES["15m"])
-
-    # --------------------------------------------------------
-    # RETEST DETECTION
-    #
-    # The POI is a location, not an entry. When retest is enabled,
-    # price must return to the POI after the POI becomes eligible.
-    # The scan is strictly forward from activation_idx, so it is
-    # causal.
-    # --------------------------------------------------------
-    retest_idx = {}
-
-    if p.get("require_retest", False):
-        highs = df["high"].to_numpy()
-        lows = df["low"].to_numpy()
-
-        wait = int(p.get("retest_max_wait", 40))
-        depth = float(p.get("retest_depth", 0.0))
-
-        for z in poi_zones:
-            bos_idx = z.meta.get("bos_idx")
-            structure_idx = (
-                structure_confirmed.get(bos_idx, z.confirmed_idx)
-                if bos_idx is not None
-                else z.confirmed_idx
-            )
-
-            activation_idx = max(
-                z.confirmed_idx,
-                structure_idx,
-            )
-
-            span = float(z.top - z.bottom)
-
-            # depth=0 means the nearest edge of the zone is enough.
-            # Larger depth means price must return further inside.
-            if z.side == "bull":
-                retest_level = z.top - span * depth
-            else:
-                retest_level = z.bottom + span * depth
-
-            last = min(
-                activation_idx + wait,
-                len(df) - 1,
-            )
-
-            for j in range(activation_idx + 1, last + 1):
-                if z.side == "bull":
-                    touched = lows[j] <= retest_level
-                else:
-                    touched = highs[j] >= retest_level
-
-                if touched:
-                    retest_idx[id(z)] = j
-                    break
-
     setups = []
 
     for z in poi_zones:
@@ -557,23 +493,6 @@ def find_setups(df_15m, p=None, calib_end=None):
             expires_ts=pd.Timestamp(ts[exp_idx]) + bar,
             has_fvg=has_fvg or poi_source == "FVG",
             poi_quality=poi_quality,
-
-            retest_ts=(
-                pd.Timestamp(ts[retest_idx[id(z)]]) + bar
-                if id(z) in retest_idx
-                else None
-            ),
-
-            state=(
-                "RETESTED"
-                if id(z) in retest_idx
-                else (
-                    "WAITING_FOR_RETEST"
-                    if p.get("require_retest", False)
-                    else "READY"
-                )
-            ),
-
             dead_ts=(
                 pd.Timestamp(ts[z.dead_idx]) + bar
                 if z.dead_idx is not None
@@ -719,14 +638,6 @@ def active_setups_at(setups, ts, side=None):
             continue
         if s.dead_ts is not None and s.dead_ts <= ts:
             continue
-
-        # A POI that has not yet been retested is not tradeable.
-        if s.state == "WAITING_FOR_RETEST":
-            continue
-
-        if s.retest_ts is not None and s.retest_ts > ts:
-            continue
-
         if side and s.side != side:
             continue
         out.append(s)
@@ -742,7 +653,6 @@ BLOCKERS = {
     "SETUP_WRONG_WAY": "15M setup exists but on the other side",
     "SETUP_EXPIRED": "15M setup aged out",
     "SETUP_MITIGATED": "15M zone already invalidated by price",
-    "AWAITING_RETEST": "POI formed but price has not returned to it",
 }
 
 
@@ -782,14 +692,6 @@ def _evaluate(bias, trigger, setups, ts):
         confirmed = [x for x in setups if x.confirmed_ts <= ts]
         if any(x.dead_ts is not None and x.dead_ts <= ts for x in confirmed):
             return "NO_TRADE", None, None, None, "SETUP_MITIGATED"
-
-        if any(
-            x.state == "WAITING_FOR_RETEST"
-            and x.side == side
-            for x in confirmed
-        ):
-            return "NO_TRADE", None, None, None, "AWAITING_RETEST"
-
         if any(x.expires_ts < ts for x in confirmed):
             return "NO_TRADE", None, None, None, "SETUP_EXPIRED"
         return "NO_TRADE", None, None, None, "NO_SETUP"

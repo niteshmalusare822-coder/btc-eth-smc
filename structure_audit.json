@@ -1,0 +1,426 @@
+[
+ {
+  "symbol": "BTC",
+  "coverage_days": 36.72,
+  "bars_15m": 3526,
+  "counts": {
+   "swings": 964,
+   "sweeps": 230,
+   "breaks_total": 134,
+   "BOS": 67,
+   "CHOCH": 66,
+   "order_blocks_raw": 134,
+   "order_blocks_after_rules": 39,
+   "fvgs": 304
+  },
+  "by_break_type": {
+   "BOS": {
+    "label": "BOS",
+    "n": 67,
+    "follow_through_pct": 44.8,
+    "median_mfe_atr": 2.05,
+    "median_mae_atr": 3.1,
+    "mfe_minus_mae": -1.05
+   },
+   "CHOCH": {
+    "label": "CHOCH",
+    "n": 66,
+    "follow_through_pct": 54.5,
+    "median_mfe_atr": 2.71,
+    "median_mae_atr": 2.76,
+    "mfe_minus_mae": -0.06
+   },
+   "SWEEP": {
+    "label": "SWEEP",
+    "n": 230,
+    "follow_through_pct": 52.6,
+    "median_mfe_atr": 2.81,
+    "median_mae_atr": 2.42,
+    "mfe_minus_mae": 0.39
+   },
+   "UNKNOWN_FIRST": {
+    "label": "UNKNOWN_FIRST",
+    "n": 1,
+    "follow_through_pct": 100.0,
+    "median_mfe_atr": 2.68,
+    "median_mae_atr": 2.28,
+    "mfe_minus_mae": 0.41
+   }
+  },
+  "link_tests": [
+   {
+    "test": "CHoCH vs BOS",
+    "with_n": 66,
+    "without_n": 67,
+    "with_edge_atr": 0.309,
+    "without_edge_atr": -0.76,
+    "difference_atr": 1.069,
+    "t": 1.18,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   },
+   {
+    "test": "sweep before the break",
+    "with_n": 58,
+    "without_n": 75,
+    "with_edge_atr": -0.478,
+    "without_edge_atr": -0.037,
+    "difference_atr": -0.441,
+    "t": -0.48,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   },
+   {
+    "test": "OB rules (sweep + imbalance)",
+    "with_n": 39,
+    "without_n": 95,
+    "with_edge_atr": 1.298,
+    "without_edge_atr": -0.85,
+    "difference_atr": 2.149,
+    "t": 2.24,
+    "significant_95": true,
+    "verdict": "adds measurable value"
+   },
+   {
+    "test": "FVG overlapping the OB",
+    "with_n": 37,
+    "without_n": 2,
+    "with_edge_atr": 1.392,
+    "without_edge_atr": -0.438,
+    "difference_atr": 1.83,
+    "t": 0.55,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   },
+   {
+    "test": "above-median displacement",
+    "with_n": 67,
+    "without_n": 66,
+    "with_edge_atr": -0.64,
+    "without_edge_atr": 0.187,
+    "difference_atr": -0.827,
+    "t": -0.91,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   }
+  ]
+ },
+ {
+  "symbol": "ETH",
+  "coverage_days": 36.72,
+  "bars_15m": 3526,
+  "counts": {
+   "swings": 977,
+   "sweeps": 248,
+   "breaks_total": 146,
+   "BOS": 70,
+   "CHOCH": 75,
+   "order_blocks_raw": 146,
+   "order_blocks_after_rules": 42,
+   "fvgs": 287
+  },
+  "by_break_type": {
+   "BOS": {
+    "label": "BOS",
+    "n": 70,
+    "follow_through_pct": 45.7,
+    "median_mfe_atr": 2.35,
+    "median_mae_atr": 3.06,
+    "mfe_minus_mae": -0.71
+   },
+   "CHOCH": {
+    "label": "CHOCH",
+    "n": 74,
+    "follow_through_pct": 51.4,
+    "median_mfe_atr": 2.77,
+    "median_mae_atr": 2.79,
+    "mfe_minus_mae": -0.02
+   },
+   "SWEEP": {
+    "label": "SWEEP",
+    "n": 248,
+    "follow_through_pct": 54.8,
+    "median_mfe_atr": 2.38,
+    "median_mae_atr": 2.1,
+    "mfe_minus_mae": 0.28
+   },
+   "UNKNOWN_FIRST": {
+    "label": "UNKNOWN_FIRST",
+    "n": 1,
+    "follow_through_pct": 100.0,
+    "median_mfe_atr": 5.94,
+    "median_mae_atr": 1.44,
+    "mfe_minus_mae": 4.51
+   }
+  },
+  "link_tests": [
+   {
+    "test": "CHoCH vs BOS",
+    "with_n": 74,
+    "without_n": 70,
+    "with_edge_atr": -0.121,
+    "without_edge_atr": -0.498,
+    "difference_atr": 0.378,
+    "t": 0.42,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   },
+   {
+    "test": "sweep before the break",
+    "with_n": 65,
+    "without_n": 79,
+    "with_edge_atr": -0.865,
+    "without_edge_atr": 0.157,
+    "difference_atr": -1.022,
+    "t": -1.13,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   },
+   {
+    "test": "OB rules (sweep + imbalance)",
+    "with_n": 42,
+    "without_n": 103,
+    "with_edge_atr": 0.518,
+    "without_edge_atr": -0.593,
+    "difference_atr": 1.111,
+    "t": 1.24,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   },
+   {
+    "test": "FVG overlapping the OB",
+    "with_n": 39,
+    "without_n": 3,
+    "with_edge_atr": 0.281,
+    "without_edge_atr": 3.602,
+    "difference_atr": -3.321,
+    "t": -3.17,
+    "significant_95": true,
+    "verdict": "SUBTRACTS value"
+   },
+   {
+    "test": "above-median displacement",
+    "with_n": 72,
+    "without_n": 72,
+    "with_edge_atr": 0.039,
+    "without_edge_atr": -0.647,
+    "difference_atr": 0.686,
+    "t": 0.77,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   }
+  ]
+ },
+ {
+  "symbol": "DEXE",
+  "coverage_days": 36.72,
+  "bars_15m": 3526,
+  "counts": {
+   "swings": 863,
+   "sweeps": 188,
+   "breaks_total": 117,
+   "BOS": 64,
+   "CHOCH": 52,
+   "order_blocks_raw": 117,
+   "order_blocks_after_rules": 28,
+   "fvgs": 249
+  },
+  "by_break_type": {
+   "BOS": {
+    "label": "BOS",
+    "n": 64,
+    "follow_through_pct": 54.7,
+    "median_mfe_atr": 2.66,
+    "median_mae_atr": 2.71,
+    "mfe_minus_mae": -0.05
+   },
+   "CHOCH": {
+    "label": "CHOCH",
+    "n": 52,
+    "follow_through_pct": 48.1,
+    "median_mfe_atr": 2.6,
+    "median_mae_atr": 2.73,
+    "mfe_minus_mae": -0.13
+   },
+   "SWEEP": {
+    "label": "SWEEP",
+    "n": 188,
+    "follow_through_pct": 51.6,
+    "median_mfe_atr": 2.21,
+    "median_mae_atr": 2.08,
+    "mfe_minus_mae": 0.13
+   },
+   "UNKNOWN_FIRST": {
+    "label": "UNKNOWN_FIRST",
+    "n": 1,
+    "follow_through_pct": 0.0,
+    "median_mfe_atr": 2.08,
+    "median_mae_atr": 7.52,
+    "mfe_minus_mae": -5.44
+   }
+  },
+  "link_tests": [
+   {
+    "test": "CHoCH vs BOS",
+    "with_n": 52,
+    "without_n": 64,
+    "with_edge_atr": -0.209,
+    "without_edge_atr": 0.439,
+    "difference_atr": -0.648,
+    "t": -0.7,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   },
+   {
+    "test": "sweep before the break",
+    "with_n": 44,
+    "without_n": 72,
+    "with_edge_atr": -0.078,
+    "without_edge_atr": 0.287,
+    "difference_atr": -0.365,
+    "t": -0.4,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   },
+   {
+    "test": "OB rules (sweep + imbalance)",
+    "with_n": 28,
+    "without_n": 89,
+    "with_edge_atr": -0.615,
+    "without_edge_atr": 0.326,
+    "difference_atr": -0.94,
+    "t": -0.98,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   },
+   {
+    "test": "FVG overlapping the OB",
+    "with_n": 22,
+    "without_n": 6,
+    "with_edge_atr": -0.528,
+    "without_edge_atr": -0.93,
+    "difference_atr": 0.402,
+    "t": 0.23,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   },
+   {
+    "test": "above-median displacement",
+    "with_n": 58,
+    "without_n": 58,
+    "with_edge_atr": 0.22,
+    "without_edge_atr": 0.077,
+    "difference_atr": 0.143,
+    "t": 0.16,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   }
+  ]
+ },
+ {
+  "symbol": "BANK",
+  "coverage_days": 36.72,
+  "bars_15m": 3526,
+  "counts": {
+   "swings": 998,
+   "sweeps": 266,
+   "breaks_total": 117,
+   "BOS": 62,
+   "CHOCH": 54,
+   "order_blocks_raw": 117,
+   "order_blocks_after_rules": 35,
+   "fvgs": 241
+  },
+  "by_break_type": {
+   "BOS": {
+    "label": "BOS",
+    "n": 62,
+    "follow_through_pct": 56.5,
+    "median_mfe_atr": 3.0,
+    "median_mae_atr": 2.7,
+    "mfe_minus_mae": 0.3
+   },
+   "CHOCH": {
+    "label": "CHOCH",
+    "n": 54,
+    "follow_through_pct": 48.1,
+    "median_mfe_atr": 2.32,
+    "median_mae_atr": 2.54,
+    "mfe_minus_mae": -0.22
+   },
+   "SWEEP": {
+    "label": "SWEEP",
+    "n": 266,
+    "follow_through_pct": 50.8,
+    "median_mfe_atr": 2.25,
+    "median_mae_atr": 2.54,
+    "mfe_minus_mae": -0.29
+   },
+   "UNKNOWN_FIRST": {
+    "label": "UNKNOWN_FIRST",
+    "n": 1,
+    "follow_through_pct": 0.0,
+    "median_mfe_atr": 0.56,
+    "median_mae_atr": 3.67,
+    "mfe_minus_mae": -3.12
+   }
+  },
+  "link_tests": [
+   {
+    "test": "CHoCH vs BOS",
+    "with_n": 54,
+    "without_n": 62,
+    "with_edge_atr": 0.223,
+    "without_edge_atr": 0.249,
+    "difference_atr": -0.026,
+    "t": -0.02,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   },
+   {
+    "test": "sweep before the break",
+    "with_n": 62,
+    "without_n": 54,
+    "with_edge_atr": -0.189,
+    "without_edge_atr": 0.726,
+    "difference_atr": -0.915,
+    "t": -0.66,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   },
+   {
+    "test": "OB rules (sweep + imbalance)",
+    "with_n": 35,
+    "without_n": 82,
+    "with_edge_atr": 1.386,
+    "without_edge_atr": -0.294,
+    "difference_atr": 1.681,
+    "t": 1.31,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   },
+   {
+    "test": "FVG overlapping the OB",
+    "with_n": 29,
+    "without_n": 6,
+    "with_edge_atr": 1.878,
+    "without_edge_atr": -0.991,
+    "difference_atr": 2.87,
+    "t": 1.83,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   },
+   {
+    "test": "above-median displacement",
+    "with_n": 58,
+    "without_n": 58,
+    "with_edge_atr": -0.217,
+    "without_edge_atr": 0.692,
+    "difference_atr": -0.909,
+    "t": -0.67,
+    "significant_95": false,
+    "verdict": "no measurable effect; it only costs sample size"
+   }
+  ]
+ }
+]

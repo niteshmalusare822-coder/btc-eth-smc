@@ -53,27 +53,13 @@ PARAMS = {
     "kill_on": "full",       # when a 15M zone is considered mitigated
     "calib_window": 500,     # trailing bars behind the displacement threshold
 
-    # POI research mode:
-    # OB          = Order Block only
-    # FVG         = Fair Value Gap only
-    # OB_OR_FVG   = independent alternative POI paths
-    # Research architecture: OB/FVG are alternative POI paths.
-    # Keep default OB so the frozen baseline remains unchanged.
-    "poi_mode": "OB",
-
     # Experimental architecture gate.
     # False = frozen baseline behaviour.
     # True  = Sweep -> BOS -> structure acceptance -> POI.
-    "require_structure_confirmation": False,  # explicit experiment flag
+    "require_structure_confirmation": False,
 
-    "structure_confirm_bars": 2,  # report starting hypothesis
+    "structure_confirm_bars": 2,  # closed 15M bars required after structure forms
     "structure_max_bars": 12,     # maximum 15M bars allowed after BOS
-
-    # Retest is part of the research architecture, but remains opt-in
-    # so baseline A/B comparisons remain possible.
-    "require_retest": False,
-    "retest_max_wait": 40,
-    "retest_depth": 0.0,
 }
 
 
@@ -167,10 +153,7 @@ class Setup:
     expires_ts: pd.Timestamp
     has_fvg: bool
     swept: bool
-    poi_quality: str = "OB"   # OB | FVG | OB+FVG
-    retest_ts: object = None   # first 15M bar that returns to the POI
-    state: str = "READY"       # READY | WAITING_FOR_RETEST | RETESTED | DEAD
-    dead_ts: object = None     # when price invalidated the zone, if it did
+    dead_ts: object = None    # when price invalidated the zone, if it did
 
 
 
@@ -356,251 +339,50 @@ def find_setups(df_15m, p=None, calib_end=None):
         lookback=p.get("ob_lookback", 30),
         require_sweep=p.get("require_ob_sweep", True),
         require_imbalance=p.get("require_ob_imbalance", True),
-        imbalance_window=p.get("imbalance_window", 3),
-    )
-
-    fvgs = poi.find_fvgs(
-        df,
-        body_threshold=thr,
-        require_displacement=True,
-    )
-
-    mode = str(p.get("poi_mode", "OB")).upper()
-    if mode not in {"OB", "FVG", "OB_OR_FVG"}:
-        raise ValueError(
-            f"unknown poi_mode {mode!r}; "
-            f"expected OB, FVG or OB_OR_FVG"
-        )
-
-    # --------------------------------------------------------
-    # Build a clean POI list.
-    #
-    # OB:
-    #   keep the existing order-block implementation.
-    #
-    # FVG:
-    #   for each accepted BOS, choose the first same-direction FVG
-    #   confirmed after the BOS and no later than the structure
-    #   confirmation point.
-    #
-    # OB_OR_FVG:
-    #   keep both independently. Overlap is information, not a
-    #   mandatory requirement.
-    # --------------------------------------------------------
-    poi_zones = []
-
-    if mode in {"OB", "OB_OR_FVG"}:
-        for z in obs:
-            poi_zones.append(z)
-
-    if mode in {"FVG", "OB_OR_FVG"}:
-        for b in kept:
-            activation_idx = structure_confirmed.get(b.idx, b.idx)
-
-            candidates = [
-                f for f in fvgs
-                if f.side == b.side
-                and f.confirmed_idx > b.idx
-                and f.confirmed_idx <= activation_idx
-            ]
-
-            if not candidates:
-                continue
-
-            # One FVG POI per accepted BOS.
-            # The first confirmed gap is treated as the primary
-            # displacement POI for this experiment.
-            z = candidates[0]
-
-            # Make the relationship explicit for downstream logic.
-            z.meta["bos_idx"] = b.idx
-            z.meta["setup_swept"] = True
-            z.meta["poi_source"] = "FVG"
-
-            poi_zones.append(z)
-
-    # Existing OBs are normally already tagged by find_order_blocks(),
-    # but make their lineage explicit for the shared activation logic.
-    for z in obs:
-        if z in poi_zones:
-            z.meta.setdefault("poi_source", "OB")
+        imbalance_window=p.get("imbalance_window", 3))
+    fvgs = poi.find_fvgs(df, body_threshold=thr, require_displacement=True)
 
     # BUG FIX: mitigation was never applied on the 15M frame. A zone that price
     # had already torn straight through stayed "active" until its age expired,
     # so entries were being taken into dead levels. Replaying bar by bar is the
     # only safe way to do this — vectorising it would leak future bars in.
     for i in range(len(df)):
-        poi.update_zones(poi_zones, df, i, p.get("kill_on", "full"))
+        poi.update_zones(obs, df, i, p.get("kill_on", "full"))
 
     ts = _ts(df["ts"]).to_numpy()
     bar = pd.Timedelta(minutes=TF_MINUTES["15m"])
-
-    # --------------------------------------------------------
-    # RETEST DETECTION
-    #
-    # The POI is a location, not an entry. When retest is enabled,
-    # price must return to the POI after the POI becomes eligible.
-    # The scan is strictly forward from activation_idx, so it is
-    # causal.
-    # --------------------------------------------------------
-    retest_idx = {}
-
-    if p.get("require_retest", False):
-        highs = df["high"].to_numpy()
-        lows = df["low"].to_numpy()
-
-        wait = int(p.get("retest_max_wait", 40))
-        depth = float(p.get("retest_depth", 0.0))
-
-        for z in poi_zones:
-            bos_idx = z.meta.get("bos_idx")
-            structure_idx = (
-                structure_confirmed.get(bos_idx, z.confirmed_idx)
-                if bos_idx is not None
-                else z.confirmed_idx
-            )
-
-            activation_idx = max(
-                z.confirmed_idx,
-                structure_idx,
-            )
-
-            span = float(z.top - z.bottom)
-
-            # depth=0 means the nearest edge of the zone is enough.
-            # Larger depth means price must return further inside.
-            if z.side == "bull":
-                retest_level = z.top - span * depth
-            else:
-                retest_level = z.bottom + span * depth
-
-            last = min(
-                activation_idx + wait,
-                len(df) - 1,
-            )
-
-            for j in range(activation_idx + 1, last + 1):
-                if z.side == "bull":
-                    touched = lows[j] <= retest_level
-                else:
-                    touched = highs[j] >= retest_level
-
-                if touched:
-                    retest_idx[id(z)] = j
-                    break
-
     setups = []
-
-    for z in poi_zones:
-        bos_idx = z.meta.get("bos_idx")
-        structure_idx = (
-            structure_confirmed.get(bos_idx, z.confirmed_idx)
-            if bos_idx is not None
-            else z.confirmed_idx
-        )
-
-        # In Gate-2, the POI cannot become tradeable before the
-        # accepted structure has completed.
-        activation_idx = max(z.confirmed_idx, structure_idx)
-
-        entry_mode = p.get("ob_entry_mode", "body")
-
-        # Zone.entry_at() works for both OB and FVG zones.
-        entry = z.entry_at(entry_mode)
+    for z in obs:
+        has_fvg = any(f.confirmed_idx <= z.confirmed_idx and poi.dragon_fruit(z, f)
+                      for f in fvgs)
+        mode = p.get("ob_entry_mode", "body")
+        entry = z.entry_at(mode)
         stop = z.stop_at(p.get("stop_buffer_frac", 0.10))
-        exp_idx = min(
-            z.confirmed_idx + p["max_age"],
-            len(df) - 1,
-        )
+        exp_idx = min(z.confirmed_idx + p["max_age"], len(df) - 1)
 
-        # For FVG setups, the associated BOS supplied the liquidity sweep.
-        swept = bool(
-            z.meta.get("swept_previous")
-            or z.meta.get("setup_swept")
-        )
+        bos_idx = z.meta.get("bos_idx")
+        structure_idx = structure_confirmed.get(bos_idx, z.confirmed_idx)
 
-        poi_source = z.meta.get(
-            "poi_source",
-            "OB" if z.kind == "ob" else "FVG",
-        )
-
-        # In OB_OR_FVG, indicate when an OB also has an associated FVG.
-        has_fvg = any(
-            f.confirmed_idx <= activation_idx
-            and f.side == z.side
-            and poi.dragon_fruit(z, f)
-            for f in fvgs
-        )
-
-        poi_quality = (
-            "OB+FVG"
-            if poi_source == "OB" and has_fvg
-            else poi_source
-        )
+        # In Gate-2, the POI becomes eligible only after the
+        # structural-acceptance sequence has completed.
+        activation_idx = max(z.confirmed_idx, structure_idx)
 
         setups.append(Setup(
             ts=pd.Timestamp(ts[z.formed_idx]),
             side=z.side,
-            zone_top=z.top,
-            zone_bottom=z.bottom,
-            ote_low=entry,
-            ote_high=entry,
-            entry_level=entry,
-            entry_mode=entry_mode,
+            zone_top=z.top, zone_bottom=z.bottom,
+            ote_low=entry, ote_high=entry,
+            entry_level=entry, entry_mode=mode,
             stop_level=stop,
-            swept=swept,
-            imbalance=bool(
-                z.meta.get("imbalance")
-                or poi_source == "FVG"
-            ),
+            swept=bool(z.meta.get("swept_previous")),
+            imbalance=bool(z.meta.get("imbalance")),
             confirmed_ts=pd.Timestamp(ts[activation_idx]) + bar,
             expires_ts=pd.Timestamp(ts[exp_idx]) + bar,
-            has_fvg=has_fvg or poi_source == "FVG",
-            poi_quality=poi_quality,
-
-            retest_ts=(
-                pd.Timestamp(ts[retest_idx[id(z)]]) + bar
-                if id(z) in retest_idx
-                else None
-            ),
-
-            state=(
-                "RETESTED"
-                if id(z) in retest_idx
-                else (
-                    "WAITING_FOR_RETEST"
-                    if p.get("require_retest", False)
-                    else "READY"
-                )
-            ),
-
-            dead_ts=(
-                pd.Timestamp(ts[z.dead_idx]) + bar
-                if z.dead_idx is not None
-                else None
-            ),
+            has_fvg=has_fvg,
+            dead_ts=(pd.Timestamp(ts[z.dead_idx]) + bar
+                     if z.dead_idx is not None else None),
         ))
-
-    # Avoid two identical POIs at the exact same structural event/price.
-    deduped = []
-    seen = set()
-
-    for z in setups:
-        key = (
-            z.confirmed_ts,
-            z.side,
-            round(float(z.zone_top), 8),
-            round(float(z.zone_bottom), 8),
-            z.poi_quality,
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(z)
-
-    setups = deduped
-    setups.sort(key=lambda x: x.confirmed_ts)
-
+    setups.sort(key=lambda s: s.confirmed_ts)
     # report the latest usable threshold value, not the whole series
     last = pd.Series(thr).dropna()
     return setups, (float(last.iat[-1]) if len(last) else float("nan"))
@@ -719,14 +501,6 @@ def active_setups_at(setups, ts, side=None):
             continue
         if s.dead_ts is not None and s.dead_ts <= ts:
             continue
-
-        # A POI that has not yet been retested is not tradeable.
-        if s.state == "WAITING_FOR_RETEST":
-            continue
-
-        if s.retest_ts is not None and s.retest_ts > ts:
-            continue
-
         if side and s.side != side:
             continue
         out.append(s)
@@ -742,7 +516,6 @@ BLOCKERS = {
     "SETUP_WRONG_WAY": "15M setup exists but on the other side",
     "SETUP_EXPIRED": "15M setup aged out",
     "SETUP_MITIGATED": "15M zone already invalidated by price",
-    "AWAITING_RETEST": "POI formed but price has not returned to it",
 }
 
 
@@ -782,14 +555,6 @@ def _evaluate(bias, trigger, setups, ts):
         confirmed = [x for x in setups if x.confirmed_ts <= ts]
         if any(x.dead_ts is not None and x.dead_ts <= ts for x in confirmed):
             return "NO_TRADE", None, None, None, "SETUP_MITIGATED"
-
-        if any(
-            x.state == "WAITING_FOR_RETEST"
-            and x.side == side
-            for x in confirmed
-        ):
-            return "NO_TRADE", None, None, None, "AWAITING_RETEST"
-
         if any(x.expires_ts < ts for x in confirmed):
             return "NO_TRADE", None, None, None, "SETUP_EXPIRED"
         return "NO_TRADE", None, None, None, "NO_SETUP"
