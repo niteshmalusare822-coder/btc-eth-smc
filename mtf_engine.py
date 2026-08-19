@@ -53,27 +53,46 @@ PARAMS = {
     "kill_on": "full",       # when a 15M zone is considered mitigated
     "calib_window": 500,     # trailing bars behind the displacement threshold
 
-    # POI research mode:
-    # OB          = Order Block only
-    # FVG         = Fair Value Gap only
-    # OB_OR_FVG   = independent alternative POI paths
-    # Research architecture: OB/FVG are alternative POI paths.
-    # Keep default OB so the frozen baseline remains unchanged.
-    "poi_mode": "OB",
+    # ── STRUCTURE CONFIRMATION (off by default so A/B stays possible) ──
+    # A BOS says a level broke. It does not say the market accepted the break.
+    # Requiring a fresh HH+HL (bull) or LL+LH (bear) afterwards is the
+    # difference between "a level broke" and "structure shifted".
+    #
+    # OFF by default. Turning it on must be justified out of sample against
+    # the unchanged baseline, not assumed.
+    "require_structure_confirmation": False,
+    "confirm_bars": 2,          # closed 15M candles the shift must survive
+    "confirm_max_wait": 12,     # bars allowed to complete confirmation
 
-    # Experimental architecture gate.
-    # False = frozen baseline behaviour.
-    # True  = Sweep -> BOS -> structure acceptance -> POI.
-    "require_structure_confirmation": False,  # explicit experiment flag
-
-    "structure_confirm_bars": 2,  # report starting hypothesis
-    "structure_max_bars": 12,     # maximum 15M bars allowed after BOS
-
-    # Retest is part of the research architecture, but remains opt-in
-    # so baseline A/B comparisons remain possible.
+    # ── RETEST (off by default so A/B stays possible) ──────────────────
+    # Creating a POI is not an entry. The research architecture requires price
+    # to RETURN to the zone before a trade is allowed. Without this the engine
+    # can enter on a bar where price is nowhere near the order block, which is
+    # not what the setup describes.
     "require_retest": False,
-    "retest_max_wait": 40,
-    "retest_depth": 0.0,
+    "retest_max_wait": 40,      # bars a POI waits to be retested before expiry
+    "retest_depth": 0.0,        # 0 = touching the zone edge counts as a retest
+
+    # ── POI SOURCES ────────────────────────────────────────────────────
+    # The architecture has two PARALLEL paths after structure acceptance:
+    #
+    #     STRUCTURE ACCEPTANCE
+    #        |            |
+    #        v            v
+    #      OB POI      FVG POI
+    #        |            |
+    #        +-----+------+
+    #              v
+    #            RETEST
+    #
+    # They are alternatives, not an AND. The research explicitly rejected
+    # making OB+FVG overlap mandatory, so an FVG left by the displacement leg
+    # is a POI in its own right even when no order block qualified.
+    #
+    # Default stays ["ob"] so this is A/B-testable against the frozen
+    # baseline rather than silently changing every result.
+    "poi_sources": ["ob"],       # ["ob"], ["fvg"], or ["ob", "fvg"]
+    "fvg_min_size_atr": 0.0,     # optional floor on FVG height
 }
 
 
@@ -167,137 +186,10 @@ class Setup:
     expires_ts: pd.Timestamp
     has_fvg: bool
     swept: bool
-    poi_quality: str = "OB"   # OB | FVG | OB+FVG
-    retest_ts: object = None   # first 15M bar that returns to the POI
-    state: str = "READY"       # READY | WAITING_FOR_RETEST | RETESTED | DEAD
-    dead_ts: object = None     # when price invalidated the zone, if it did
-
-
-
-def _structure_confirmed_after_bos(
-    df,
-    swings,
-    bos,
-    confirm_bars=2,
-    max_structure_bars=12,
-):
-    """Post-BOS structural confirmation.
-
-    Bull:
-      - new high above BOS level
-      - higher low above the last protected low
-      - confirm_bars closes remain above BOS level
-
-    Bear:
-      - new low below BOS level
-      - lower high below the last protected high
-      - confirm_bars closes remain below BOS level
-    """
-    if bos.is_sweep:
-        return None
-
-    start = bos.idx + 1
-    end = min(start + max_structure_bars, len(df) - 1)
-
-    prior = [
-        s for s in swings
-        if s.confirmed_idx <= bos.idx
-    ]
-
-    if bos.side == "bull":
-        protected_lows = [
-            s for s in prior
-            if s.kind == "low"
-        ]
-        if not protected_lows:
-            return None
-
-        protected_low = protected_lows[-1]
-
-        hh = next(
-            (
-                s for s in swings
-                if s.kind == "high"
-                and s.confirmed_idx > bos.idx
-                and s.confirmed_idx <= end
-                and s.price > bos.level
-            ),
-            None,
-        )
-        if hh is None:
-            return None
-
-        hl = next(
-            (
-                s for s in swings
-                if s.kind == "low"
-                and s.confirmed_idx > hh.confirmed_idx
-                and s.confirmed_idx <= end
-                and s.price > protected_low.price
-            ),
-            None,
-        )
-        if hl is None:
-            return None
-
-        persist_start = hl.confirmed_idx + 1
-        persist_end = hl.confirmed_idx + confirm_bars
-
-        if persist_end >= len(df):
-            return None
-
-        for j in range(persist_start, persist_end + 1):
-            if float(df["close"].iat[j]) <= bos.level:
-                return None
-
-        return persist_end
-
-    protected_highs = [
-        s for s in prior
-        if s.kind == "high"
-    ]
-    if not protected_highs:
-        return None
-
-    protected_high = protected_highs[-1]
-
-    ll = next(
-        (
-            s for s in swings
-            if s.kind == "low"
-            and s.confirmed_idx > bos.idx
-            and s.confirmed_idx <= end
-            and s.price < bos.level
-        ),
-        None,
-    )
-    if ll is None:
-        return None
-
-    lh = next(
-        (
-            s for s in swings
-            if s.kind == "high"
-            and s.confirmed_idx > ll.confirmed_idx
-            and s.confirmed_idx <= end
-            and s.price < protected_high.price
-        ),
-        None,
-    )
-    if lh is None:
-        return None
-
-    persist_start = lh.confirmed_idx + 1
-    persist_end = lh.confirmed_idx + confirm_bars
-
-    if persist_end >= len(df):
-        return None
-
-    for j in range(persist_start, persist_end + 1):
-        if float(df["close"].iat[j]) >= bos.level:
-            return None
-
-    return persist_end
+    dead_ts: object = None    # when price invalidated the zone, if it did
+    retest_ts: object = None  # when price first returned into the POI
+    state: str = "READY"      # READY | WAITING_FOR_RETEST | RETESTED | DEAD
+    poi_quality: str = "OB"   # OB | OB+FVG
 
 
 def find_setups(df_15m, p=None, calib_end=None):
@@ -317,293 +209,224 @@ def find_setups(df_15m, p=None, calib_end=None):
     sweeps = [b for b in bos if b.is_sweep]
 
     kept = []
-    structure_confirmed = {}
-
     for b in breaks:
         want = "bear" if b.side == "bull" else "bull"
+        if any(s.side == want and 0 < b.idx - s.idx <= p["sweep_window"] for s in sweeps):
+            kept.append(b)
 
-        has_sweep = any(
-            s.side == want
-            and 0 < b.idx - s.idx <= p["sweep_window"]
-            for s in sweeps
-        )
+    confirm_at = {}
+    if p.get("require_structure_confirmation"):
+        kept, confirm_at = _confirm_structure(df, kept, swings, p)
 
-        if not has_sweep:
-            continue
-
-        # Frozen baseline:
-        # Sweep -> BOS -> POI
-        if p.get("require_structure_confirmation", False):
-            confirmed_idx = _structure_confirmed_after_bos(
-                df,
-                swings,
-                b,
-                confirm_bars=p.get("structure_confirm_bars", 2),
-                max_structure_bars=p.get("structure_max_bars", 12),
-            )
-
-            if confirmed_idx is None:
-                continue
-        else:
-            # No experimental gate: BOS itself is the confirmation point.
-            confirmed_idx = b.idx
-
-        kept.append(b)
-        structure_confirmed[b.idx] = confirmed_idx
+    use_ob = "ob" in p.get("poi_sources", ["ob"])
+    use_fvg = "fvg" in p.get("poi_sources", ["ob"])
 
     obs = poi.find_order_blocks(
         df, kept,
         lookback=p.get("ob_lookback", 30),
         require_sweep=p.get("require_ob_sweep", True),
         require_imbalance=p.get("require_ob_imbalance", True),
-        imbalance_window=p.get("imbalance_window", 3),
-    )
+        imbalance_window=p.get("imbalance_window", 3))
+    fvgs = poi.find_fvgs(df, body_threshold=thr, require_displacement=True)
 
-    fvgs = poi.find_fvgs(
-        df,
-        body_threshold=thr,
-        require_displacement=True,
-    )
+    if not use_ob:
+        obs = []
 
-    mode = str(p.get("poi_mode", "OB")).upper()
-    if mode not in {"OB", "FVG", "OB_OR_FVG"}:
-        raise ValueError(
-            f"unknown poi_mode {mode!r}; "
-            f"expected OB, FVG or OB_OR_FVG"
-        )
+    # ── FVG AS A POI IN ITS OWN RIGHT ───────────────────────────────────
+    # An FVG only qualifies when it was left BY the displacement leg that
+    # broke structure: same side, formed at or before the break, and inside
+    # the lookback window. A gap that merely happens to sit nearby is not a
+    # point of interest, it is a coincidence — which is exactly what the
+    # lineage audit found when it reported fvg_from_displacement_leg at zero.
+    if use_fvg:
+        look = int(p.get("ob_lookback", 30))
+        floor_atr = float(p.get("fvg_min_size_atr", 0.0))
+        rng = (df["high"] - df["low"]).rolling(14, min_periods=5).mean().to_numpy()
+        claimed = {z.formed_idx for z in obs}
+        for ev in kept:
+            for f in fvgs:
+                if f.side != ev.side:
+                    continue
+                if not (ev.idx - look <= f.formed_idx <= ev.idx):
+                    continue
+                if f.formed_idx in claimed:
+                    continue
+                if floor_atr > 0:
+                    a = rng[f.formed_idx]
+                    if not np.isfinite(a) or a <= 0 or (f.top - f.bottom) < floor_atr * a:
+                        continue
+                # the gap becomes tradeable only once the break confirmed it
+                f.confirmed_idx = max(f.confirmed_idx, ev.idx)
+                f.meta["from_break_idx"] = ev.idx
+                obs.append(f)
+                claimed.add(f.formed_idx)
+                break
 
-    # --------------------------------------------------------
-    # Build a clean POI list.
-    #
-    # OB:
-    #   keep the existing order-block implementation.
-    #
-    # FVG:
-    #   for each accepted BOS, choose the first same-direction FVG
-    #   confirmed after the BOS and no later than the structure
-    #   confirmation point.
-    #
-    # OB_OR_FVG:
-    #   keep both independently. Overlap is information, not a
-    #   mandatory requirement.
-    # --------------------------------------------------------
-    poi_zones = []
-
-    if mode in {"OB", "OB_OR_FVG"}:
-        for z in obs:
-            poi_zones.append(z)
-
-    if mode in {"FVG", "OB_OR_FVG"}:
-        for b in kept:
-            activation_idx = structure_confirmed.get(b.idx, b.idx)
-
-            candidates = [
-                f for f in fvgs
-                if f.side == b.side
-                and f.confirmed_idx > b.idx
-                and f.confirmed_idx <= activation_idx
-            ]
-
-            if not candidates:
-                continue
-
-            # One FVG POI per accepted BOS.
-            # The first confirmed gap is treated as the primary
-            # displacement POI for this experiment.
-            z = candidates[0]
-
-            # Make the relationship explicit for downstream logic.
-            z.meta["bos_idx"] = b.idx
-            z.meta["setup_swept"] = True
-            z.meta["poi_source"] = "FVG"
-
-            poi_zones.append(z)
-
-    # Existing OBs are normally already tagged by find_order_blocks(),
-    # but make their lineage explicit for the shared activation logic.
-    for z in obs:
-        if z in poi_zones:
-            z.meta.setdefault("poi_source", "OB")
+    obs.sort(key=lambda z: z.confirmed_idx)
 
     # BUG FIX: mitigation was never applied on the 15M frame. A zone that price
     # had already torn straight through stayed "active" until its age expired,
     # so entries were being taken into dead levels. Replaying bar by bar is the
     # only safe way to do this — vectorising it would leak future bars in.
     for i in range(len(df)):
-        poi.update_zones(poi_zones, df, i, p.get("kill_on", "full"))
+        poi.update_zones(obs, df, i, p.get("kill_on", "full"))
 
     ts = _ts(df["ts"]).to_numpy()
     bar = pd.Timedelta(minutes=TF_MINUTES["15m"])
+    if confirm_at:
+        # a zone cannot be traded before its structure shift completed
+        for z in obs:
+            c = confirm_at.get(z.confirmed_idx)
+            if c is not None and c > z.confirmed_idx:
+                z.confirmed_idx = c
 
-    # --------------------------------------------------------
-    # RETEST DETECTION
-    #
-    # The POI is a location, not an entry. When retest is enabled,
-    # price must return to the POI after the POI becomes eligible.
-    # The scan is strictly forward from activation_idx, so it is
-    # causal.
-    # --------------------------------------------------------
+    # ── RETEST DETECTION ────────────────────────────────────────────────
+    # For each zone, the first bar AT OR AFTER its confirmation where price
+    # trades back into the zone. Scanned forward bar by bar from the
+    # confirmation bar, so it can never see a return that has not happened.
     retest_idx = {}
-
-    if p.get("require_retest", False):
-        highs = df["high"].to_numpy()
-        lows = df["low"].to_numpy()
-
+    if p.get("require_retest"):
+        hi_a = df["high"].to_numpy()
+        lo_a = df["low"].to_numpy()
         wait = int(p.get("retest_max_wait", 40))
         depth = float(p.get("retest_depth", 0.0))
-
-        for z in poi_zones:
-            bos_idx = z.meta.get("bos_idx")
-            structure_idx = (
-                structure_confirmed.get(bos_idx, z.confirmed_idx)
-                if bos_idx is not None
-                else z.confirmed_idx
-            )
-
-            activation_idx = max(
-                z.confirmed_idx,
-                structure_idx,
-            )
-
-            span = float(z.top - z.bottom)
-
-            # depth=0 means the nearest edge of the zone is enough.
-            # Larger depth means price must return further inside.
-            if z.side == "bull":
-                retest_level = z.top - span * depth
-            else:
-                retest_level = z.bottom + span * depth
-
-            last = min(
-                activation_idx + wait,
-                len(df) - 1,
-            )
-
-            for j in range(activation_idx + 1, last + 1):
-                if z.side == "bull":
-                    touched = lows[j] <= retest_level
-                else:
-                    touched = highs[j] >= retest_level
-
-                if touched:
+        for z in obs:
+            span = z.top - z.bottom
+            # depth 0 = the zone edge; higher values demand a deeper return
+            edge = (z.top - span * depth) if z.side == "bull" \
+                else (z.bottom + span * depth)
+            last = min(z.confirmed_idx + wait, len(df) - 1)
+            for j in range(z.confirmed_idx, last + 1):
+                inside = (lo_a[j] <= edge) if z.side == "bull" \
+                    else (hi_a[j] >= edge)
+                if inside:
                     retest_idx[id(z)] = j
                     break
 
     setups = []
-
-    for z in poi_zones:
-        bos_idx = z.meta.get("bos_idx")
-        structure_idx = (
-            structure_confirmed.get(bos_idx, z.confirmed_idx)
-            if bos_idx is not None
-            else z.confirmed_idx
-        )
-
-        # In Gate-2, the POI cannot become tradeable before the
-        # accepted structure has completed.
-        activation_idx = max(z.confirmed_idx, structure_idx)
-
-        entry_mode = p.get("ob_entry_mode", "body")
-
-        # Zone.entry_at() works for both OB and FVG zones.
-        entry = z.entry_at(entry_mode)
+    for z in obs:
+        has_fvg = any(f.confirmed_idx <= z.confirmed_idx and poi.dragon_fruit(z, f)
+                      for f in fvgs)
+        mode = p.get("ob_entry_mode", "body")
+        entry = z.entry_at(mode)
         stop = z.stop_at(p.get("stop_buffer_frac", 0.10))
-        exp_idx = min(
-            z.confirmed_idx + p["max_age"],
-            len(df) - 1,
-        )
-
-        # For FVG setups, the associated BOS supplied the liquidity sweep.
-        swept = bool(
-            z.meta.get("swept_previous")
-            or z.meta.get("setup_swept")
-        )
-
-        poi_source = z.meta.get(
-            "poi_source",
-            "OB" if z.kind == "ob" else "FVG",
-        )
-
-        # In OB_OR_FVG, indicate when an OB also has an associated FVG.
-        has_fvg = any(
-            f.confirmed_idx <= activation_idx
-            and f.side == z.side
-            and poi.dragon_fruit(z, f)
-            for f in fvgs
-        )
-
-        poi_quality = (
-            "OB+FVG"
-            if poi_source == "OB" and has_fvg
-            else poi_source
-        )
-
+        exp_idx = min(z.confirmed_idx + p["max_age"], len(df) - 1)
         setups.append(Setup(
             ts=pd.Timestamp(ts[z.formed_idx]),
             side=z.side,
-            zone_top=z.top,
-            zone_bottom=z.bottom,
-            ote_low=entry,
-            ote_high=entry,
-            entry_level=entry,
-            entry_mode=entry_mode,
+            zone_top=z.top, zone_bottom=z.bottom,
+            ote_low=entry, ote_high=entry,
+            entry_level=entry, entry_mode=mode,
             stop_level=stop,
-            swept=swept,
-            imbalance=bool(
-                z.meta.get("imbalance")
-                or poi_source == "FVG"
-            ),
-            confirmed_ts=pd.Timestamp(ts[activation_idx]) + bar,
+            swept=bool(z.meta.get("swept_previous")),
+            imbalance=bool(z.meta.get("imbalance")),
+            # confirmed only once the 15M candle that broke structure CLOSED
+            confirmed_ts=pd.Timestamp(ts[z.confirmed_idx]) + bar,
             expires_ts=pd.Timestamp(ts[exp_idx]) + bar,
-            has_fvg=has_fvg or poi_source == "FVG",
-            poi_quality=poi_quality,
-
-            retest_ts=(
-                pd.Timestamp(ts[retest_idx[id(z)]]) + bar
-                if id(z) in retest_idx
-                else None
-            ),
-
-            state=(
-                "RETESTED"
-                if id(z) in retest_idx
-                else (
-                    "WAITING_FOR_RETEST"
-                    if p.get("require_retest", False)
-                    else "READY"
-                )
-            ),
-
-            dead_ts=(
-                pd.Timestamp(ts[z.dead_idx]) + bar
-                if z.dead_idx is not None
-                else None
-            ),
+            has_fvg=has_fvg,
+            poi_quality=("FVG" if z.kind == "fvg"
+                         else "OB+FVG" if has_fvg else "OB"),
+            retest_ts=(pd.Timestamp(ts[retest_idx[id(z)]]) + bar
+                       if id(z) in retest_idx else None),
+            state=("RETESTED" if id(z) in retest_idx
+                   else "WAITING_FOR_RETEST" if p.get("require_retest")
+                   else "READY"),
+            dead_ts=(pd.Timestamp(ts[z.dead_idx]) + bar
+                     if z.dead_idx is not None else None),
         ))
-
-    # Avoid two identical POIs at the exact same structural event/price.
-    deduped = []
-    seen = set()
-
-    for z in setups:
-        key = (
-            z.confirmed_ts,
-            z.side,
-            round(float(z.zone_top), 8),
-            round(float(z.zone_bottom), 8),
-            z.poi_quality,
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(z)
-
-    setups = deduped
-    setups.sort(key=lambda x: x.confirmed_ts)
-
+    setups.sort(key=lambda s: s.confirmed_ts)
     # report the latest usable threshold value, not the whole series
     last = pd.Series(thr).dropna()
     return setups, (float(last.iat[-1]) if len(last) else float("nan"))
+
+
+def _confirm_structure(df, breaks, swings, p):
+    """A break is only a structure SHIFT once the market builds on it.
+
+    For a bull BOS at bar b, all three must happen within confirm_max_wait
+    bars, and only then is the setup tradeable:
+
+        1. no candle CLOSES back below the broken level
+        2. a higher low forms   (a pullback low above the break bar's low)
+        3. a higher high prints (above the high of the break candle)
+
+    Bear is the mirror.
+
+    THE COST, STATED PLAINLY. The expensive part is not the rejected breaks,
+    it is the DELAY. A setup confirmed at bar b+5 cannot be traded at bar b,
+    so price has already moved by the time the zone opens. The confirmation
+    bar is returned separately and applied to the zone, because leaving the
+    zone tradeable from b would let the backtest act on a confirmation that
+    had not happened yet.
+
+    b.idx is deliberately NOT moved: find_order_blocks searches backwards from
+    b.idx for the last opposite-colour candle, so shifting it would select a
+    candle from inside the post-break move instead of the one that caused it.
+
+    Returns (confirmed_breaks, {break_idx: confirmation_idx}).
+    """
+    highs = df["high"].to_numpy()
+    lows = df["low"].to_numpy()
+    closes = df["close"].to_numpy()
+    n = len(df)
+    need = int(p.get("confirm_bars", 2))
+    wait = int(p.get("confirm_max_wait", 12))
+
+    kept, at = [], {}
+    for b in breaks:
+        i = b.idx
+        last = min(i + wait, n - 1)
+        if last - i < need:
+            continue
+
+        ref_high, ref_low, level = highs[i], lows[i], b.level
+        got_pullback, pull_extreme = False, None
+        shift_at, done = None, None
+
+        for j in range(i + 1, last + 1):
+            # 1. the break must hold on a CLOSING basis
+            if b.side == "bull" and closes[j] < level:
+                break
+            if b.side == "bear" and closes[j] > level:
+                break
+
+            # PERSISTENCE COUNTING. confirm_bars means N closed bars AFTER the
+            # shift completes, not including the bar that completed it. The
+            # earlier version counted the completing candle itself, so
+            # confirm_bars=2 was really demanding one bar of persistence.
+            if shift_at is not None:
+                if j - shift_at >= need:
+                    done = j
+                    break
+                continue
+
+            if b.side == "bull":
+                if not got_pullback:
+                    if lows[j] < lows[j - 1]:
+                        got_pullback, pull_extreme = True, lows[j]
+                else:
+                    pull_extreme = min(pull_extreme, lows[j])
+                    if pull_extreme > ref_low and highs[j] > ref_high:
+                        shift_at = j          # HL then HH: the shift is complete
+                        if need == 0:
+                            done = j
+                            break
+            else:
+                if not got_pullback:
+                    if highs[j] > highs[j - 1]:
+                        got_pullback, pull_extreme = True, highs[j]
+                else:
+                    pull_extreme = max(pull_extreme, highs[j])
+                    if pull_extreme < ref_high and lows[j] < ref_low:
+                        shift_at = j          # LH then LL: the shift is complete
+                        if need == 0:
+                            done = j
+                            break
+
+        if done is not None:
+            kept.append(b)
+            at[b.idx] = done
+    return kept, at
 
 
 # ---------------------------------------------------------------------------
@@ -719,14 +542,13 @@ def active_setups_at(setups, ts, side=None):
             continue
         if s.dead_ts is not None and s.dead_ts <= ts:
             continue
-
-        # A POI that has not yet been retested is not tradeable.
+        # a POI that has not been retested is not tradeable. This is the whole
+        # point of the retest architecture: the setup is defined once and then
+        # followed until price returns, expires or is invalidated.
         if s.state == "WAITING_FOR_RETEST":
             continue
-
         if s.retest_ts is not None and s.retest_ts > ts:
             continue
-
         if side and s.side != side:
             continue
         out.append(s)
@@ -780,16 +602,11 @@ def _evaluate(bias, trigger, setups, ts):
         if any_side:
             return "NO_TRADE", None, None, None, "SETUP_WRONG_WAY"
         confirmed = [x for x in setups if x.confirmed_ts <= ts]
+        if any(x.state == "WAITING_FOR_RETEST" and x.side == side
+               for x in confirmed):
+            return "NO_TRADE", None, None, None, "AWAITING_RETEST"
         if any(x.dead_ts is not None and x.dead_ts <= ts for x in confirmed):
             return "NO_TRADE", None, None, None, "SETUP_MITIGATED"
-
-        if any(
-            x.state == "WAITING_FOR_RETEST"
-            and x.side == side
-            for x in confirmed
-        ):
-            return "NO_TRADE", None, None, None, "AWAITING_RETEST"
-
         if any(x.expires_ts < ts for x in confirmed):
             return "NO_TRADE", None, None, None, "SETUP_EXPIRED"
         return "NO_TRADE", None, None, None, "NO_SETUP"
