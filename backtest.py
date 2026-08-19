@@ -789,51 +789,145 @@ def _walk_forward(symbol, df5, ctx, cfg, warm, n):
 def _sensitivity(symbol, df5, df15, df1h, cfg, params, oos_start, n):
     """Nudge one parameter at a time, OUT OF SAMPLE ONLY.
 
-    A result that survives only one exact setting is fragile whatever the
-    headline number says. Measuring that on in-sample bars would be measuring
-    how well the parameters fit the data they were chosen on.
+    Each parameter is tested independently while all other parameters remain
+    fixed. The test uses ONLY the out-of-sample window.
+
+    Important:
+      - The OOS end is `n`, not `n - 1`, because run_arm() uses an exclusive
+        hi_i boundary. Using n - 1 silently discarded the final 5m bar.
+      - Parameters that are not actually consumed by the engine are excluded.
+      - Zero-trade runs are reported separately and are NOT counted as
+        profitable or losing runs.
     """
-    # ote_high was in this grid but no longer reaches the entry logic: since
-    # order block entries replaced OTE, find_setups sets ote_low = ote_high =
-    # entry_level. All three values produced byte-identical runs, so three of
-    # nine "independent tests" were duplicates and the fragility score was
-    # computed against an inflated denominator. Replaced with parameters that
-    # are genuinely read by the engine.
-    grid = {"max_age": [40, 60, 90],
-            "sweep_window": [10, 20, 30],
-            "trigger_lookback": [2, 3, 5],
-            "ob_entry_mode": ["wick", "body", "50"],
-            "stop_buffer_frac": [0.05, 0.10, 0.15]}
+
+    # These parameters are genuinely consumed by mtf_engine.
+    #
+    # ote_high was intentionally removed from this grid because OTE entries
+    # were replaced by order-block entries. find_setups() now makes
+    # ote_low/ote_high equal to entry_level, so testing ote_high created
+    # duplicate runs and inflated the apparent number of independent tests.
+    grid = {
+        "max_age": [40, 60, 90],
+        "sweep_window": [10, 20, 30],
+        "trigger_lookback": [2, 3, 5],
+        "ob_entry_mode": ["wick", "body", "50"],
+        "stop_buffer_frac": [0.05, 0.10, 0.15],
+    }
+
     rows = []
+
     for key, vals in grid.items():
         for v in vals:
             p = {**params, key: v}
+
             try:
+                # Rebuild the complete MTF context with ONLY this parameter
+                # changed.
                 ctx = mtf.build_context(df5, df15, df1h, p)
-                tr, _ = run_arm(symbol, df5, ctx, "smc_mtf", cfg, oos_start, n - 1)
+
+                # IMPORTANT:
+                # run_arm() treats hi_i as an EXCLUSIVE endpoint.
+                # Therefore `n` includes the complete OOS data through the
+                # final available bar.
+                tr, _ = run_arm(
+                    symbol,
+                    df5,
+                    ctx,
+                    "smc_mtf",
+                    cfg,
+                    oos_start,
+                    n,
+                )
+
                 m = metrics(tr, "smc_mtf")
-                rows.append({"param": key, "value": v, "slice": "out_of_sample",
-                             "trades": m.get("trades", 0),
-                             "win_rate_pct": m.get("win_rate_pct"),
-                             "profit_factor": m.get("profit_factor"),
-                             "expectancy_inr": m.get("expectancy_inr", 0),
-                             "net_inr": m.get("net_pnl_inr", 0)})
+
+                rows.append({
+                    "param": key,
+                    "value": v,
+                    "slice": "out_of_sample",
+                    "trades": m.get("trades", 0),
+                    "win_rate_pct": m.get("win_rate_pct"),
+                    "profit_factor": m.get("profit_factor"),
+                    "expectancy_inr": m.get("expectancy_inr", 0),
+                    "net_inr": m.get("net_pnl_inr", 0),
+                })
+
             except Exception as e:
-                rows.append({"param": key, "value": v, "slice": "out_of_sample", "error": str(e)})
-    scored = [r for r in rows if "error" not in r and r.get("trades", 0) > 0]
-    exps = [r.get("expectancy_inr", 0) for r in scored]
-    positive = sum(1 for e in exps if e > 0)
-    # runs that produced no trades are not evidence either way; counting them
-    # as failures made every sparse strategy look fragile by construction
-    skipped = len(rows) - len(scored)
-    return {"runs": rows,
-            "positive_of_total": f"{positive}/{len(exps)}" if exps else "0/0",
-            "runs_with_no_trades": skipped,
-            "distinct_params": len(set(r["param"] for r in rows)),
-            "fragile": bool(exps) and positive <= max(1, len(exps) // 4),
-            "note": ("runs producing zero trades are excluded from the ratio. "
-                     "They mean the parameter suppressed the strategy, not "
-                     "that it lost money.")}
+                rows.append({
+                    "param": key,
+                    "value": v,
+                    "slice": "out_of_sample",
+                    "error": str(e),
+                })
+
+    # Only successful runs with at least one trade can tell us anything about
+    # performance.
+    scored = [
+        r for r in rows
+        if "error" not in r and r.get("trades", 0) > 0
+    ]
+
+    exps = [
+        float(r.get("expectancy_inr", 0))
+        for r in scored
+    ]
+
+    positive = sum(
+        1 for e in exps
+        if e > 0
+    )
+
+    errors = [
+        r for r in rows
+        if "error" in r
+    ]
+
+    no_trade = [
+        r for r in rows
+        if "error" not in r and r.get("trades", 0) == 0
+    ]
+
+    # A strategy should not be called fragile merely because a parameter
+    # completely suppresses trading. Those runs are reported separately.
+    fragile = bool(exps) and positive <= max(
+        1,
+        len(exps) // 4,
+    )
+
+    return {
+        "runs": rows,
+
+        "total_runs": len(rows),
+
+        "successful_runs_with_trades": len(scored),
+
+        "positive_runs": positive,
+
+        "positive_of_total": (
+            f"{positive}/{len(exps)}"
+            if exps
+            else "0/0"
+        ),
+
+        "runs_with_no_trades": len(no_trade),
+
+        "runs_with_errors": len(errors),
+
+        "distinct_params": len(
+            set(r["param"] for r in rows)
+        ),
+
+        "fragile": fragile,
+
+        "note": (
+            "Sensitivity was measured on out-of-sample bars only. "
+            "Runs producing zero trades are excluded from the positive "
+            "ratio because they indicate that the parameter suppressed "
+            "the strategy rather than that the strategy lost money. "
+            "The OOS end index is exclusive, so n is used to include "
+            "the final available bar."
+        ),
+    }
 
 
 def _excursion_stat(rows):
@@ -1025,3 +1119,5 @@ def _verdict(out):
     return _v("PROVEN_EDGE",
               f"Rs.{edge:.0f} per trade over the matched random mean ({z} sigma), "
               f"stable across folds and parameter nudges, on {n} trades.", edge)
+
+    
