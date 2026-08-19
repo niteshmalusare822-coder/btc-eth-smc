@@ -190,7 +190,17 @@ def report_for(symbol, bars):
             return {"symbol": symbol,
                     "error": meta.get("error", "no data"),
                     "data_quality": meta}
-        rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["1h"])
+        # Use the strategy defaults from mtf_engine.py as the single
+        # source of truth. Do not silently override research parameters here.
+        strategy_params = dict(mtf.PARAMS)
+
+        rep = B.full_report(
+            symbol,
+            frames["5m"],
+            frames["15m"],
+            frames["1h"],
+            params=strategy_params,
+        )
         rep["source"] = meta.get("source")
         rep["data_quality"] = meta
         return rep
