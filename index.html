@@ -82,18 +82,19 @@
     <div id="eth-content"></div>
   </div>
   <div class="coin-card">
-    <h2>DEXE/USDT</h2>
+    <h2>DEXE/USDT <span style="font-size:0.6em;color:#e0a030">unvalidated</span></h2>
     <div id="dexe-content"></div>
   </div>
   <div class="coin-card">
-    <h2>BANK/USDT</h2>
+    <h2>BANK/USDT <span style="font-size:0.6em;color:#e0a030">unvalidated</span></h2>
     <div id="bank-content"></div>
   </div>
 </div>
 
 <!-- Backtest Section -->
 <div class="backtest-section">
-  <h3>🧪 Backtest — Last 300 Candles</h3>
+  <h3>🧪 Backtest — smoke test only</h3>
+  <p style="color:#888;font-size:0.85em;margin:0 0 10px">Small sample. Confirms the engine runs; it does not measure edge.</p>
   <div class="backtest-controls">
     <select id="bt-symbol">
       <option value="BTC">BTC</option>
@@ -101,18 +102,17 @@
       <option value="DEXE">DEXE</option>
       <option value="BANK">BANK</option>
     </select>
-    <select id="bt-tf">
-      <option value="15m" selected>15m</option>
-      <option value="1h">1h</option>
-      <option value="4h">4h</option>
-    </select>
+    <span style="padding:8px 0;color:#aaa;font-size:0.9em">
+      1H bias · 15M setup · 5M entry
+    </span>
+    <input type="hidden" id="bt-tf" value="15m">
     <button onclick="runBacktest(
       document.getElementById('bt-symbol').value,
       document.getElementById('bt-tf').value
     )">▶ Run Backtest</button>
   </div>
   <div id="backtest-result">
-    👆 Symbol aur timeframe choose karo, phir Run karo
+    👆 Symbol choose karo, phir Run karo
   </div>
 </div>
 
