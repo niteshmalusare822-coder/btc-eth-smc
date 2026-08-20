@@ -598,6 +598,20 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
     # FIX C: fragility is judged on unseen bars only. Running it from `warm`
     # mixed in-sample results into the robustness check, which flatters it.
     out["sensitivity"] = _sensitivity(symbol, df5, df15, df1h, cfg, params, split, n)
+
+    # Frozen OOS A/B test for structure confirmation and retest.
+    # This does not modify the active strategy parameters.
+    out["structure_retest_ab"] = _structure_retest_ab(
+        symbol,
+        df5,
+        df15,
+        df1h,
+        cfg,
+        params,
+        split,
+        n,
+    )
+
     out["timeout_analysis"] = _timeout_analysis(log)
     out["signal_funnel"] = _funnel(gate_report)
     out["min_trades"] = cfg["min_trades"]
@@ -785,6 +799,96 @@ def _walk_forward(symbol, df5, ctx, cfg, warm, n):
         "folds_scored": scored,
         "total_folds": folds,
     }
+
+def _structure_retest_ab(
+    symbol,
+    df5,
+    df15,
+    df1h,
+    cfg,
+    params,
+    oos_start,
+    n,
+):
+    """Frozen OOS A/B test for structure confirmation and retest.
+
+    BASE is the current strategy configuration. Each variant changes only
+    structure-confirmation and/or retest. No source parameters are mutated.
+    All variants use exactly the same OOS window and execution engine.
+    """
+
+    variants = [
+        ("BASE", False, False),
+        ("STRUCTURE_ON", True, False),
+        ("RETEST_ON", False, True),
+        ("STRUCTURE_RETEST_ON", True, True),
+    ]
+
+    rows = []
+
+    for name, structure, retest in variants:
+        p = {
+            **params,
+            "require_structure_confirmation": structure,
+            "require_retest": retest,
+        }
+
+        try:
+            ctx = mtf.build_context(
+                df5,
+                df15,
+                df1h,
+                p,
+            )
+
+            tr, rej = run_arm(
+                symbol,
+                df5,
+                ctx,
+                "smc_mtf",
+                cfg,
+                oos_start,
+                n,
+                rng=np.random.default_rng(cfg["seed"]),
+            )
+
+            m = metrics(tr, "smc_mtf")
+
+            rows.append({
+                "test": name,
+                "structure_confirmation": structure,
+                "retest": retest,
+                "trades": m.get("trades", 0),
+                "win_rate_pct": m.get("win_rate_pct"),
+                "profit_factor": m.get("profit_factor"),
+                "expectancy_inr": m.get("expectancy_inr", 0),
+                "net_pnl_inr": m.get("net_pnl_inr", 0),
+                "max_drawdown_inr": m.get("max_drawdown_inr"),
+                "timeouts": m.get("timeouts", 0),
+                "stopped": m.get("stopped", 0),
+                "tp1_hit": m.get("tp1_hit", 0),
+                "tp2_hit": m.get("tp2_hit", 0),
+                "tp3_hit": m.get("tp3_hit", 0),
+            })
+
+        except Exception as e:
+            rows.append({
+                "test": name,
+                "structure_confirmation": structure,
+                "retest": retest,
+                "error": str(e),
+            })
+
+    return {
+        "tests": rows,
+        "oos_only": True,
+        "note": (
+            "Frozen chronological OOS A/B test. "
+            "Only structure confirmation and retest flags change; "
+            "all other strategy parameters remain unchanged."
+        ),
+    }
+
 
 def _sensitivity(symbol, df5, df15, df1h, cfg, params, oos_start, n):
     """Nudge one parameter at a time, OUT OF SAMPLE ONLY.
