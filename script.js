@@ -137,7 +137,7 @@ function renderTicket(s) {
       <div><label>Slippage</label><b>${inr(s.slippage_inr)}</b></div>
     </div>
     <div class="why">${s.reason || ""}</div>
-    <div class="src">${s.source || ""} · ${s.last_closed || ""}</div>
+    <div class="src">${s.source || ""} · ${s.last_closed || ""} UTC</div>
   </div>`;
 }
 
