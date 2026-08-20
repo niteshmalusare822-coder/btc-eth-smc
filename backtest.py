@@ -599,18 +599,14 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
     # mixed in-sample results into the robustness check, which flatters it.
     out["sensitivity"] = _sensitivity(symbol, df5, df15, df1h, cfg, params, split, n)
 
-    # Frozen OOS A/B test for structure confirmation and retest.
-    # This does not modify the active strategy parameters.
-    out["structure_retest_ab"] = _structure_retest_ab(
-        symbol,
-        df5,
-        df15,
-        df1h,
-        cfg,
-        params,
-        split,
-        n,
-    )
+    # A/B test for structure confirmation and retest.
+    # DISABLED. It ran on the out-of-sample slice, which turns the test set
+    # into a second training set: once four variants have been scored on OOS,
+    # picking the best one is selection, not validation. Re-enable only
+    # against the in-sample slice.
+    out["structure_retest_ab"] = {
+        "disabled": "ran on OOS; re-enable against in-sample only"
+    }
 
     out["timeout_analysis"] = _timeout_analysis(log)
     out["signal_funnel"] = _funnel(gate_report)
