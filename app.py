@@ -67,9 +67,9 @@ SYMBOLS = ["BTC", "ETH", "DEXE", "BANK"]
 SIGNAL_TTL = int(os.environ.get("SIGNAL_TTL", 120))
 REPORT_TTL = int(os.environ.get("REPORT_TTL", 3600))
 LIVE_BARS_5M = int(os.environ.get("LIVE_BARS_5M", 1200))
-REPORT_BARS_5M = D.clamp_bars(os.environ.get("REPORT_BARS_5M",
-                                             D.DEFAULT_BACKTEST_BARS))
-
+REPORT_BARS_5M = D.clamp_bars(
+    os.environ.get("REPORT_BARS_5M", 4000)
+)
 # /api/portfolio does four symbols in one request. Left at 10,000 bars each on
 # a 0.1 CPU instance it will not finish inside any sane timeout, so it gets its
 # own lower ceiling rather than silently hanging.
