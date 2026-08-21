@@ -428,7 +428,7 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
 
             if mode == "A":
                 busy_until = tr["exit_i"]
-            elif mode == "B":
+            elif mode == "c":
                 open_until[side] = tr["exit_i"]
             else:  # C / D
                 open_slots.append(tr["exit_i"])
