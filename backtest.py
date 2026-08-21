@@ -562,27 +562,79 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
            },
            "in_sample_bars": split - warm, "out_of_sample_bars": n - split,
            "costs": R.cost_summary(), "params": params}
-
     log, gate_report = [], {}
-    for name, lo, hi in [("in_sample", warm, split), ("out_of_sample", split, n - 1)]:
+    timing_detail = {
+        "arms": {},
+        "matched_baseline": {},
+        "walk_forward_seconds": None,
+        "sensitivity_seconds": None,
+        "timeout_analysis_seconds": None,
+        "funnel_seconds": None,
+        "verdict_seconds": None,
+    }
+
+    for name, lo, hi in [
+        ("in_sample", warm, split),
+        ("out_of_sample", split, n - 1),
+    ]:
         arms, by_arm = [], {}
+
         for arm in ("random", "smc", "smc_mtf"):
-            tr, rej = run_arm(symbol, df5, ctx, arm, cfg, lo, hi,
-                              rng=np.random.default_rng(cfg["seed"]))
+            arm_started_at = time.perf_counter()
+
+            tr, rej = run_arm(
+                symbol, df5, ctx, arm, cfg, lo, hi,
+                rng=np.random.default_rng(cfg["seed"])
+            )
+
+            arm_seconds = round(time.perf_counter() - arm_started_at, 3)
+
+            timing_detail["arms"][f"{name}_{arm}"] = {
+                "seconds": arm_seconds,
+                "trades": len(tr),
+            }
+
             by_arm[arm] = tr
+
             g = rej.pop("_gates", None)
             if g and arm == "smc_mtf":
                 gate_report[name] = g
+
             m = metrics(tr, arm.upper())
             m["rejected"] = rej
             m["rejected_by_sizing"] = sum(
                 v for k, v in rej.items()
-                if k != "_gates" and ("size" in k or "notional" in k
-                                      or "risk" in k or "minimum" in k))
+                if k != "_gates" and (
+                    "size" in k
+                    or "notional" in k
+                    or "risk" in k
+                    or "minimum" in k
+                )
+            )
             arms.append(m)
 
         for base in ("smc_mtf", "smc"):
-            mb = matched_baseline(symbol, df5, ctx, cfg, by_arm.get(base) or [])
+            baseline_started_at = time.perf_counter()
+
+            mb = matched_baseline(
+                symbol,
+                df5,
+                ctx,
+                cfg,
+                by_arm.get(base) or [],
+            )
+
+            baseline_seconds = round(
+                time.perf_counter() - baseline_started_at,
+                3,
+            )
+
+            timing_detail["matched_baseline"][
+                f"{name}_{base}"
+            ] = {
+                "seconds": baseline_seconds,
+            }
+
             if mb:
                 mb["arm"] = f"MATCHED_RANDOM_vs_{base.upper()}"
                 arms.append(mb)
@@ -590,6 +642,7 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
         if name == "out_of_sample":
             for arm in ("smc_mtf", "smc", "random"):
                 log.extend(by_arm.get(arm) or [])
+
         out[name] = arms
 
     log.sort(key=lambda t: t["signal_ts"])
@@ -597,10 +650,29 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
     out["trade_log"] = log
     out["trade_log_total"] = len(log)
 
-    out["walk_forward"] = _walk_forward(symbol, df5, ctx, cfg, warm, n)
+    wf_started_at = time.perf_counter()
+    out["walk_forward"] = _walk_forward(
+        symbol, df5, ctx, cfg, warm, n
+    )
+    timing_detail["walk_forward_seconds"] = round(
+        time.perf_counter() - wf_started_at, 3
+    )
     # FIX C: fragility is judged on unseen bars only. Running it from `warm`
     # mixed in-sample results into the robustness check, which flatters it.
-    out["sensitivity"] = _sensitivity(symbol, df5, df15, df1h, cfg, params, split, n)
+    sensitivity_started_at = time.perf_counter()
+    out["sensitivity"] = _sensitivity(
+        symbol,
+        df5,
+        df15,
+        df1h,
+        cfg,
+        params,
+        split,
+        n,
+    )
+    timing_detail["sensitivity_seconds"] = round(
+        time.perf_counter() - sensitivity_started_at, 3
+    )
 
     # A/B test for structure confirmation and retest.
     # DISABLED. It ran on the out-of-sample slice, which turns the test set
@@ -611,14 +683,33 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
         "disabled": "ran on OOS; re-enable against in-sample only"
     }
 
+    timeout_started_at = time.perf_counter()
     out["timeout_analysis"] = _timeout_analysis(log)
+    timing_detail["timeout_analysis_seconds"] = round(
+        time.perf_counter() - timeout_started_at, 3
+    )
+
+    funnel_started_at = time.perf_counter()
     out["signal_funnel"] = _funnel(gate_report)
+    timing_detail["funnel_seconds"] = round(
+        time.perf_counter() - funnel_started_at, 3
+    )
+
     out["min_trades"] = cfg["min_trades"]
+
+    verdict_started_at = time.perf_counter()
     out["verdict"] = _verdict(out)
+    timing_detail["verdict_seconds"] = round(
+        time.perf_counter() - verdict_started_at, 3
+    )
 
     out["timing"] = {
         "context_seconds": context_seconds,
-        "total_seconds": round(time.perf_counter() - started_at, 3),
+        "detail": timing_detail,
+        "total_seconds": round(
+            time.perf_counter() - started_at,
+            3,
+        ),
     } 
 
     return out
