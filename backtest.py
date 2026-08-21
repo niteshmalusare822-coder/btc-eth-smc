@@ -532,7 +532,7 @@ DEFAULT_CFG = {"max_hold": 60, "rand_sl_atr": 1.0, "n_random": 400,
                #   C  up to max_concurrent independent positions
                #   D  replace a losing-so-far position if a stronger setup
                #      appears (requires score_margin improvement)
-               "position_mode": "A",
+               "position_mode": "B",
                "max_concurrent": 2,
                "replace_score_margin": 2,
                "min_trades": 30,    # below this the verdict is INSUFFICIENT SAMPLE
