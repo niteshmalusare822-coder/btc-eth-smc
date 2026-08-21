@@ -285,7 +285,7 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
     open_until = {"bull": -1, "bear": -1}     # mode B
     open_slots = []                            # mode C/D: list of exit indices
     # FIX 12: where trades disappear, counted rather than guessed at
-    busy_side, open_until = {}, []
+    busy_side = {}
     gates = {"total_5m_bars": 0, "bars_with_atr": 0, "bars_not_busy": 0,
              "valid_1h_bias": 0, "matching_15m_setup": 0,
              "matching_5m_trigger": 0, "all_three_aligned": 0,
@@ -425,9 +425,13 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
         if tr:
             gates["entries_filled"] += 1
             trades.append(tr)
-            busy_until = tr["exit_i"]   # FIX 10: keyed to the real exit index
-            busy_side[side] = tr["exit_i"]
-            open_until.append(tr["exit_i"])
+
+            if mode == "A":
+                busy_until = tr["exit_i"]
+            elif mode == "B":
+                open_until[side] = tr["exit_i"]
+            else:  # C / D
+                open_slots.append(tr["exit_i"])
         else:
             _rej(why)
             if why and "fill" in why:
