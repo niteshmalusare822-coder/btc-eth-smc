@@ -536,6 +536,7 @@ DEFAULT_CFG = {"max_hold": 60, "rand_sl_atr": 1.0, "n_random": 400,
 
 
 def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
+    started_at = time.perf_counter()
     cfg = {**DEFAULT_CFG, **(cfg or {})}
     params = params or mtf.PARAMS
     rng = np.random.default_rng(cfg["seed"])
@@ -546,8 +547,9 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
 
     # Calibration is a trailing rolling quantile computed per bar, so there is
     # no split to get wrong and live computes the identical number.
+    t0 = time.perf_counter()
     ctx = mtf.build_context(df5, df15, df1h, params)
-
+    context_seconds = round(time.perf_counter() - t0, 3)
     ts = mtf._ts(df5["ts"])
     out = {"symbol": symbol, "bars_5m": n,
            "split": {
@@ -612,6 +614,12 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
     out["signal_funnel"] = _funnel(gate_report)
     out["min_trades"] = cfg["min_trades"]
     out["verdict"] = _verdict(out)
+
+    out["timing"] = {
+        "context_seconds": context_seconds,
+        "total_seconds": round(time.perf_counter() - started_at, 3),
+    } 
+
     return out
 
 
