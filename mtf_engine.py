@@ -296,7 +296,7 @@ def find_setups(df_15m, p=None, calib_end=None):
             edge = (z.top - span * depth) if z.side == "bull" \
                 else (z.bottom + span * depth)
             last = min(z.confirmed_idx + wait, len(df) - 1)
-            for j in range(z.confirmed_idx, last + 1):
+            for j in range(z.confirmed_idx + 1, last + 1):
                 inside = (lo_a[j] <= edge) if z.side == "bull" \
                     else (hi_a[j] >= edge)
                 if inside:
