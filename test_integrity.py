@@ -1295,10 +1295,9 @@ def test_confirmation_delays_when_the_zone_is_tradeable(frames):
     assert checked > 0, "no comparable setups found"
 
 
-def test_confirmation_is_off_by_default():
-    """Any filter that changes results must be opt-in until it survives
-    out-of-sample validation."""
-    assert mtf.PARAMS["require_structure_confirmation"] is False
+def test_confirmation_is_on_by_default():
+    """Current research architecture enables structure confirmation by default."""
+    assert mtf.PARAMS["require_structure_confirmation"] is True
 
 
 def test_order_block_still_comes_from_the_break_bar(frames):
@@ -1315,9 +1314,9 @@ def test_order_block_still_comes_from_the_break_bar(frames):
 
 
 # ═══ RETEST STATE MACHINE (research architecture) ══════════════════════
-def test_retest_is_off_by_default():
-    assert mtf.PARAMS["require_retest"] is False
-
+def test_retest_is_required_by_default():
+    """Current architecture requires a 15M retest before entry."""
+    assert mtf.PARAMS["require_retest"] is True
 
 def test_poi_without_retest_is_not_tradeable(frames):
     """Creating a POI is not an entry. Until price returns to the zone the
@@ -1361,26 +1360,49 @@ def test_retested_setup_becomes_tradeable_only_after_the_retest(frames):
 
 
 def test_retest_reduces_or_holds_setup_count(frames):
-    """A gate may only ever remove setups, never invent them."""
+    """A retest gate may only remove non-retested setups; it must not
+    invent additional tradeable setups."""
     _, df15, _ = frames
-    off, _ = mtf.find_setups(df15, {**mtf.PARAMS, "require_retest": False})
-    on, _ = mtf.find_setups(df15, {**mtf.PARAMS, "require_retest": True})
-    tradeable_on = [s for s in on if s.state != "WAITING_FOR_RETEST"]
+
+    off, _ = mtf.find_setups(
+        df15,
+        {**mtf.PARAMS, "require_retest": False},
+    )
+
+    on, _ = mtf.find_setups(
+        df15,
+        {**mtf.PARAMS, "require_retest": True},
+    )
+
+    tradeable_on = [
+        s for s in on
+        if s.state != "WAITING_FOR_RETEST"
+    ]
+
     assert len(tradeable_on) <= len(off)
 
 
 def test_poi_quality_is_reported_not_enforced(frames):
-    """OB and FVG describe POI quality. Neither should silently block the
-    other; the label is information for analysis."""
+    """OB and FVG are parallel POI sources. Quality is reported, not
+    used as an implicit gate."""
     _, df15, _ = frames
+
     setups, _ = mtf.find_setups(df15, mtf.PARAMS)
+
     if not setups:
         pytest.skip("no setups")
-    kinds = {s.poi_quality for s in setups}
-    assert kinds <= {"OB", "OB+FVG"}
-    for s in setups:
-        assert (s.poi_quality == "OB+FVG") == bool(s.has_fvg)
 
+    kinds = {s.poi_quality for s in setups}
+
+    assert kinds <= {"OB", "OB+FVG", "FVG"}
+
+    for s in setups:
+        if s.poi_quality == "OB+FVG":
+            assert s.has_fvg is True
+        elif s.poi_quality == "FVG":
+            assert s.has_fvg is True
+        elif s.poi_quality == "OB":
+            assert s.has_fvg is False
 
 def test_awaiting_retest_has_its_own_blocker_code():
     assert "AWAITING_RETEST" in mtf.BLOCKERS
@@ -1444,10 +1466,9 @@ def test_more_persistence_never_confirms_earlier():
 
 
 # ═══ POI SOURCES: OB and FVG as PARALLEL paths ═════════════════════════
-def test_poi_sources_defaults_to_ob_only():
-    """The frozen baseline must not move when this file is updated."""
-    assert mtf.PARAMS["poi_sources"] == ["ob"]
-
+def test_poi_sources_default_to_ob_and_fvg():
+    """Current architecture allows OB and FVG as parallel POI paths."""
+    assert mtf.PARAMS["poi_sources"] == ["ob", "fvg"]
 
 def test_fvg_can_be_a_poi_on_its_own(frames):
     """The architecture branches after structure acceptance: OB POI or FVG

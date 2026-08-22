@@ -118,53 +118,72 @@ def _calibrate(df, p, calib_end=None):
 # 1H BIAS
 # ---------------------------------------------------------------------------
 def htf_bias_series(df_1h, p=None, calib_end=None):
-    """BULLISH / BEARISH / NEUTRAL per 1H bar, causal.
+    """
+    BULLISH / BEARISH / NEUTRAL per 1H bar, causal.
 
-    Bias flips on a confirmed BOS and only stays valid while price holds on the
-    correct side of the last swing range equilibrium. Both conditions must
-    agree, otherwise the bar is NEUTRAL and no trade is allowed anywhere.
+    Direction-first:
+
+        valid bull BOS -> BULLISH
+        valid bear BOS -> BEARISH
+
+    Bias remains in that direction until an opposite valid BOS occurs.
+
+    IMPORTANT:
+    Rolling swing equilibrium is NOT used to turn the structural bias
+    NEUTRAL. NEUTRAL exists only before the first valid BOS.
     """
     p = p or PARAMS
+
     df = poi.add_candle_metrics(df_1h)
-    swings = poi.find_swings(df, p["swing_left"], p["swing_right"])
+
+    swings = poi.find_swings(
+        df,
+        p["swing_left"],
+        p["swing_right"],
+    )
+
     thr = _calibrate(df, p, calib_end)
-    bos = poi.find_bos(df, swings, body_threshold=thr, require_displacement=True)
+
+    bos = poi.find_bos(
+        df,
+        swings,
+        body_threshold=thr,
+        require_displacement=True,
+    )
 
     n = len(df)
     bias = np.array(["NEUTRAL"] * n, dtype=object)
 
+    # Ignore liquidity sweeps.
+    # Only confirmed/non-sweep BOS events change HTF direction.
     breaks = [b for b in bos if not b.is_sweep]
+
     cur = "NEUTRAL"
     bi = 0
-    # rolling equilibrium of the last confirmed swing high / low
-    last_hi = np.nan
-    last_lo = np.nan
-    si = 0
-    close = df["close"].to_numpy()
 
     for i in range(n):
-        while si < len(swings) and swings[si].confirmed_idx <= i:
-            s = swings[si]
-            if s.kind == "high":
-                last_hi = s.price
-            else:
-                last_lo = s.price
-            si += 1
+
         while bi < len(breaks) and breaks[bi].idx <= i:
-            cur = "BULLISH" if breaks[bi].side == "bull" else "BEARISH"
+            if breaks[bi].side == "bull":
+                cur = "BULLISH"
+            else:
+                cur = "BEARISH"
+
             bi += 1
 
-        if cur == "NEUTRAL" or np.isnan(last_hi) or np.isnan(last_lo) or last_hi <= last_lo:
-            bias[i] = "NEUTRAL"
-            continue
-
-        eq = poi.equilibrium(last_lo, last_hi)
         if cur == "BULLISH":
-            bias[i] = "BULLISH" if close[i] >= eq else "NEUTRAL"
-        else:
-            bias[i] = "BEARISH" if close[i] <= eq else "NEUTRAL"
+            bias[i] = "BULLISH"
 
-    return pd.DataFrame({"ts": df["ts"].values, "htf_bias": bias})
+        elif cur == "BEARISH":
+            bias[i] = "BEARISH"
+
+        else:
+            bias[i] = "NEUTRAL"
+
+    return pd.DataFrame({
+        "ts": df["ts"].values,
+        "htf_bias": bias,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +559,7 @@ def active_setups_at(setups, ts, side=None):
     for s in setups:
         if s.confirmed_ts > ts or s.expires_ts < ts:
             continue
-        if s.dead_ts is not None and s.dead_ts <= ts:
+        if s.dead_ts is not None and s.dead_ts < ts:
             continue
         # a POI that has not been retested is not tradeable. This is the whole
         # point of the retest architecture: the setup is defined once and then
