@@ -172,8 +172,12 @@ def blocker_text(code):
 # ---------------------------------------------------------------------------
 # SHARED HEAVY WORK
 # ---------------------------------------------------------------------------
-def _load(symbol, bars):
-    frames, meta = D.load_mtf(symbol, bars)
+def _load(symbol, bars, live=False):
+    frames, meta = D.load_mtf(
+        symbol,
+        bars,
+        live=live,
+    )
     return frames, (meta or {})
 
 
@@ -213,7 +217,11 @@ def report_for(symbol, bars):
 # LIVE SIGNAL
 # ---------------------------------------------------------------------------
 def build_signal(symbol):
-    frames, meta = _load(symbol, LIVE_BARS_5M)
+    frames, meta = _load(
+        symbol,
+        LIVE_BARS_5M,
+        live=True,
+    )
     if frames is None:
         return {"symbol": symbol, "action": "NO_TRADE",
                 "blocker": "NO_DATA",

@@ -356,7 +356,7 @@ def test_live_uses_the_last_closed_candle(monkeypatch):
     import app as A
     import data as D
 
-    def fake(sym, b5, allow_mixed=False):
+    def fake(sym, b5, allow_mixed=False, now=None, live=False):
         d5 = synth(b5, 5, 13)
         d = d5.set_index("ts")
         rs = lambda r: d.resample(r).agg(

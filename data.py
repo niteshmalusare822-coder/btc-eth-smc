@@ -871,16 +871,28 @@ def validate_ohlcv(
 
 def align_common_window(
     frames,
+    preserve_live_latest=False,
 ):
     """
-    Align 5m, 15m and 1h datasets to their shared historical period.
-    """
+    Align MTF datasets to a shared historical start.
 
+    BACKTEST:
+        Keep the original strict common historical window.
+        Every timeframe is clipped to common_start/common_end.
+
+    LIVE:
+        Keep common_start for sufficient history, but do NOT clip
+        the latest closed candle of 5m/15m/1h to the slowest
+        timeframe. Each timeframe keeps its own latest closed data.
+
+    This is important because 1h naturally closes less frequently
+    than 5m/15m. Using min(last_ts) in LIVE would unnecessarily
+    throw away fresh lower-timeframe candles.
+    """
     if not frames:
         return {}, None, None
 
     for df in frames.values():
-
         if df is None or df.empty:
             return {}, None, None
 
@@ -898,21 +910,34 @@ def align_common_window(
 
     for timeframe, df in frames.items():
 
-        result[timeframe] = (
-            df[
-                (df["ts"] >= common_start)
-                &
-                (df["ts"] <= common_end)
-            ]
-            .reset_index(drop=True)
-        )
+        if preserve_live_latest:
+            # LIVE:
+            # Keep every timeframe up to its own latest CLOSED candle.
+            # drop_forming() has already removed any still-forming candle.
+            result[timeframe] = (
+                df[
+                    df["ts"] >= common_start
+                ]
+                .reset_index(drop=True)
+            )
+
+        else:
+            # BACKTEST:
+            # Preserve the original strict common-window behavior.
+            result[timeframe] = (
+                df[
+                    (df["ts"] >= common_start)
+                    &
+                    (df["ts"] <= common_end)
+                ]
+                .reset_index(drop=True)
+            )
 
     return (
         result,
         common_start,
         common_end,
     )
-
 
 # =============================================================================
 # LOAD MULTI TIMEFRAME DATA
@@ -923,6 +948,7 @@ def load_mtf(
     bars_5m,
     allow_mixed=False,
     now=None,
+    live=False,
 ):
     """
     Load 5m, 15m and 1h historical data.
@@ -1021,6 +1047,7 @@ def load_mtf(
                 mixed=False,
                 warnings=warnings,
                 requested_evaluation_bars=requested_evaluation_bars,
+                preserve_live_latest=live,
             )
 
         venue_failures[venue] = failure_reason
@@ -1126,6 +1153,7 @@ def load_mtf(
         mixed=True,
         warnings=warnings,
         requested_evaluation_bars=requested_evaluation_bars,
+        preserve_live_latest=live,
     )
 
     if result[1] is not None:
@@ -1148,6 +1176,7 @@ def _finish(
     mixed,
     warnings,
     requested_evaluation_bars,
+    preserve_live_latest=False,
 ):
     """
     Validate, align and produce final data quality metadata.
