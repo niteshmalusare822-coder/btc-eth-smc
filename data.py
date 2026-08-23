@@ -1196,8 +1196,11 @@ def _finish(
         )
 
     frames, common_start, common_end = (
-        align_common_window(frames)
+    align_common_window(
+        frames,
+        preserve_live_latest=preserve_live_latest,
     )
+)
 
     if (
         common_start is None
