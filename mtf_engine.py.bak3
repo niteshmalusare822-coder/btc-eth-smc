@@ -60,7 +60,7 @@ PARAMS = {
     #
     # OFF by default. Turning it on must be justified out of sample against
     # the unchanged baseline, not assumed.
-    "require_structure_confirmation": False,
+    "require_structure_confirmation": True,
     "confirm_bars": 2,          # closed 15M candles the shift must survive
     "confirm_max_wait": 12,     # bars allowed to complete confirmation
 
@@ -69,7 +69,7 @@ PARAMS = {
     # to RETURN to the zone before a trade is allowed. Without this the engine
     # can enter on a bar where price is nowhere near the order block, which is
     # not what the setup describes.
-    "require_retest": False,
+    "require_retest": True,
     "retest_max_wait": 40,      # bars a POI waits to be retested before expiry
     "retest_depth": 0.0,        # 0 = touching the zone edge counts as a retest
 
