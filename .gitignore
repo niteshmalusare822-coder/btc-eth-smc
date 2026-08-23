@@ -6,3 +6,5 @@ venv/
 baseline_clean_*.json
 *.backup*
 *.bak_*
+*.bak*
+test_zerocost.py
