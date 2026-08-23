@@ -281,10 +281,6 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
     ts_all = mtf._ts(df5["ts"])
     tf_min = 5
     trades, rejected = [], {}
-    # ONE ENTRY PER SETUP. active_setups_at() returns the same live zone on
-    # every 5M bar until it expires, so decide() answers OK repeatedly for one
-    # setup at one entry level. SMC enters an order block once, on the retest.
-    traded_setups = set()
     busy_until = -1
     open_until = {"bull": -1, "bear": -1}     # mode B
     open_slots = []                            # mode C/D: list of exit indices
@@ -413,12 +409,6 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
                 ("OB+FVG" if s.has_fvg else "OB"), "ignored"
             reason_s = f"15M {setup_s} only, 1H and 5M gates bypassed"
 
-        setup_key = (s.confirmed_ts, s.entry_level, s.side)
-        if setup_key in traded_setups:
-            gates["duplicate_signal_rejected"] += 1
-            _rej("setup already traded once")
-            continue
-
         tr, why = _open_trade(symbol, df5, i, side, level, s.stop_level, atr[i],
                               cfg, tf_min, bias=bias_s, setup=setup_s,
                               trigger=trig_s, arm=arm,
@@ -433,23 +423,12 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
                                   "confirmation_5m": trig_s in ("bull", "bear"),
                               })
         if tr:
-            # marked only on a real fill, so a sizing rejection does not
-            # burn the setup
-            traded_setups.add(setup_key)
             gates["entries_filled"] += 1
             trades.append(tr)
 
             if mode == "A":
                 busy_until = tr["exit_i"]
-            elif mode == "B":
-                # WAS: mode == "c". Lowercase, so it never matched. The
-                # blocking test above reads open_until, which therefore stayed
-                # at -1 forever and blocked nothing. Under the default
-                # position_mode "B" the engine opened a fresh position on
-                # every bar while one was already running: 3043 SMC trades on
-                # ETH where 87 distinct opportunities existed. Those were not
-                # independent observations, so no verdict built on them meant
-                # anything.
+            elif mode == "c":
                 open_until[side] = tr["exit_i"]
             else:  # C / D
                 open_slots.append(tr["exit_i"])

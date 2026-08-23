@@ -283,36 +283,21 @@ def find_setups(df_15m, p=None, calib_end=None):
 
     obs.sort(key=lambda z: z.confirmed_idx)
 
-    ts = _ts(df["ts"]).to_numpy()
-    bar = pd.Timedelta(minutes=TF_MINUTES["15m"])
-
-    # ORDER MATTERS. Structure confirmation is applied BEFORE the mitigation
-    # replay, not after.
-    #
-    # update_zones() guards with `z.confirmed_idx > i: continue`, which is
-    # correct only if confirmed_idx is already final. Running the replay first
-    # judged zones from their BREAK bar, then confirmation pushed confirmed_idx
-    # forward by up to confirm_max_wait bars. Zones ended up carrying dead_ts
-    # EARLIER than confirmed_ts: dead before they were born, never tradeable
-    # at any instant.
-    #
-    # The lookup key is the BREAK index, because that is how _confirm_structure
-    # keys its map. Order blocks carry confirmed_idx == break idx and match
-    # directly, but an FVG POI sets confirmed_idx = max(own, break) and can end
-    # up ABOVE the break bar, missing the lookup and skipping the confirmation
-    # delay entirely — two POI paths under different rules, which makes any A/B
-    # between them meaningless. from_break_idx is recorded when the FVG is
-    # adopted, so it is used when present.
-    if confirm_at:
-        for z in obs:
-            key = z.meta.get("from_break_idx", z.confirmed_idx)
-            c = confirm_at.get(key)
-            if c is not None and c > z.confirmed_idx:
-                z.confirmed_idx = c
-        obs.sort(key=lambda z: z.confirmed_idx)
-
+    # BUG FIX: mitigation was never applied on the 15M frame. A zone that price
+    # had already torn straight through stayed "active" until its age expired,
+    # so entries were being taken into dead levels. Replaying bar by bar is the
+    # only safe way to do this — vectorising it would leak future bars in.
     for i in range(len(df)):
         poi.update_zones(obs, df, i, p.get("kill_on", "full"))
+
+    ts = _ts(df["ts"]).to_numpy()
+    bar = pd.Timedelta(minutes=TF_MINUTES["15m"])
+    if confirm_at:
+        # a zone cannot be traded before its structure shift completed
+        for z in obs:
+            c = confirm_at.get(z.confirmed_idx)
+            if c is not None and c > z.confirmed_idx:
+                z.confirmed_idx = c
 
     # ── RETEST DETECTION ────────────────────────────────────────────────
     # For each zone, the first bar AT OR AFTER its confirmation where price
@@ -344,11 +329,7 @@ def find_setups(df_15m, p=None, calib_end=None):
         mode = p.get("ob_entry_mode", "body")
         entry = z.entry_at(mode)
         stop = z.stop_at(p.get("stop_buffer_frac", 0.10))
-        # NOT clamped to len(df)-1. Clamping expired every setup near the end
-        # of the frame early: the last 15M bar closes up to 15 minutes before
-        # the last 5M bar, so a fresh setup could be reported expired on the
-        # very bar being judged. Expiry is max_age bars after confirmation,
-        # whether or not the data reaches that far.
+        exp_idx = min(z.confirmed_idx + p["max_age"], len(df) - 1)
         setups.append(Setup(
             ts=pd.Timestamp(ts[z.formed_idx]),
             side=z.side,
@@ -360,8 +341,7 @@ def find_setups(df_15m, p=None, calib_end=None):
             imbalance=bool(z.meta.get("imbalance")),
             # confirmed only once the 15M candle that broke structure CLOSED
             confirmed_ts=pd.Timestamp(ts[z.confirmed_idx]) + bar,
-            expires_ts=(pd.Timestamp(ts[z.confirmed_idx])
-                        + bar * (1 + int(p["max_age"]))),
+            expires_ts=pd.Timestamp(ts[exp_idx]) + bar,
             has_fvg=has_fvg,
             poi_quality=("FVG" if z.kind == "fvg"
                          else "OB+FVG" if has_fvg else "OB"),
@@ -640,28 +620,13 @@ def _evaluate(bias, trigger, setups, ts):
         any_side = active_setups_at(setups, ts)
         if any_side:
             return "NO_TRADE", None, None, None, "SETUP_WRONG_WAY"
-        # The blocker code is a MEASUREMENT, so it has to describe THIS bar.
-        # The old version ran any() over every setup ever confirmed, on either
-        # side, expired or not. A single stale WAITING_FOR_RETEST setup from
-        # days earlier pinned the code to AWAITING_RETEST indefinitely, so the
-        # blocker histogram counted the wrong gate and anything concluded from
-        # it was a conclusion about the wrong thing.
-        #
-        # Only setups that COULD have been active at ts are candidates: right
-        # side, already confirmed, not yet aged out.
-        cands = [x for x in setups
-                 if x.side == side
-                 and x.confirmed_ts <= ts <= x.expires_ts]
-        alive = [x for x in cands
-                 if not (x.dead_ts is not None and x.dead_ts < ts)]
-        if any(x.state == "WAITING_FOR_RETEST"
-               or (x.retest_ts is not None and x.retest_ts > ts)
-               for x in alive):
+        confirmed = [x for x in setups if x.confirmed_ts <= ts]
+        if any(x.state == "WAITING_FOR_RETEST" and x.side == side
+               for x in confirmed):
             return "NO_TRADE", None, None, None, "AWAITING_RETEST"
-        if cands:
-            # in-window candidates existed and none survived: price killed them
+        if any(x.dead_ts is not None and x.dead_ts <= ts for x in confirmed):
             return "NO_TRADE", None, None, None, "SETUP_MITIGATED"
-        if any(x.side == side and x.confirmed_ts <= ts for x in setups):
+        if any(x.expires_ts < ts for x in confirmed):
             return "NO_TRADE", None, None, None, "SETUP_EXPIRED"
         return "NO_TRADE", None, None, None, "NO_SETUP"
 
