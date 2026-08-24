@@ -8,3 +8,9 @@ baseline_clean_*.json
 *.bak_*
 *.bak*
 test_zerocost.py
+*.bak
+*.bak3
+*.backup_*
+*.pre-*
+__pycache__/
+venv/
