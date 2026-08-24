@@ -1,49 +1,3 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BTC ETH SMC Dashboard</title>
-<link rel="stylesheet" href="style.css?v=5">
-<style>
-  /* Backtest section styles */
-  .backtest-section {
-    max-width: 900px;
-    margin: 24px auto;
-    background: #1e1e2e;
-    border-radius: 12px;
-    padding: 16px;
-    border: 1px solid #333;
-  }
-  .backtest-section h3 {
-    color: #fff;
-    margin-bottom: 12px;
-    font-size: 1.1em;
-  }
-  .backtest-controls {
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-    margin-bottom: 12px;
-  }
-  .backtest-controls select,
-  .backtest-controls button {
-    padding: 8px 16px;
-    border-radius: 8px;
-    border: 1px solid #444;
-    background: #2a2a3e;
-    color: #fff;
-    font-size: 0.95em;
-    cursor: pointer;
-  }
-  .backtest-controls button {
-    background: #5c6bc0;
-    border: none;
-    font-weight: bold;
-  }
-  .backtest-controls button:hover {
-    background: #7986cb;
-  }
   /* Viability panel — sits directly under the status line so the first
      thing visible is whether this system has earned the right to be traded,
      not the signals themselves. */
@@ -51,16 +5,7 @@
     max-width: 900px;
     margin: 12px auto 0;
     color: #ddd;
-  }
-  #backtest-result {
-    background: #12121e;
-    border-radius: 8px;
-    padding: 12px;
-    color: #ccc;
-    font-size: 0.9em;
-    min-height: 48px;
-  }
-</style>
+  }</style>
 </head>
 <body>
 <header>
@@ -88,31 +33,6 @@
   <div class="coin-card">
     <h2>BANK/USDT <span style="font-size:0.6em;color:#e0a030">unvalidated</span></h2>
     <div id="bank-content"></div>
-  </div>
-</div>
-
-<!-- Backtest Section -->
-<div class="backtest-section">
-  <h3>🧪 Backtest — smoke test only</h3>
-  <p style="color:#888;font-size:0.85em;margin:0 0 10px">Small sample. Confirms the engine runs; it does not measure edge.</p>
-  <div class="backtest-controls">
-    <select id="bt-symbol">
-      <option value="BTC">BTC</option>
-      <option value="ETH">ETH</option>
-      <option value="DEXE">DEXE</option>
-      <option value="BANK">BANK</option>
-    </select>
-    <span style="padding:8px 0;color:#aaa;font-size:0.9em">
-      1H bias · 15M setup · 5M entry
-    </span>
-    <input type="hidden" id="bt-tf" value="15m">
-    <button onclick="runBacktest(
-      document.getElementById('bt-symbol').value,
-      document.getElementById('bt-tf').value
-    )">▶ Run Backtest</button>
-  </div>
-  <div id="backtest-result">
-    👆 Symbol choose karo, phir Run karo
   </div>
 </div>
 

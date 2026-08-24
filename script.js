@@ -2,7 +2,7 @@
  *
  * Written against the EXISTING index.html, so no HTML or CSS changes are
  * needed. Element ids used: #status, #viability, #btc-content, #eth-content,
- * #dexe-content, #bank-content, #backtest-result, #bt-symbol, #bt-tf.
+ * #dexe-content, #bank-content.
  *
  * Styles are injected from here, so style.css does not need touching either.
  *
@@ -210,47 +210,6 @@ function armRow(m) {
 
 /* Called by the button in index.html. The timeframe argument is accepted for
    backward compatibility and ignored: the engine is fixed 1H/15M/5M. */
-async function runBacktest(symbol) {
-  const el = document.getElementById("backtest-result");
-  if (!el) return;
-  el.innerHTML = `Running RANDOM vs SMC vs SMC_MTF on ${symbol}, in-sample and
-    out-of-sample, plus walk-forward and parameter sensitivity. This can take a
-    minute on a cold start.`;
-  try {
-    const r = await fetch(`${API}/api/report/${symbol}`);
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    const d = await r.json();
-    if (d.error) { el.innerHTML = `Error: ${d.error}`; return; }
-
-    const v = d.verdict || {};
-    const wf = d.walk_forward || {};
-    const se = d.sensitivity || {};
-    const head = `<tr><th>Arm</th><th>Trades</th><th>Win</th><th>PF</th>
-      <th>Expectancy</th><th>Net P&L</th><th>Max DD</th><th>Cost/R</th></tr>`;
-
-    el.innerHTML = `
-      <div class="verdict ${v.profitable ? "good" : "bad"}">
-        <b>${v.profitable ? "EDGE FOUND" : "NO EDGE"}</b>
-        <p>${v.statement || ""}</p>
-      </div>
-      <div class="lbl">Out of sample</div>
-      <table class="arms">${head}${(d.out_of_sample || []).map(armRow).join("")}</table>
-      <div class="lbl">In sample</div>
-      <table class="arms">${head}${(d.in_sample || []).map(armRow).join("")}</table>
-      <div class="mtf-meta">
-        <span>Walk-forward: beat random in
-          ${wf.folds_beating_random ?? "—"}/${wf.total_folds ?? "—"} folds</span>
-        <span>Sensitivity: ${se.positive_of_total ?? "—"} positive
-          ${se.fragile ? "· FRAGILE" : ""}</span>
-        <span>Source: ${d.source || "—"}</span>
-      </div>
-      <p class="fine">SMC_MTF has to beat RANDOM, not merely be positive.
-      A profitable arm that loses to a coin flip is not an edge.</p>`;
-  } catch (e) {
-    el.innerHTML = `API unreachable: ${e.message}`;
-  }
-}
-
 document.addEventListener("DOMContentLoaded", () => {
   injectCss();
 
