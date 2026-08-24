@@ -55,6 +55,24 @@ TP_R_LADDER = [
 
 # ── Costs ──────────────────────────────────────────────────────────────────
 FEE_PER_LEG = float(os.environ.get("FEE_PER_LEG", 0.0005))       # 0.05% taker
+
+# MAKER vs TAKER. The old model charged the taker rate on BOTH legs. That is
+# right for entry_model="next_open" closing on a stop, and wrong otherwise:
+#
+#   entry_model="limit_ote"  -> a resting limit -> MAKER
+#   exit at a TP             -> a limit order   -> MAKER
+#   exit at the SL           -> a stop          -> TAKER
+#
+# cost_in_R = round_trip_cost% / stop_distance%, and SMC stops are structurally
+# tight (a 5M order block wick is ~0.09% of price on BTC), so the fee rate is
+# not a rounding detail here - it decides whether any setup clears the gate.
+#
+# DEFAULTS ARE UNCHANGED: both rates fall back to FEE_PER_LEG, so nothing moves
+# until the real CoinDCX schedule is entered. Do NOT lower these on a hunch.
+FEE_MAKER_PER_LEG = float(os.environ.get("FEE_MAKER_PER_LEG", FEE_PER_LEG))
+FEE_TAKER_PER_LEG = float(os.environ.get("FEE_TAKER_PER_LEG", FEE_PER_LEG))
+ENTRY_IS_MAKER = os.environ.get("ENTRY_IS_MAKER", "false").lower() == "true"
+
 SLIPPAGE_PER_LEG = float(os.environ.get("SLIPPAGE_PER_LEG", 0.0002))
 FUNDING_PER_8H = float(os.environ.get("FUNDING_PER_8H", 0.0001))  # 0.01%
 # Venue minimum order size. NOT changed on a hunch: on DEXE this rejected 57
@@ -65,7 +83,22 @@ FUNDING_PER_8H = float(os.environ.get("FUNDING_PER_8H", 0.0001))  # 0.01%
 # and every rejection says which number it failed.
 MIN_NOTIONAL_INR = float(os.environ.get("MIN_NOTIONAL_INR", 200))
 
-ROUND_TRIP_FEE = FEE_PER_LEG * 2
+def round_trip_fee(entry_maker=None, exit_maker=False):
+    """Fee for one full round trip, as a fraction of notional.
+
+    exit_maker=False is the sizing default on purpose: size_position runs
+    before the exit is known, so it must assume the stop (taker). Under-
+    charging at sizing time would let a setup through the cost gate that live
+    trading then cannot afford.
+    """
+    if entry_maker is None:
+        entry_maker = ENTRY_IS_MAKER
+    e = FEE_MAKER_PER_LEG if entry_maker else FEE_TAKER_PER_LEG
+    x = FEE_MAKER_PER_LEG if exit_maker else FEE_TAKER_PER_LEG
+    return e + x
+
+
+ROUND_TRIP_FEE = round_trip_fee()
 ROUND_TRIP_SLIP = SLIPPAGE_PER_LEG * 2
 ROUND_TRIP_COST = ROUND_TRIP_FEE + ROUND_TRIP_SLIP
 
@@ -274,6 +307,9 @@ def cost_summary():
         "max_risk_inr": MAX_RISK_INR,
         "usdt_inr": USDT_INR,
         "fee_per_leg_pct": FEE_PER_LEG * 100,
+        "fee_maker_per_leg_pct": FEE_MAKER_PER_LEG * 100,
+        "fee_taker_per_leg_pct": FEE_TAKER_PER_LEG * 100,
+        "entry_is_maker": ENTRY_IS_MAKER,
         "slippage_per_leg_pct": SLIPPAGE_PER_LEG * 100,
         "round_trip_cost_pct": ROUND_TRIP_COST * 100,
         "funding_per_8h_pct": FUNDING_PER_8H * 100,
