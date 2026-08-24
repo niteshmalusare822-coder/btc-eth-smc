@@ -183,7 +183,16 @@ async function loadViability() {
   el.innerHTML = `<div class="verdict wait"><b>MEASURING</b>
     <p>Running three arms on ETH. The first run after a cold start takes a minute.</p></div>`;
   try {
-    const r = await fetch(`${API}/api/report/ETH`);
+    // No timeout meant a hung request sat on MEASURING forever: fetch
+    // neither resolved nor rejected, so the catch below never ran.
+    const ctrl = new AbortController();
+    const killer = setTimeout(() => ctrl.abort(), 120000);
+    let r;
+    try {
+      r = await fetch(`${API}/api/report/ETH`, { signal: ctrl.signal });
+    } finally {
+      clearTimeout(killer);
+    }
     if (!r.ok) throw new Error("HTTP " + r.status);
     const d = await r.json();
     const v = d.verdict || {};
@@ -192,7 +201,7 @@ async function loadViability() {
       <p>${v.statement || "no verdict returned"}</p></div>`;
   } catch (e) {
     el.innerHTML = `<div class="verdict wait"><b>UNMEASURED</b>
-      <p>Could not reach the report endpoint (${e.message}).</p></div>`;
+      <p>Could not reach the report endpoint (${e.name === "AbortError" ? "timed out after 120s" : e.message}). Last recorded result: pooled OOS, 25 symbols, 374 trades, NO EDGE vs matched random.</p></div>`;
   }
 }
 

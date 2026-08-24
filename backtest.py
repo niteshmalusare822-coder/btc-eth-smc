@@ -233,7 +233,7 @@ def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
     # stop costs Rs.700 — breakeven needs a 75% win rate.
     max_cost = float(cfg.get("max_cost_in_r", 0.15))
     if s.cost_in_r > max_cost:
-        return None, f"cost {s.cost_in_r:.3f}R above the {max_cost}R limit"
+        return None, "cost above max_cost_in_r limit"
 
     legs, hit, outcome, ex = simulate(df, side, entry, sl, s.tps, fill_i,
                                       cfg["max_hold"],
@@ -311,6 +311,7 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
              "entry_level_touched": 0, "entry_level_touched_applies": False,
              "signals_generated": 0, "entries_filled": 0,
              "rejected_by_sizing": 0, "expired_setup": 0,
+             "rejected_by_cost_gate": 0,
              "duplicate_signal_rejected": 0, "order_never_filled": 0}
 
     def _rej(why):
@@ -470,7 +471,9 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
                 open_slots.append(tr["exit_i"])
         else:
             _rej(why)
-            if why and "fill" in why:
+            if why and why.startswith("cost above"):
+                gates["rejected_by_cost_gate"] += 1
+            elif why and "fill" in why:
                 gates["order_never_filled"] += 1
             elif why:
                 gates["rejected_by_sizing"] += 1
@@ -491,6 +494,28 @@ def _atr(df, period=14):
     pc = c.shift(1)
     tr = pd.concat([h - l, (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
     return tr.ewm(alpha=1 / period, adjust=False).mean()
+
+
+def _match_stop_atr(df5, src_trades, fallback):
+    """Give the RANDOM arm the same stop WIDTH the strategy actually uses.
+
+    A fixed rand_sl_atr of 1.0 was not a neutral control. SMC stops sit beyond
+    the order-block wick and measured 9.35x ATR median on BTC; the random arm
+    was handed stops nine times tighter. Since cost_in_r is round-trip cost
+    divided by stop distance, every random entry blew through max_cost_in_r
+    and was rejected: 400 attempts, 0 trades, in every run to date. The
+    control arm was not losing, it was absent.
+
+    Matching the median stop multiple makes the two arms comparable on cost
+    and leaves entry timing as the only difference, which is the whole point.
+    """
+    if not src_trades:
+        return fallback
+    atr = _atr(df5, 14).to_numpy()
+    mult = [abs(t["entry"] - t["sl"]) / atr[t["i"]]
+            for t in src_trades
+            if np.isfinite(atr[t["i"]]) and atr[t["i"]] > 0]
+    return float(np.median(mult)) if mult else fallback
 
 
 # ---------------------------------------------------------------------------
@@ -620,11 +645,15 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
     ]:
         arms, by_arm = [], {}
 
-        for arm in ("random", "smc", "smc_mtf"):
+        rand_sl_atr_matched = cfg["rand_sl_atr"]
+        for arm in ("smc_mtf", "smc", "random"):
             arm_started_at = time.perf_counter()
 
             tr, rej = run_arm(
-                symbol, df5, ctx, arm, cfg, lo, hi,
+                symbol, df5, ctx, arm,
+                    ({**cfg, "rand_sl_atr": rand_sl_atr_matched}
+                     if arm == "random" else cfg),
+                    lo, hi,
                 rng=np.random.default_rng(cfg["seed"])
             )
 
@@ -636,6 +665,9 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
             }
 
             by_arm[arm] = tr
+            if arm == "smc_mtf":
+                rand_sl_atr_matched = _match_stop_atr(
+                    df5, tr, cfg["rand_sl_atr"])
 
             g = rej.pop("_gates", None)
             if g and arm == "smc_mtf":
@@ -770,6 +802,7 @@ def matched_baseline(symbol, df5, ctx, cfg, src_trades, seeds=None):
     seeds = seeds or RANDOM_SEEDS[:cfg.get("matched_seeds", 200)]
     if not src_trades:
         return None
+    strat_exp = metrics(src_trades, "src").get("expectancy_inr")
 
     exps, nets, wins, counts = [], [], [], []
     for sd in seeds:
@@ -797,7 +830,9 @@ def matched_baseline(symbol, df5, ctx, cfg, src_trades, seeds=None):
         "random_std_expectancy": round(float(exps.std(ddof=1)) if exps.size > 1 else 0.0, 1),
         "random_p5_expectancy": round(float(np.percentile(exps, 5)), 1),
         "random_p95_expectancy": round(float(np.percentile(exps, 95)), 1),
-        "pct_random_paths_beating_strategy": None,
+        "pct_random_paths_beating_strategy": (
+            round(float((exps >= strat_exp).mean() * 100), 1)
+            if strat_exp is not None else None),
         "random_mean_net_pnl": round(float(np.mean(nets)), 0),
         "expectancy_inr": round(float(exps.mean()), 1),
         "net_pnl_inr": round(float(np.mean(nets)), 0),
