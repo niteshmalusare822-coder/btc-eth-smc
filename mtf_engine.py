@@ -343,7 +343,7 @@ def find_setups(df_15m, p=None, calib_end=None):
                       for f in fvgs)
         mode = p.get("ob_entry_mode", "body")
         entry = z.entry_at(mode)
-        stop = z.stop_at(p.get("stop_buffer_frac", 0.10))
+        stop = z.stop_at(p.get("stop_buffer_frac", 0.50))
         # NOT clamped to len(df)-1. Clamping expired every setup near the end
         # of the frame early: the last 15M bar closes up to 15 minutes before
         # the last 5M bar, so a fresh setup could be reported expired on the
