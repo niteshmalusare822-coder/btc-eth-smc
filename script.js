@@ -231,5 +231,5 @@ document.addEventListener("DOMContentLoaded", () => {
 
   loadSignals();
   loadViability();
-  setInterval(loadSignals, REFRESH_MS);
+  setInterval(function() { window.location.reload(); }, 60000);
 });
