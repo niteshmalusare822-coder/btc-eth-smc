@@ -321,7 +321,7 @@ def build_signal(symbol):
                  "has_fvg": setup.has_fvg, "swept": setup.swept,
                  "imbalance": setup.imbalance,
                  "entry_mode": setup.entry_mode},
-        "reason": (f"1H {bias} + 15M "
+        "reason": (f"1H {bias} + 5M "
                    f"{'OB+FVG' if setup.has_fvg else 'OB'} after liquidity "
                    f"sweep + 5M {trig} shift, entry at the order block "
                    f"{setup.entry_mode}"),
