@@ -59,6 +59,7 @@ import diagnostics as DG
 import entry_quality as EQ
 import mtf_engine as mtf
 import risk as R
+mtf.TF_MINUTES["15m"] = 5
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -178,6 +179,8 @@ def _load(symbol, bars, live=False):
         bars,
         live=live,
     )
+    if frames is not None:
+        frames["15m"] = frames["5m"]
     return frames, (meta or {})
 
 
