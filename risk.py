@@ -6,7 +6,7 @@ Replaces sizing.py. The rule this module enforces is the one from the spec:
     Position size comes from the STOP DISTANCE, never from leverage.
     Leverage is a constraint that can only make a position smaller.
 
-The ₹700 risk cap is inclusive of entry fee, exit fee and slippage on both
+The ₹1200 risk cap is inclusive of entry fee, exit fee and slippage on both
 legs, so the solved quantity is:
 
     risk_inr = qty * sl_distance_inr + qty * entry_inr * (fee_rt + 2*slip)
@@ -25,20 +25,20 @@ from dataclasses import dataclass, asdict
 
 # ── Account ────────────────────────────────────────────────────────────────
 CAPITAL_INR = float(os.environ.get("CAPITAL_INR", 10000))
-MAX_RISK_INR = float(os.environ.get("MAX_RISK_INR", 700))
+MAX_RISK_INR = float(os.environ.get("MAX_RISK_INR", 1200))
 USDT_INR = float(os.environ.get("USDT_INR", 88.0))
 
 # What you would LIKE each level to pay. Aspiration, not instruction.
 TP_TARGETS_INR = [
-    float(os.environ.get("TP1_INR", 1200)),
-    float(os.environ.get("TP2_INR", 2000)),
-    float(os.environ.get("TP3_INR", 3500)),
+    float(os.environ.get("TP1_INR", 1800)),
+    float(os.environ.get("TP2_INR", 2600)),
+    float(os.environ.get("TP3_INR", 4100)),
 ]
 
 # What the market is actually asked to deliver, in R.
 #
 # BUG FIX: the ladder used to be solved backwards from the rupee targets. At a
-# Rs.700 risk cap that demanded 2.47R / 3.94R / 6.68R, and the last two needed
+# Rs.1200 risk cap that demanded 2.47R / 3.94R / 6.68R, and the last two needed
 # 7 to 12 ATR of travel — levels a 5M chart reaches almost never. Two thirds of
 # every position was therefore aimed at prices that could not print, so the
 # only way to book a net win was to hit an impossible target. Hitting TP1 and
@@ -77,7 +77,7 @@ SLIPPAGE_PER_LEG = float(os.environ.get("SLIPPAGE_PER_LEG", 0.0002))
 FUNDING_PER_8H = float(os.environ.get("FUNDING_PER_8H", 0.0001))  # 0.01%
 # Venue minimum order size. NOT changed on a hunch: on DEXE this rejected 57
 # in-sample setups with "notional Rs.108 below venue minimum", which is real
-# information — a Rs.700 risk cap against DEXE's 5x leverage cap and wide stop
+# information — a Rs.1200 risk cap against DEXE's 5x leverage cap and wide stop
 # distance simply cannot build a position that clears the floor. Verify the
 # true CoinDCX minimum before altering it; until then it stays configurable
 # and every rejection says which number it failed.
