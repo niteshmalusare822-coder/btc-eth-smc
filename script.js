@@ -231,5 +231,5 @@ document.addEventListener("DOMContentLoaded", () => {
 
   loadSignals();
   loadViability();
-  setInterval(function() { window.location.reload(); }, 60000);
+  setInterval(function() { window.location.reload(); }, 120000);
 });
