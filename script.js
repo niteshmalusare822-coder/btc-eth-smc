@@ -236,5 +236,5 @@ document.addEventListener("DOMContentLoaded", () => {
     setInterval(function() {
         loadSignals();
         loadViability();
-    }, 120000);
+    }, 60000);
 });
