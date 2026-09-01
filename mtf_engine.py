@@ -599,10 +599,10 @@ BLOCKERS = {
     "HTF_NEUTRAL": "1H bias neutral",
     "NO_TRIGGER": "no 5M trigger",
     "TRIGGER_WRONG_WAY": "5M trigger against the 1H direction",
-    "NO_SETUP": "no live 15M setup",
-    "SETUP_WRONG_WAY": "15M setup exists but on the other side",
-    "SETUP_EXPIRED": "15M setup aged out",
-    "SETUP_MITIGATED": "15M zone already invalidated by price",
+    "NO_SETUP": "no live 5M setup",
+    "SETUP_WRONG_WAY": "5M setup exists but on the other side",
+    "SETUP_EXPIRED": "5M setup aged out",
+    "SETUP_MITIGATED": "5M zone already invalidated by price",
     "AWAITING_RETEST": "POI formed but price has not returned to it",
 }
 
