@@ -64,7 +64,7 @@ mtf.TF_MINUTES["15m"] = 5
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-SYMBOLS = ["BTC", "ETH", "DEXE", "BANK"]
+SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "AVAX", "LINK", "DOGE", "ADA", "DEXE", "BANK"]
 SIGNAL_TTL = int(os.environ.get("SIGNAL_TTL", 120))
 REPORT_TTL = int(os.environ.get("REPORT_TTL", 3600))
 LIVE_BARS_5M = int(os.environ.get("LIVE_BARS_5M", 1200))
