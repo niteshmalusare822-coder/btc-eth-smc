@@ -220,17 +220,42 @@ function armRow(m) {
 /* Called by the button in index.html. The timeframe argument is accepted for
    backward compatibility and ignored: the engine is fixed 1H/15M/5M. */
 document.addEventListener("DOMContentLoaded", () => {
-  injectCss();
+    injectCss();
 
-  // the engine is fixed multi-timeframe now, so a single-TF selector is a lie
-  const tf = document.getElementById("bt-tf");
-  if (tf) {
-    tf.innerHTML = `<option>1H bias · 15M setup · 5M entry</option>`;
-    tf.disabled = true;
-  }
+    // the engine is fixed multi-timeframe now, so a single-TF selector is a lie
+    const tf = document.getElementById("bt-tf");
+    if (tf) {
+        tf.innerHTML = `<option>1H bias · 15M setup · 5M entry</option>`;
+        tf.disabled = true;
+    }
 
-  loadSignals();
-  loadViability();
+    loadSignals();
+    loadViability();
+    loadMarketSentiment(); // <--- मार्केट सेंटिमेंट लगेच लोड होईल
+
+    // Refresh data and sentiment every 2 minutes without full page blink
+    setInterval(function() {
+        loadSignals();
+        loadViability();
+        loadMarketSentiment(); // <--- दर २ मिनिटांनी अपडेट होईल
+    }, 120000);
+});
+
+// --- Market Sentiment API Function ---
+async function loadMarketSentiment() {
+    try {
+        let res = await fetch("https://api.alternative.me/fng/");
+        let result = await res.json();
+        if (result && result.data && result.data.length > 0) {
+            let sentiment = result.data[0].value_classification;
+            let value = result.data[0].value;
+            document.getElementById("sentiment-text").innerText = `${sentiment} (${value}/100)`;
+        }
+    } catch (error) {
+        console.log("Sentiment load error", error);
+        document.getElementById("sentiment-text").innerText = "Unavailable";
+    }
+}
 
    // Refresh data every 2 minutes
     setInterval(function() {
