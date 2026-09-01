@@ -231,5 +231,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   loadSignals();
   loadViability();
-  setInterval(function() { window.location.reload(); }, 120000);
+
+   // Refresh data every 2 minutes
+    setInterval(function() {
+        loadSignals();
+        loadViability();
+    }, 120000);
 });
