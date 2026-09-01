@@ -6,9 +6,6 @@
 <title>BTC ETH SMC Dashboard</title>
 <link rel="stylesheet" href="style.css?v=5">
 <style>
-  /* Viability panel — sits directly under the status line so the first
-     thing visible is whether this system has earned the right to be traded,
-     not the signals themselves. */
   #viability {
     max-width: 900px;
     margin: 12px auto 0;
@@ -22,37 +19,8 @@
     <div id="status">Connecting...</div>
 </header>
 
-<!-- Edge verdict: filled by loadViability() in script.js -->
 <div id="viability"></div>
 
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BTC ETH SMC Dashboard</title>
-<link rel="stylesheet" href="style.css?v=5">
-<style>
-  /* Viability panel — sits directly under the status line so the first
-     thing visible is whether this system has earned the right to be traded,
-     not the signals themselves. */
-  #viability {
-    max-width: 900px;
-    margin: 12px auto 0;
-    color: #ddd;
-  }
-</style>
-</head>
-<body>
-<header>
-    <h1>BTC & ETH Futures Dashboard</h1>
-    <div id="status">Connecting...</div>
-</header>
-
-<!-- Edge verdict: filled by loadViability() in script.js -->
-<div id="viability"></div>
-
-<!-- Main signal grid -->
 <div class="grid">
   <div class="coin-card">
     <h2>BTC/USDT</h2>
@@ -61,6 +29,30 @@
   <div class="coin-card">
     <h2>ETH/USDT</h2>
     <div id="eth-content"></div>
+  </div>
+  <div class="coin-card">
+    <h2>SOL/USDT</h2>
+    <div id="sol-content"></div>
+  </div>
+  <div class="coin-card">
+    <h2>XRP/USDT</h2>
+    <div id="xrp-content"></div>
+  </div>
+  <div class="coin-card">
+    <h2>AVAX/USDT</h2>
+    <div id="avax-content"></div>
+  </div>
+  <div class="coin-card">
+    <h2>LINK/USDT</h2>
+    <div id="link-content"></div>
+  </div>
+  <div class="coin-card">
+    <h2>DOGE/USDT</h2>
+    <div id="doge-content"></div>
+  </div>
+  <div class="coin-card">
+    <h2>ADA/USDT</h2>
+    <div id="ada-content"></div>
   </div>
   <div class="coin-card">
     <h2>DEXE/USDT <span style="font-size:0.6em;color:#e0a030">unvalidated</span></h2>
@@ -72,16 +64,11 @@
   </div>
 </div>
 
-<!-- TradingView Chart -->
 <iframe
   src="https://s.tradingview.com/widgetembed/?symbol=BINANCE:BTCUSDT&interval=5&timezone=Asia%2FKolkata"
   class="chart">
 </iframe>
 
-<!-- v=7: bumped so phones do not keep serving the cached v=6 script -->
 <script src="script.js?v=11"></script>
 </body>
 </html>
-
-
-  
