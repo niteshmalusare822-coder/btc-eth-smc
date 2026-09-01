@@ -12,7 +12,7 @@
  */
 
 const API = "https://crypto-scanner-api-xnwd.onrender.com";
-const SYMBOLS = ["BTC", "ETH", "DEXE", "BANK"];
+const SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "AVAX", "LINK", "DOGE", "ADA", "DEXE", "BANK"];
 const REFRESH_MS = 120000;
 
 const CSS = `
