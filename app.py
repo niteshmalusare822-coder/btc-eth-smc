@@ -325,7 +325,30 @@ def build_signal(symbol):
                    f"{'OB+FVG' if setup.has_fvg else 'OB'} after liquidity "
                    f"sweep + 5M {trig} shift, entry at the order block "
                    f"{setup.entry_mode}"),
-    })
+
+       # --- LIVE TRAILING & STOP STATUS TRACKING ---
+    try:
+        # सध्याच्या सिग्नलवर सिम्युलेशन रन करून ट्रेलिंग आणि ब्रेकइव्हन स्टेटस तपासणे
+        sim_legs, sim_hit, sim_outcome, sim_ex = backtest.simulate(
+            df5, "bull" if action == "BUY" else "bear", 
+            level, sl, s.tps, start=max(0, len(df5) - 200), max_hold=100,
+            manage=True, cost_r=s.cost_in_r
+        )
+        # ट्रेल झालेला किंवा ब्रेकइव्हनवर गेलेला सध्याचा स्टॉप लॉस
+        current_active_sl = sim_legs[-1][1] if sim_legs else sl
+        
+        base.update({
+            "live_status": sim_outcome,
+            "tp_hit_status": sim_hit,
+            "current_sl": round(current_active_sl, 8),
+            "trailing_active": len(sim_hit) > 0
+        })
+    except Exception as e:
+        base.update({
+            "live_status": "NOT_RUN",
+            "current_sl": sl,
+            "trailing_active": False
+        })
     return base
 
 
