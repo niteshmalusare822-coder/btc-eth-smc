@@ -122,8 +122,12 @@ function renderTicket(s) {
     ${warn}
     <table>
       <tr><td>Entry</td><td>${px(s.entry)}</td><td colspan="2">limit at OTE</td></tr>
-      <tr class="sl"><td>SL</td><td>${px(s.sl)}</td>
-        <td>${inr(s.risk_inr)}</td><td>${pc(s.sl_distance_pct)}</td></tr>
+      <tr class="sl">
+        <td>SL ${s.trailing_active ? '<span style="color:#2ea043;font-size:9px;">(TRAILED)</span>' : ''}</td>
+        <td>${px(s.current_sl !== undefined ? s.current_sl : s.sl)}</td>
+        <td>${inr(s.risk_inr)}</td>
+        <td>${pc(s.sl_distance_pct)}</td>
+      </tr>
       ${tpRow(s.tp1)}${tpRow(s.tp2)}${tpRow(s.tp3)}
     </table>
     <div class="kv">
