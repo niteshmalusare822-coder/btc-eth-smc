@@ -40,6 +40,15 @@ REVIEW FIXES IN THIS VERSION
    silently "reachable". Guarded.
 8. bars was parsed in several places with different failure behaviour. One
    helper now does it everywhere.
+9. build_signal() had a broken dict literal — the "base.update({...})" call
+   for the ticket fields was never closed before the trailing-status try/except
+   was pasted inside it, which is a syntax error and means this file could not
+   even be imported. The dict is now closed properly and the trailing-status
+   block runs as its own step after it.
+10. That trailing-status block called backtest.simulate(...), but the module
+    is imported as "import backtest as B" — "backtest" was never defined, so
+    every call raised NameError and silently fell into the except branch,
+    always reporting live_status as NOT_RUN. Now calls B.simulate(...).
 """
 
 import os
@@ -325,25 +334,27 @@ def build_signal(symbol):
                    f"{'OB+FVG' if setup.has_fvg else 'OB'} after liquidity "
                    f"sweep + 5M {trig} shift, entry at the order block "
                    f"{setup.entry_mode}"),
+    })
 
-       # --- LIVE TRAILING & STOP STATUS TRACKING ---
+    # --- LIVE TRAILING & STOP STATUS TRACKING ---
+    # Run the manage-loop simulation forward from this setup so the ticket can
+    # report whether the stop has already trailed or hit breakeven. This uses
+    # the same simulate() the backtest uses, imported here as B.
     try:
-        # सध्याच्या सिग्नलवर सिम्युलेशन रन करून ट्रेलिंग आणि ब्रेकइव्हन स्टेटस तपासणे
-        sim_legs, sim_hit, sim_outcome, sim_ex = backtest.simulate(
-            df5, "bull" if action == "BUY" else "bear", 
+        sim_legs, sim_hit, sim_outcome, sim_ex = B.simulate(
+            df5, "bull" if action == "BUY" else "bear",
             level, sl, s.tps, start=max(0, len(df5) - 200), max_hold=100,
             manage=True, cost_r=s.cost_in_r
         )
-        # ट्रेल झालेला किंवा ब्रेकइव्हनवर गेलेला सध्याचा स्टॉप लॉस
         current_active_sl = sim_legs[-1][1] if sim_legs else sl
-        
+
         base.update({
             "live_status": sim_outcome,
             "tp_hit_status": sim_hit,
             "current_sl": round(current_active_sl, 8),
             "trailing_active": len(sim_hit) > 0
         })
-    except Exception as e:
+    except Exception:
         base.update({
             "live_status": "NOT_RUN",
             "current_sl": sl,
