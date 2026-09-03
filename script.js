@@ -141,7 +141,7 @@ function renderTicket(s) {
       <div><label>Slippage</label><b>${inr(s.slippage_inr)}</b></div>
     </div>
     <div class="why">${s.reason || ""}</div>
-    <div class="src">${s.source || ""} · ${s.last_closed || ""} UTC</div>
+    <div class="src">${s.source || ""} · ${s.last_closed ? new Date(s.last_closed).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "medium" }) : ""} IST</div>
   </div>`;
 }
 
