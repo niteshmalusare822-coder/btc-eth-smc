@@ -253,10 +253,17 @@ async function loadMarketSentiment() {
         if (result && result.data && result.data.length > 0) {
             let sentiment = result.data[0].value_classification;
             let value = result.data[0].value;
-            document.getElementById("sentiment-text").innerText = `${sentiment} (${value}/100)`;
+            let sentEl = document.getElementById("sentiment-text");
+            if (sentEl) {
+                sentEl.innerText = `${sentiment} (${value}/100)`;
+            }
         }
     } catch (error) {
         console.log("Sentiment load error", error);
-        document.getElementById("sentiment-text").innerText = "Unavailable";
+        let sentEl = document.getElementById("sentiment-text");
+        if (sentEl) {
+            sentEl.innerText = "Unavailable";
+        }
     }
 }
+
