@@ -62,7 +62,7 @@ import pandas as pd
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-import backtest as B
+import backtest as C
 import data as D
 import diagnostics as DG
 import entry_quality as EQ
@@ -339,9 +339,9 @@ def build_signal(symbol):
     # --- LIVE TRAILING & STOP STATUS TRACKING ---
     # Run the manage-loop simulation forward from this setup so the ticket can
     # report whether the stop has already trailed or hit breakeven. This uses
-    # the same simulate() the backtest uses, imported here as B.
+    # the same simulate() the backtest uses, imported here as C.
     try:
-        sim_legs, sim_hit, sim_outcome, sim_ex = B.simulate(
+        sim_legs, sim_hit, sim_outcome, sim_ex = C.simulate(
             df5, "bull" if action == "BUY" else "bear",
             level, sl, s.tps, start=max(0, len(df5) - 200), max_hold=100,
             manage=True, cost_r=s.cost_in_r
