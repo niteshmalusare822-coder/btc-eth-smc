@@ -391,7 +391,7 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
                 if touched:
                     gates["entry_level_touched"] += 1
 
-        mode = cfg.get("position_mode", "A")
+        mode = cfg.get("position_mode", "C")
         want_side = want or "bull"
         if mode == "A":
             blocked = i <= busy_until
