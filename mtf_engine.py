@@ -61,7 +61,7 @@ PARAMS = {
     # OFF by default. Turning it on must be justified out of sample against
     # the unchanged baseline, not assumed.
     "require_structure_confirmation": False,
-    "confirm_bars": 2,          # closed 15M candles the shift must survive
+    "confirm_bars": 1,          # closed 15M candles the shift must survive
     "confirm_max_wait": 12,     # bars allowed to complete confirmation
 
     # ── RETEST (off by default so A/B stays possible) ──────────────────
@@ -70,7 +70,7 @@ PARAMS = {
     # can enter on a bar where price is nowhere near the order block, which is
     # not what the setup describes.
     "require_retest": False,
-    "retest_max_wait": 40,      # bars a POI waits to be retested before expiry
+    "retest_max_wait": 9,      # bars a POI waits to be retested before expiry
     "retest_depth": 0.0,        # 0 = touching the zone edge counts as a retest
 
     # ── POI SOURCES ────────────────────────────────────────────────────
@@ -322,7 +322,7 @@ def find_setups(df_15m, p=None, calib_end=None):
     if p.get("require_retest"):
         hi_a = df["high"].to_numpy()
         lo_a = df["low"].to_numpy()
-        wait = int(p.get("retest_max_wait", 40))
+        wait = int(p.get("retest_max_wait", 9))
         depth = float(p.get("retest_depth", 0.0))
         for z in obs:
             span = z.top - z.bottom
