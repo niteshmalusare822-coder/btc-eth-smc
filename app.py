@@ -341,9 +341,6 @@ def build_signal(symbol):
     })
 
     # --- LIVE TRAILING & STOP STATUS TRACKING ---
-    # Run the manage-loop simulation forward from this setup so the ticket can
-    # report whether the stop has already trailed or hit breakeven. This uses
-    # the same simulate() the backtest uses, imported here as C.
     try:
         sim_legs, sim_hit, sim_outcome, sim_ex = C.simulate(
             df5, "bull" if action == "BUY" else "bear",
@@ -351,6 +348,14 @@ def build_signal(symbol):
             manage=True, cost_r=s.cost_in_r
         )
         current_active_sl = sim_legs[-1][1] if sim_legs else sl
+
+        # नवीन नियम: जर हा जुना सेटअप असेल आणि त्याचे TP किंवा SL आधीच हिट झाले असतील,
+        # तर डॅशबोर्डवर तो BUY/SELL न दाखवता सरळ NO_TRADE करेल!
+        if sim_outcome in ("TP_ALL", "STOP_HIT", "EXPIRED"):
+            action = "NO_TRADE"
+            base["action"] = "NO_TRADE"
+            base["blocker"] = f"TRADE_ALREADY_{sim_outcome}"
+            base["reason"] = f"Past setup finished with status: {sim_outcome}"
 
         base.update({
             "live_status": sim_outcome,
