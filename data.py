@@ -69,13 +69,13 @@ FAILOVER = [
 RESOLUTION = {
     "5m": "5",
     "15m": "15",
-    "1h": "60",
+    "4h": "240",
 }
 
 TF_SECONDS = {
     "5m": 300,
     "15m": 900,
-    "1h": 3600,
+    "4h": 14400,
 }
 
 
@@ -98,7 +98,7 @@ MAX_BACKTEST_BARS = 60000
 WARMUP_BARS = {
     "5m": 600,
     "15m": 600,
-    "1h": 600,
+    "4h": 200,
 }
 
 
@@ -973,7 +973,7 @@ def load_mtf(
     live=False,
 ):
     """
-    Load 5m, 15m and 1h historical data.
+    Load 5m, 15m and 4h historical data.
 
     Preference:
         1. CoinDCX for all frames
@@ -1017,7 +1017,7 @@ def load_mtf(
         for timeframe in (
             "5m",
             "15m",
-            "1h",
+            "4h",
         ):
 
             df, meta = fetch_ohlcv_history(
@@ -1105,7 +1105,7 @@ def load_mtf(
     for timeframe in (
         "5m",
         "15m",
-        "1h",
+        "4h",
     ):
 
         found = False
@@ -1294,7 +1294,7 @@ def _finish(
 
 
         "requested_with_warmup_1h":
-            int(need["1h"]),
+            int(need["4h"]),
 
 
         # Actual usable data after common-window alignment.
@@ -1306,7 +1306,7 @@ def _finish(
             int(len(frames["15m"])),
 
         "actual_bars_1h":
-            int(len(frames["1h"])),
+            int(len(frames["4h"])),
 
 
         "usable_5m_bars":
@@ -1316,7 +1316,7 @@ def _finish(
             int(len(frames["15m"])),
 
         "usable_1h_bars":
-            int(len(frames["1h"])),
+            int(len(frames["4h"])),
 
 
         # Common historical window.
