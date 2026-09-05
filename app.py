@@ -210,7 +210,7 @@ def report_for(symbol, bars):
         # source of truth. Do not silently override research parameters here.
         strategy_params = dict(mtf.PARAMS)
 
-        rep = B.full_report(
+        rep = C.full_report(
             symbol,
             frames["5m"],
             frames["15m"],
