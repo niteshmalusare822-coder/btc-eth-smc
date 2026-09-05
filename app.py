@@ -72,6 +72,10 @@ mtf.TF_MINUTES["15m"] = 5
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
+@app.after_request
+def add_headers(response):
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "AVAX", "LINK", "DOGE", "ADA", "DEXE", "BANK"]
 SIGNAL_TTL = int(os.environ.get("SIGNAL_TTL", 120))
