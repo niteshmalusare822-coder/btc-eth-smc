@@ -46,9 +46,9 @@ REVIEW FIXES IN THIS VERSION
    even be imported. The dict is now closed properly and the trailing-status
    block runs as its own step after it.
 10. That trailing-status block called backtest.simulate(...), but the module
-    is imported as "import backtest as B" — "backtest" was never defined, so
+    is imported as "import backtest as C" — "backtest" was never defined, so
     every call raised NameError and silently fell into the except branch,
-    always reporting live_status as NOT_RUN. Now calls B.simulate(...).
+    always reporting live_status as NOT_RUN. Now calls C.simulate(...).
 """
 
 import os
