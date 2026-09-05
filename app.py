@@ -423,10 +423,6 @@ def build_entry_quality(symbol, bars):
 
 
 def probe_data(symbol, bars, venue="coindcx"):
-    ...
-    df, meta = D.fetch_ohlcv_history(venue, symbol, tf, need[tf])
-    ...
-    def probe_data(symbol, bars, venue="coindcx"):
     """Pagination only. No signals, no backtest, no metrics.
 
     Answers one question in seconds instead of minutes: when the loader asks
