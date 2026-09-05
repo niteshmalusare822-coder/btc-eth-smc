@@ -156,7 +156,7 @@ async function loadSignals() {
   });
 
   try {
-    const r = await fetch(`${API}/api/signals`);
+    const r = await fetch(`${API}/api/signals`, { cache: "no-store" });
     if (!r.ok) throw new Error("HTTP " + r.status);
     const d = await r.json();
 
@@ -193,7 +193,7 @@ async function loadViability() {
     const killer = setTimeout(() => ctrl.abort(), 120000);
     let r;
     try {
-      r = await fetch(`${API}/api/report/ETH`, { signal: ctrl.signal });
+      r = await fetch(`${API}/api/report/ETH`, { signal: ctrl.signal, cache: "no-store" });
     } finally {
       clearTimeout(killer);
     }
