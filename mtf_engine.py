@@ -32,7 +32,7 @@ import pandas as pd
 
 import poi_factors as poi
 
-TF_MINUTES = {"5m": 5, "15m": 15, "1h": 60}
+TF_MINUTES = {"5m": 5, "15m": 15, "4h": 240}
 
 PARAMS = {
     "swing_left": 2,
@@ -134,7 +134,7 @@ def htf_bias_series(df_1h, p=None, calib_end=None):
     """
     p = p or PARAMS
 
-    df = poi.add_candle_metrics(df_1h)
+    df = poi.add_candle_metrics(df_4h)
 
     swings = poi.find_swings(
         df,
@@ -556,7 +556,7 @@ def align_htf(df_5m, df_htf_state, tf, col):
     return merged[col].to_numpy()
 
 
-def build_context(df_5m, df_15m, df_1h, p=None, calib_end=None):
+def build_context(df_5m, df_15m, df_4h, p=None, calib_end=None):
     """Everything a bar-by-bar loop needs, precomputed and causal.
 
     calib_end is accepted and ignored. Calibration is now a trailing rolling
@@ -565,10 +565,10 @@ def build_context(df_5m, df_15m, df_1h, p=None, calib_end=None):
     functions, same thresholds, only the data source differs.
     """
     p = p or PARAMS
-    bias_df = htf_bias_series(df_1h, p, calib_end)
+    bias_df = htf_bias_series(df_4h, p, calib_end)
     setups, thr15 = find_setups(df_15m, p, calib_end)
     trig = trigger_series(df_5m, p, calib_end)
-    bias_on_5m = align_htf(df_5m, bias_df, "1h", "htf_bias")
+    bias_on_5m = align_htf(df_5m, bias_df, "4h", "htf_bias")
     return {"bias": bias_on_5m, "setups": setups, "trigger": trig,
             "threshold_15m": thr15}
 
@@ -678,7 +678,7 @@ def gate_state(bias, trigger, setups, ts):
     s = live_side[0] if live_side else (live_any[0] if live_any else None)
     action, _, _, _, code = _evaluate(bias, trigger, setups, ts)
     return {
-        "htf_bias_1h": bias,
+        "htf_bias_4h": bias,
         "setup_15m": bool(live_any),
         "setup_15m_side": (s.side if s else None),
         "trigger_5m": trigger or "none",
