@@ -70,6 +70,23 @@ import mtf_engine as mtf
 import risk as R
 mtf.TF_MINUTES["15m"] = 5
 
+from datetime import datetime, timezone, timedelta
+
+def format_ist_time(ts_str):
+    try:
+        if isinstance(ts_str, str):
+            dt = datetime.fromisoformat(ts_str)
+        else:
+            dt = pd.to_datetime(ts_str)
+        
+        ist_zone = timezone(timedelta(hours=5, minutes=30))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt_ist = dt.astimezone(ist_zone)
+        return dt_ist.strftime('%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return str(ts_str)
+
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 @app.after_request
@@ -270,7 +287,7 @@ def build_signal(symbol):
 
     base = {
         "symbol": symbol, "source": meta.get("source"), "price": _f(price),
-        "last_closed": str(ts),
+        "last_closed": format_ist_time(ts),
         "htf_bias_1h": bias,
         "setup_15m": bool(mtf.active_setups_at(
             ctx["setups"], ts, "bull" if bias == "BULLISH" else
