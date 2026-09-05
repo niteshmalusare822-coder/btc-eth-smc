@@ -28,6 +28,12 @@ COINDCX_URL = "https://public.coindcx.com/market_data/candlesticks"
 PAIR_MAP = {
     "BTC": "B-BTC_USDT",
     "ETH": "B-ETH_USDT",
+    "SOL": "B-SOL_USDT",
+    "XRP": "B-XRP_USDT",
+    "AVAX": "B-AVAX_USDT",
+    "LINK": "B-LINK_USDT",
+    "DOGE": "B-DOGE_USDT",
+    "ADA": "B-ADA_USDT",
     "DEXE": "B-DEXE_USDT",
     "BANK": "B-BANK_USDT",
 }
@@ -38,12 +44,18 @@ PAIR_MAP = {
 CCXT_MAP = {
     "BTC": "BTC/USDT:USDT",
     "ETH": "ETH/USDT:USDT",
+    "SOL": "SOL/USDT:USDT",
+    "XRP": "XRP/USDT:USDT",
+    "AVAX": "AVAX/USDT:USDT",
+    "LINK": "LINK/USDT:USDT",
+    "DOGE": "DOGE/USDT:USDT",
+    "ADA": "ADA/USDT:USDT",
     "DEXE": "DEXE/USDT:USDT",
     "BANK": "BANK/USDT:USDT",
 }
 
 FAILOVER = [
-    "mexc",
+    "CoinDCX",
     "bybit",
     "okx",
     "gateio",
