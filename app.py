@@ -422,18 +422,16 @@ def build_entry_quality(symbol, bars):
     return out
 
 
-def probe_data(symbol, bars):
+def probe_data(symbol, bars, venue="coindcx"):
+    ...
+    df, meta = D.fetch_ohlcv_history(venue, symbol, tf, need[tf])
+    ...
+    def probe_data(symbol, bars, venue="coindcx"):
     """Pagination only. No signals, no backtest, no metrics.
 
     Answers one question in seconds instead of minutes: when the loader asks
-    CoinDCX for N candles, how many does it get, in how many requests, and how
-    long did it hold the worker.
-
-    It also exposes the assumption most likely to be wrong. The pager walks
-    backwards by moving `to` behind the oldest candle it holds. If the venue
-    ignores that and keeps returning the most recent window, pages_fetched
-    stops at 2 and actual_bars sits near one page — meaning the venue caps by
-    window rather than by count and the paging strategy has to change.
+    the venue for N candles, how many does it get, in how many requests, and
+    how long did it hold the worker.
     """
     t0 = time.time()
     per_tf = {}
@@ -442,7 +440,7 @@ def probe_data(symbol, bars):
     for tf in ("5m", "15m", "1h"):
         t1 = time.time()
         try:
-            df, meta = D.fetch_ohlcv_history("coindcx", symbol, tf, need[tf])
+            df, meta = D.fetch_ohlcv_history(venue, symbol, tf, need[tf])
         except Exception as e:
             per_tf[tf] = {"requested_bars": need[tf], "actual_bars": 0,
                           "error": str(e),
@@ -473,11 +471,11 @@ def probe_data(symbol, bars):
     pages = five.get("pages_fetched", 0) or 0
 
     if got == 0:
-        diag = "CoinDCX returned nothing. Check the pair string."
+        diag = f"{venue} returned nothing. Check the pair string."
     elif got >= want * 0.9:
         diag = "Pagination works. The venue honours the from/to window."
     elif pages <= 2 and got <= D.PAGE_LIMIT * 1.2:
-        diag = ("Paging made no progress past the first window. CoinDCX is "
+        diag = ("Paging made no progress past the first window. The venue is "
                 "very likely ignoring `from` and always returning the most "
                 "recent candles. Backward paging will not work against this "
                 "endpoint and a different history source is needed.")
@@ -485,7 +483,7 @@ def probe_data(symbol, bars):
         diag = (f"Paging advanced across {pages} requests but the venue ran "
                 f"out at {got} candles. That is all the history it holds.")
 
-    return {"symbol": symbol, "source": "coindcx",
+    return {"symbol": symbol, "source": venue,
             "requested_bars_5m": bars,
             "actual_bars_5m": got,
             "coverage_days": round(got * 5 / 1440.0, 1),
@@ -609,10 +607,11 @@ def data_probe(symbol):
     symbol = symbol.upper()
     if _bad_symbol(symbol):
         return ok({"error": f"symbol must be one of {SYMBOLS}"}, 400)
+    venue = request.args.get("venue", "coindcx")
     try:
         bars = bars_arg()
-        res, hit = cached(("probe", symbol, bars), 300,
-                          lambda: probe_data(symbol, bars))
+        res, hit = cached(("probe", symbol, bars, venue), 300,
+                          lambda: probe_data(symbol, bars, venue))
         return ok({**res, "from_cache": hit})
     except Exception as e:
         traceback.print_exc()
