@@ -68,7 +68,6 @@ import diagnostics as DG
 import entry_quality as EQ
 import mtf_engine as mtf
 import risk as R
-mtf.TF_MINUTES["15m"] = 5
 
 from datetime import datetime, timezone, timedelta
 
