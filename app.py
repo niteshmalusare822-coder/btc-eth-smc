@@ -40,15 +40,8 @@ REVIEW FIXES IN THIS VERSION
    silently "reachable". Guarded.
 8. bars was parsed in several places with different failure behaviour. One
    helper now does it everywhere.
-9. build_signal() had a broken dict literal — the "base.update({...})" call
-   for the ticket fields was never closed before the trailing-status try/except
-   was pasted inside it, which is a syntax error and means this file could not
-   even be imported. The dict is now closed properly and the trailing-status
-   block runs as its own step after it.
-10. That trailing-status block called backtest.simulate(...), but the module
-    is imported as "import backtest as C" — "backtest" was never defined, so
-    every call raised NameError and silently fell into the except branch,
-    always reporting live_status as NOT_RUN. Now calls C.simulate(...).
+9. build_signal() produces signal-only tickets. It does not replay historical
+   candles to pretend that a manual position was opened or to manage a stop.
 """
 
 import os
@@ -356,35 +349,10 @@ def build_signal(symbol):
                    f"{setup.entry_mode}"),
     })
 
-    # --- LIVE TRAILING & STOP STATUS TRACKING ---
-    try:
-        sim_legs, sim_hit, sim_outcome, sim_ex = C.simulate(
-            df5, "bull" if action == "BUY" else "bear",
-            level, sl, s.tps, start=max(0, len(df5) - 200), max_hold=100,
-            manage=True, cost_r=s.cost_in_r
-        )
-        current_active_sl = sim_legs[-1][1] if sim_legs else sl
-
-        # नवीन नियम: जर हा जुना सेटअप असेल आणि त्याचे TP किंवा SL आधीच हिट झाले असतील,
-        # तर डॅशबोर्डवर तो BUY/SELL न दाखवता सरळ NO_TRADE करेल!
-        if sim_outcome in ("TP_ALL", "STOP_HIT", "EXPIRED"):
-            action = "NO_TRADE"
-            base["action"] = "NO_TRADE"
-            base["blocker"] = f"TRADE_ALREADY_{sim_outcome}"
-            base["reason"] = f"Past setup finished with status: {sim_outcome}"
-
-        base.update({
-            "live_status": sim_outcome,
-            "tp_hit_status": sim_hit,
-            "current_sl": round(current_active_sl, 8),
-            "trailing_active": len(sim_hit) > 0
-        })
-    except Exception:
-        base.update({
-            "live_status": "NOT_RUN",
-            "current_sl": sl,
-            "trailing_active": False
-        })
+    # Manual-signal mode: this endpoint only produces a fresh setup. It does
+    # not replay old candles, track a position, or change the trade to
+    # NO_TRADE after a simulated TP/SL outcome. The trader manages execution
+    # and any trailing stop manually.
     return base
 
 
