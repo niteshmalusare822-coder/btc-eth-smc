@@ -234,13 +234,11 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     loadSignals();
-    loadViability();
     loadMarketSentiment(); // मार्केट सेंटिमेंट लगेच लोड होईल
 
     // Refresh data and sentiment every 2 minutes without full page blink
     setInterval(function() {
         loadSignals();
-        loadViability();
         loadMarketSentiment(); // दर २ मिनिटांनी अपडेट होईल
     }, 120000);
 });
