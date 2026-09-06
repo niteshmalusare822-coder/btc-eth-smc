@@ -629,9 +629,9 @@ def _evaluate(bias, trigger, setups, ts):
     side = "bull" if bias == "BULLISH" else "bear"
 
     if trigger not in ("bull", "bear"):
-        #return "NO_TRADE", None, None, None, "NO_TRIGGER"
+        return "NO_TRADE", None, None, None, "NO_TRIGGER"
     if trigger != side:
-        #return "NO_TRADE", None, None, None, "TRIGGER_WRONG_WAY"
+        return "NO_TRADE", None, None, None, "TRIGGER_WRONG_WAY"
 
     live = active_setups_at(setups, ts, side)
     if not live:
