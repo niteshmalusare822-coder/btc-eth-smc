@@ -179,7 +179,7 @@ def required_bars(bars_5m):
 
     Equivalent wall-clock coverage:
         15m -> approximately 3334 candles
-        1h  -> approximately 834 candles
+        4h  -> approximately 834 candles
 
     Warmup is added separately.
     """
@@ -507,14 +507,14 @@ def fetch_ohlcv_history(
     """
 
     # --- 4H RESAMPLING WORKAROUND ---
-    # CoinDCX direct 4h API support नसल्यामुळे, आपण 1h डेटा मागवून त्याला 4h मध्ये Resample करू!
+    # CoinDCX direct 4h API support नसल्यामुळे, आपण 4h डेटा मागवून त्याला 4h मध्ये Resample करू!
     if timeframe == "4h":
-        df_1h, meta_1h = fetch_ohlcv_history(venue, symbol, "1h", target_bars * 4, since, now)
-        if df_1h is None or df_1h.empty:
-            return None, meta_1h
+        df_4h, meta_4h = fetch_ohlcv_history(venue, symbol, "4h", target_bars * 4, since, now)
+        if df_4h is None or df_4h.empty:
+            return None, meta_4h
         
-        df_1h = df_1h.set_index("ts")
-        df_4h = df_1h.resample("4h").agg({
+        df_4h = df_4h.set_index("ts")
+        df_4h = df_4h.resample("4h").agg({
             "open": "first",
             "high": "max",
             "low": "min",
@@ -523,9 +523,9 @@ def fetch_ohlcv_history(
         }).dropna().reset_index()
         
         cleaned_df = _clean(df_4h)
-        meta_1h["timeframe"] = "4h"
-        meta_1h["actual_bars"] = len(cleaned_df)
-        return cleaned_df, meta_1h
+        meta_4h["timeframe"] = "4h"
+        meta_4h["actual_bars"] = len(cleaned_df)
+        return cleaned_df, meta_4h
     # --------------------------------
 
     seconds = TF_SECONDS.get(timeframe)
@@ -953,7 +953,7 @@ def align_common_window(
  
     Two rules, and neither is min()/max() across all frames.
  
-    END. The decision anchor is the fast frame's last closed bar. A 1H bar
+    END. The decision anchor is the fast frame's last closed bar. A 4H bar
     closes twelve times less often than a 5M bar, so min(last_ts) dragged the
     5M timeline back to the top of a previous hour and every live signal was
     decided on a candle up to 115 minutes old. Higher-frame causality is
@@ -964,10 +964,10 @@ def align_common_window(
     START. Only the FAST frame is trimmed at the start. required_bars()
     deliberately fetches 600 extra higher-timeframe bars as warmup;
     max(first_ts) threw that prefix away on every run. Calibration is a
-    500-bar trailing quantile with min_periods=100, so a truncated 1H frame
+    500-bar trailing quantile with min_periods=100, so a truncated 4H frame
     leaves the displacement threshold at +inf for its first 100 bars, no BOS
     can fire, and htf_bias_series sits on NEUTRAL for most of the window.
-    Measured on a 1200-bar live load: 700 1H bars became 149, and the bias mix
+    Measured on a 1200-bar live load: 700 4H bars became 149, and the bias mix
     went from 18% NEUTRAL to 95% NEUTRAL.
  
     preserve_live_latest is kept for callers that still pass it, but the end
@@ -1355,7 +1355,7 @@ def _finish(
             int(need["15m"]),
 
 
-        "requested_with_warmup_1h":
+        "requested_with_warmup_4h":
             int(need["4h"]),
 
 
@@ -1367,7 +1367,7 @@ def _finish(
         "actual_bars_15m":
             int(len(frames["15m"])),
 
-        "actual_bars_1h":
+        "actual_bars_4h":
             int(len(frames["4h"])),
 
 
@@ -1377,7 +1377,7 @@ def _finish(
         "usable_15m_bars":
             int(len(frames["15m"])),
 
-        "usable_1h_bars":
+        "usable_4h_bars":
             int(len(frames["4h"])),
 
 
