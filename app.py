@@ -235,7 +235,7 @@ def report_for(symbol, bars):
             symbol,
             frames["5m"],
             frames["15m"],
-            frames["1h"],
+            frames["4h"],
             params=strategy_params,
         )
         rep["source"] = meta.get("source")
@@ -261,7 +261,7 @@ def build_signal(symbol):
                 "reason": meta.get("error", "no data"),
                 "data_quality": meta}
 
-    df5, df15, df1h = frames["5m"], frames["15m"], frames["1h"]
+    df5, df15, df1h = frames["5m"], frames["15m"], frames["4h"]
     if len(df5) < 200:
         return {"symbol": symbol, "action": "NO_TRADE", "blocker": "NO_DATA",
                 "reason": f"only {len(df5)} 5m bars, not enough history",
@@ -418,7 +418,7 @@ def build_diagnostic(symbol, bars):
     oos = {m["arm"]: m for m in rep.get("out_of_sample", [])}
 
     out = DG.missed_move_report(symbol, frames["5m"], frames["15m"],
-                                frames["1h"], taken_trades=taken)
+                                frames["4h"], taken_trades=taken)
     out["source"] = rep.get("source")
     out["coverage_days"] = (rep.get("data_quality") or {}).get("coverage_days")
     out["per_asset"] = {
@@ -438,7 +438,7 @@ def build_entry_quality(symbol, bars):
     frames, meta = _load(symbol, bars)
     if frames is None:
         return {"symbol": symbol, "error": meta.get("error", "no data")}
-    out = EQ.full_diagnosis(symbol, frames["5m"], frames["15m"], frames["1h"])
+    out = EQ.full_diagnosis(symbol, frames["5m"], frames["15m"], frames["4h"])
     out["source"] = meta.get("source")
     out["coverage_days"] = meta.get("coverage_days")
     return out
