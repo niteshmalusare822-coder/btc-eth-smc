@@ -42,7 +42,7 @@ services:
 
       # ── Viability. Fee as a fraction of the stop distance.
       - key: MAX_COST_IN_R
-        value: "0.40"
+        value: "0.75"
 
       - key: LIVE_BARS_5M
         value: "1200"
