@@ -13,7 +13,11 @@
 
 const API = "https://crypto-scanner-api-xnwd.onrender.com";
 const SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "AVAX", "LINK", "DOGE", "ADA", "DEXE", "BANK"];
-const REFRESH_MS = 120000;
+// Browser polling is lightweight because the API caches each signal. Do not
+// start a second request while a free Render instance is still answering.
+const REFRESH_MS = 30000;
+const SENTIMENT_REFRESH_MS = 300000;
+let signalsLoading = false;
 
 const CSS = `
 .sig{font-size:13px;line-height:1.55}
@@ -102,7 +106,7 @@ function tpRow(tp) {
   const note = tp.reachable ? `${tp.r_multiple}R` :
     `<span style="color:#8b949e">${tp.note}</span>`;
   return `<tr class="${dead}"><td>${tp.level}</td><td>${px(tp.price)}</td>
-    <td>${inr(tp.target_inr)}</td><td>${note}</td></tr>`;
+    <td>${inr(tp.net_inr)}</td><td>${note}</td></tr>`;
 }
 
 function renderTicket(s) {
@@ -121,10 +125,10 @@ function renderTicket(s) {
     </div>
     ${warn}
     <table>
-      <tr><td>Entry</td><td>${px(s.entry)}</td><td colspan="2">limit at OTE</td></tr>
+      <tr><td>Entry</td><td>${px(s.entry)}</td><td colspan="2">limit at ${s.zone?.entry_mode || "planned level"}</td></tr>
       <tr class="sl">
-        <td>SL ${s.trailing_active ? '<span style="color:#2ea043;font-size:9px;">(TRAILED)</span>' : ''}</td>
-        <td>${px(s.current_sl !== undefined ? s.current_sl : s.sl)}</td>
+        <td>SL</td>
+        <td>${px(s.sl)}</td>
         <td>${inr(s.risk_inr)}</td>
         <td>${pc(s.sl_distance_pct)}</td>
       </tr>
@@ -146,6 +150,8 @@ function renderTicket(s) {
 }
 
 async function loadSignals() {
+  if (signalsLoading) return;
+  signalsLoading = true;
   const targets = {};
   SYMBOLS.forEach(s => {
     const el = document.getElementById(s.toLowerCase() + "-content");
@@ -176,6 +182,8 @@ async function loadSignals() {
       const el = targets[s];
       if (el) el.innerHTML = `<div class="sig"><div class="why">API unreachable</div></div>`;
     });
+  } finally {
+    signalsLoading = false;
   }
 }
 
@@ -236,11 +244,11 @@ document.addEventListener("DOMContentLoaded", () => {
     loadSignals();
     loadMarketSentiment(); // मार्केट सेंटिमेंट लगेच लोड होईल
 
-    // Refresh data and sentiment every 2 minutes without full page blink
-    setInterval(function() {
-        loadSignals();
-        loadMarketSentiment(); // दर २ मिनिटांनी अपडेट होईल
-    }, 120000);
+    // Signals are checked every 30 seconds. The API cache prevents a full
+    // scan on every browser poll.
+    setInterval(loadSignals, REFRESH_MS);
+    // Market sentiment is independent and does not need frequent polling.
+    setInterval(loadMarketSentiment, SENTIMENT_REFRESH_MS);
 });
 
 // --- Market Sentiment API Function ---
@@ -264,4 +272,3 @@ async function loadMarketSentiment() {
         }
     }
 }
-
