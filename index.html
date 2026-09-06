@@ -3,8 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
 <title>BTC ETH SMC Dashboard</title>
-<link rel="stylesheet" href="style.css?v=5">
+
+<link rel="stylesheet" href="style.css?v=13">
+
 <style>
   #viability {
     max-width: 900px;
@@ -13,98 +16,183 @@
   }
 </style>
 </head>
+
 <body>
+
 <header>
     <h1>BTC & ETH Futures Dashboard</h1>
-    <div id="status">Connecting...</div>
-    <div id="sentiment-box" style="margin-top: 5px; font-size: 13px; color: #aaa;">
-        Market Sentiment: <span id="sentiment-text" style="color: #fff; font-weight: bold;">Loading...</span>
+
+    <div id="status">
+        Connecting...
+    </div>
+
+    <div id="sentiment-box">
+        Market Sentiment:
+        <span id="sentiment-text">
+            Loading...
+        </span>
     </div>
 </header>
 
+
+<!-- =========================
+     VIABILITY
+     ========================= -->
+
 <div id="viability"></div>
 
+
+<!-- =========================
+     COIN GRID
+     ========================= -->
+
 <div class="grid">
-  <div class="coin-card">
-    <h2>BTC/USDT</h2>
-    <div id="btc-content"></div>
-  </div>
-  <div class="coin-card">
-    <h2>ETH/USDT</h2>
-    <div id="eth-content"></div>
-  </div>
-  <div class="coin-card">
-    <h2>SOL/USDT</h2>
-    <div id="sol-content"></div>
-  </div>
-  <div class="coin-card">
-    <h2>XRP/USDT</h2>
-    <div id="xrp-content"></div>
-  </div>
-  <div class="coin-card">
-    <h2>AVAX/USDT</h2>
-    <div id="avax-content"></div>
-  </div>
-  <div class="coin-card">
-    <h2>LINK/USDT</h2>
-    <div id="link-content"></div>
-  </div>
-  <div class="coin-card">
-    <h2>DOGE/USDT</h2>
-    <div id="doge-content"></div>
-  </div>
-  <div class="coin-card">
-    <h2>ADA/USDT</h2>
-    <div id="ada-content"></div>
-  </div>
-  <div class="coin-card">
-    <h2>DEXE/USDT <span style="font-size:0.6em;color:#e0a030">unvalidated</span></h2>
-    <div id="dexe-content"></div>
-  </div>
-  <div class="coin-card">
-    <h2>BANK/USDT <span style="font-size:0.6em;color:#e0a030">unvalidated</span></h2>
-    <div id="bank-content"></div>
-      <div class="coin-card">
-    <h2>BNB/USDT</h2>
-    <div id="bnb-content"></div>
-  </div>
 
-  <div class="coin-card">
-    <h2>SUI/USDT</h2>
-    <div id="sui-content"></div>
-  </div>
+    <!-- BTC -->
+    <div class="coin-card">
+        <h2>BTC/USDT</h2>
+        <div id="btc-content"></div>
+    </div>
 
-  <div class="coin-card">
-    <h2>HBAR/USDT</h2>
-    <div id="hbar-content"></div>
-  </div>
 
-  <div class="coin-card">
-    <h2>LTC/USDT</h2>
-    <div id="ltc-content"></div>
-  </div>
+    <!-- ETH -->
+    <div class="coin-card">
+        <h2>ETH/USDT</h2>
+        <div id="eth-content"></div>
+    </div>
 
-  <div class="coin-card">
-    <h2>BCH/USDT</h2>
-    <div id="bch-content"></div>
-  </div>
 
-  <div class="coin-card">
-    <h2>DOT/USDT</h2>
-    <div id="dot-content"></div>
-  </div>
+    <!-- SOL -->
+    <div class="coin-card">
+        <h2>SOL/USDT</h2>
+        <div id="sol-content"></div>
+    </div>
 
-  <div class="coin-card">
-    <h2>1000PEPE/USDT</h2>
-    <div id="1000pepe-content"></div>
-  </div>
+
+    <!-- XRP -->
+    <div class="coin-card">
+        <h2>XRP/USDT</h2>
+        <div id="xrp-content"></div>
+    </div>
+
+
+    <!-- AVAX -->
+    <div class="coin-card">
+        <h2>AVAX/USDT</h2>
+        <div id="avax-content"></div>
+    </div>
+
+
+    <!-- LINK -->
+    <div class="coin-card">
+        <h2>LINK/USDT</h2>
+        <div id="link-content"></div>
+    </div>
+
+
+    <!-- DOGE -->
+    <div class="coin-card">
+        <h2>DOGE/USDT</h2>
+        <div id="doge-content"></div>
+    </div>
+
+
+    <!-- ADA -->
+    <div class="coin-card">
+        <h2>ADA/USDT</h2>
+        <div id="ada-content"></div>
+    </div>
+
+
+    <!-- DEXE -->
+    <div class="coin-card">
+        <h2>
+            DEXE/USDT
+            <span class="unvalidated">unvalidated</span>
+        </h2>
+
+        <div id="dexe-content"></div>
+    </div>
+
+
+    <!-- BANK -->
+    <div class="coin-card">
+        <h2>
+            BANK/USDT
+            <span class="unvalidated">unvalidated</span>
+        </h2>
+
+        <div id="bank-content"></div>
+    </div>
+
+
+    <!-- BNB -->
+    <div class="coin-card">
+        <h2>BNB/USDT</h2>
+        <div id="bnb-content"></div>
+    </div>
+
+
+    <!-- SUI -->
+    <div class="coin-card">
+        <h2>SUI/USDT</h2>
+        <div id="sui-content"></div>
+    </div>
+
+
+    <!-- HBAR -->
+    <div class="coin-card">
+        <h2>HBAR/USDT</h2>
+        <div id="hbar-content"></div>
+    </div>
+
+
+    <!-- LTC -->
+    <div class="coin-card">
+        <h2>LTC/USDT</h2>
+        <div id="ltc-content"></div>
+    </div>
+
+
+    <!-- BCH -->
+    <div class="coin-card">
+        <h2>BCH/USDT</h2>
+        <div id="bch-content"></div>
+    </div>
+
+
+    <!-- DOT -->
+    <div class="coin-card">
+        <h2>DOT/USDT</h2>
+        <div id="dot-content"></div>
+    </div>
+
+
+    <!-- PEPE -->
+    <div class="coin-card">
+        <h2>1000PEPE/USDT</h2>
+        <div id="1000pepe-content"></div>
+    </div>
+
 </div>
 
+
+<!-- =========================
+     TRADINGVIEW
+     ========================= -->
+
 <iframe
-  src="https://s.tradingview.com/widgetembed/?symbol=BINANCE:BTCUSDT&interval=5&timezone=Asia%2FKolkata"
-  class="chart">
+    src="https://s.tradingview.com/widgetembed/?symbol=BINANCE:BTCUSDT&interval=5&timezone=Asia%2FKolkata"
+    class="chart"
+    title="BTC/USDT TradingView Chart">
 </iframe>
 
-<script src="script.js?v=12"></script>
+
+<!-- =========================
+     JAVASCRIPT
+     ========================= -->
+
+<script src="script.js?v=13"></script>
+
 </body>
 </html>
