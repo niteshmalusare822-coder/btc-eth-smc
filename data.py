@@ -36,22 +36,36 @@ PAIR_MAP = {
     "ADA": "B-ADA_USDT",
     "DEXE": "B-DEXE_USDT",
     "BANK": "B-BANK_USDT",
+    "BNB": "B-BNB_USDT",
+    "SUI": "B-SUI_USDT",
+    "HBAR": "B-HBAR_USDT",
+    "LTC": "B-LTC_USDT",
+    "BCH": "B-BCH_USDT",
+    "DOT": "B-DOT_USDT",
+    "1000PEPE": "B-1000PEPE_USDT",
 }
 
 # Preferred CCXT symbols.
 # Actual exchange markets are checked dynamically because not every exchange
 # uses the same futures/spot symbol format.
 CCXT_MAP = {
-    "BTC": "BTC/USDT:USDT",
-    "ETH": "ETH/USDT:USDT",
-    "SOL": "SOL/USDT:USDT",
-    "XRP": "XRP/USDT:USDT",
-    "AVAX": "AVAX/USDT:USDT",
-    "LINK": "LINK/USDT:USDT",
-    "DOGE": "DOGE/USDT:USDT",
-    "ADA": "ADA/USDT:USDT",
-    "DEXE": "DEXE/USDT:USDT",
-    "BANK": "BANK/USDT:USDT",
+    "BTC": "B-BTC_USDT",
+    "ETH": "B-ETH_USDT",
+    "SOL": "B-SOL_USDT",
+    "XRP": "B-XRP_USDT",
+    "AVAX": "B-AVAX_USDT",
+    "LINK": "B-LINK_USDT",
+    "DOGE": "B-DOGE_USDT",
+    "ADA": "B-ADA_USDT",
+    "DEXE": "B-DEXE_USDT",
+    "BANK": "B-BANK_USDT",
+    "BNB": "B-BNB_USDT",
+    "SUI": "B-SUI_USDT",
+    "HBAR": "B-HBAR_USDT",
+    "LTC": "B-LTC_USDT",
+    "BCH": "B-BCH_USDT",
+    "DOT": "B-DOT_USDT",
+    "1000PEPE": "B-1000PEPE_USDT",
 }
 
 FAILOVER = [
