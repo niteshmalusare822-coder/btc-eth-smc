@@ -55,7 +55,6 @@ CCXT_MAP = {
 }
 
 FAILOVER = [
-    "CoinDCX",
     "bybit",
     "okx",
     "gateio",
@@ -101,6 +100,13 @@ WARMUP_BARS = {
     "15m": 600,
     "1h": 400,
     "4h": 200,
+}
+
+MIN_BARS_BY_TF = {
+    "5m": 300,
+    "15m": 300,
+    "1h": 100,
+    "4h": 40,
 }
 
 
@@ -1094,7 +1100,7 @@ def load_mtf(
 
             if (
                 df is None
-                or len(df) < 300
+                or len(df) < MIN_BARS_BY_TF.get(timeframe, 300)
             ):
 
                 venue_ok = False
@@ -1186,7 +1192,7 @@ def load_mtf(
 
             if (
                 df is None
-                or len(df) < 300
+                or len(df) < MIN_BARS_BY_TF.get(timeframe, 300)
             ):
                 continue
 
@@ -1305,7 +1311,7 @@ def _finish(
 
     for timeframe, df in frames.items():
 
-        if len(df) < 300:
+        if len(df) < MIN_BARS_BY_TF.get(timeframe, 300):
 
             warnings.append(
                 f"{timeframe}: only "
