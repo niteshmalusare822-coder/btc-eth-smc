@@ -511,23 +511,23 @@ def fetch_ohlcv_history(
     # --- 4H RESAMPLING WORKAROUND ---
     # CoinDCX direct 4h API support नसल्यामुळे, आपण 4h डेटा मागवून त्याला 4h मध्ये Resample करू!
     if timeframe == "4h":
-    df_1h, meta_1h = fetch_ohlcv_history(venue, symbol, "1h", target_bars * 4, since, now)
-    if df_1h is None or df_1h.empty:
-        return None, meta_1h
-    
-    df_1h = df_1h.set_index("ts")
-    df_4h = df_1h.resample("4h").agg({
-        "open": "first",
-        "high": "max",
-        "low": "min",
-        "close": "last",
-        "volume": "sum"
-    }).dropna().reset_index()
-    
-    cleaned_df = _clean(df_4h)
-    meta_1h["timeframe"] = "4h"
-    meta_1h["actual_bars"] = len(cleaned_df)
-    return cleaned_df, meta_1h
+        df_1h, meta_1h = fetch_ohlcv_history(venue, symbol, "1h", target_bars * 4, since, now)
+        if df_1h is None or df_1h.empty:
+            return None, meta_1h
+        
+        df_1h = df_1h.set_index("ts")
+        df_4h = df_1h.resample("4h").agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum"
+        }).dropna().reset_index()
+        
+        cleaned_df = _clean(df_4h)
+        meta_1h["timeframe"] = "4h"
+        meta_1h["actual_bars"] = len(cleaned_df)
+        return cleaned_df, meta_1h
     # --------------------------------
 
     seconds = TF_SECONDS.get(timeframe)
