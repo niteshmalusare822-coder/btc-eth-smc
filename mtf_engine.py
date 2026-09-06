@@ -1,8 +1,8 @@
 """
-mtf_engine.py — 1H bias, 15M setup, 5M trigger. One decision, three jobs.
+mtf_engine.py — 4H bias, 15M setup, 5M trigger. One decision, three jobs.
 
-    1H   decides DIRECTION.   BULLISH / BEARISH / NEUTRAL. Neutral = no trade.
-    15M  decides WHETHER a setup exists, in the 1H direction only.
+    4H   decides DIRECTION.   BULLISH / BEARISH / NEUTRAL. Neutral = no trade.
+    15M  decides WHETHER a setup exists, in the 4H direction only.
     5M   decides WHEN to enter. It never picks a side.
 
 LOOK-AHEAD CONTROL
@@ -13,7 +13,7 @@ Higher-timeframe state is joined to the 5M timeline with merge_asof on the
 higher frame's CLOSE time, not its open time. A 15M candle stamped 10:00 does
 not exist as information until 10:15. The join therefore uses
 `ts + one_bar_duration` as the key, so a 5M bar at 10:05 sees the 15M candle
-that closed at 10:00 and nothing newer. Same for 1H.
+that closed at 10:00 and nothing newer. Same for 4H.
 
 Every structural object (swing, BOS, order block) already carries
 confirmed_idx from poi_factors, and zones are only read through
@@ -115,11 +115,11 @@ def _calibrate(df, p, calib_end=None):
 
 
 # ---------------------------------------------------------------------------
-# 1H BIAS
+# 4H BIAS
 # ---------------------------------------------------------------------------
-def htf_bias_series(df_1h, p=None, calib_end=None):
+def htf_bias_series(df_4h, p=None, calib_end=None):
     """
-    BULLISH / BEARISH / NEUTRAL per 1H bar, causal.
+    BULLISH / BEARISH / NEUTRAL per 4H bar, causal.
 
     Direction-first:
 
@@ -473,7 +473,7 @@ def _confirm_structure(df, breaks, swings, p):
 # ---------------------------------------------------------------------------
 def trigger_series(df_5m, p=None, calib_end=None):
     """Micro structure shift on 5M. Direction-agnostic: it reports what the
-    5M chart just did, and the caller checks it against the 1H/15M side."""
+    5M chart just did, and the caller checks it against the 4H/15M side."""
     p = p or PARAMS
     df = poi.add_candle_metrics(df_5m)
     thr = _calibrate(df, p, calib_end)
@@ -596,9 +596,9 @@ def active_setups_at(setups, ts, side=None):
 
 BLOCKERS = {
     "OK": "aligned, trade allowed",
-    "HTF_NEUTRAL": "1H bias neutral",
+    "HTF_NEUTRAL": "4H bias neutral",
     "NO_TRIGGER": "no 5M trigger",
-    "TRIGGER_WRONG_WAY": "5M trigger against the 1H direction",
+    "TRIGGER_WRONG_WAY": "5M trigger against the 4H direction",
     "NO_SETUP": "no live 5M setup",
     "SETUP_WRONG_WAY": "5M setup exists but on the other side",
     "SETUP_EXPIRED": "5M setup aged out",
