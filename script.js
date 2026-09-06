@@ -12,7 +12,7 @@
  */
 
 const API = "https://crypto-scanner-api-xnwd.onrender.com";
-const SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "AVAX", "LINK", "DOGE", "ADA", "DEXE", "BANK"];
+const SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "AVAX", "LINK", "DOGE", "ADA", "DEXE", "BANK", "BNB", "SUI", "HBAR", "LTC", "BCH", "DOT", "1000PEPE"];
 // Browser polling is lightweight because the API caches each signal. Do not
 // start a second request while a free Render instance is still answering.
 const REFRESH_MS = 30000;
