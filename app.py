@@ -86,7 +86,11 @@ def add_headers(response):
     response.headers["Cache-Control"] = "no-store"
     return response
 
-SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "AVAX", "LINK", "DOGE", "ADA", "DEXE", "BANK"]
+SYMBOLS = [
+    "BTC", "ETH", "SOL", "XRP", "AVAX", "LINK", "DOGE", "ADA",
+    "DEXE", "BANK",
+    "BNB", "SUI", "HBAR", "LTC", "BCH", "DOT", "1000PEPE"
+]
 SIGNAL_TTL = int(os.environ.get("SIGNAL_TTL", 120))
 REPORT_TTL = int(os.environ.get("REPORT_TTL", 3600))
 LIVE_BARS_5M = int(os.environ.get("LIVE_BARS_5M", 1200))
