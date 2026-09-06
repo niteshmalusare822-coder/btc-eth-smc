@@ -1,57 +1,78 @@
+/* =========================
+   GLOBAL
+   ========================= */
+
+* {
+    box-sizing: border-box;
+}
+
+html,
 body {
     margin: 0;
+    padding: 0;
+    width: 100%;
     background: #111;
     color: white;
     font-family: Arial, sans-serif;
 }
 
+
+/* =========================
+   HEADER
+   ========================= */
+
 header {
+    width: 100%;
     padding: 20px;
     text-align: center;
     background: #1a1a1a;
 }
 
+
 /* =========================
-   COIN GRID
+   MAIN CONTAINER
+   ========================= */
+
+main {
+    width: 100%;
+    max-width: 1800px;
+    margin: 0 auto;
+}
+
+
+/* =========================
+   COIN GRID — 7 COLUMNS
    ========================= */
 
 .grid {
     display: grid;
-    grid-template-columns: repeat(7, minmax(0, 1fr));
+
+    grid-template-columns:
+        repeat(7, minmax(0, 1fr));
+
     gap: 14px;
+
+    width: 100%;
     padding: 20px;
 }
 
-.coin-card {
-    background: #1f1f1f;
-    border-radius: 15px;
-    padding: 15px;
-    min-width: 0;
-    box-sizing: border-box;
-}
-
-    width: 100%;
-    max-width: 1600px;
-    margin: 0 auto;
-
-    box-sizing: border-box;
-}
 
 /* =========================
    COIN CARD
    ========================= */
 
 .coin-card {
-    background: #1f1f1f;
-    border-radius: 15px;
-    padding: 20px;
-
     width: 100%;
     min-width: 0;
-    box-sizing: border-box;
+
+    background: #1f1f1f;
+    border-radius: 15px;
+
+    padding: 15px;
 
     overflow: hidden;
 }
+
 
 /* =========================
    SIGNAL
@@ -72,6 +93,7 @@ header {
     font-weight: bold;
 }
 
+
 /* =========================
    TIMEFRAME
    ========================= */
@@ -79,12 +101,14 @@ header {
 .timeframe {
     margin: 10px 0;
     padding: 10px;
+
     background: #2a2a2a;
     border-radius: 10px;
 }
 
+
 /* =========================
-   META / REASON
+   META
    ========================= */
 
 .meta {
@@ -93,12 +117,36 @@ header {
     margin: 4px 0;
 }
 
+
+/* =========================
+   REASON
+   ========================= */
+
 .reason {
     font-size: 12px;
     color: #888888;
     font-style: italic;
     margin: 4px 0 0 0;
 }
+
+
+/* =========================
+   TABLE
+   ========================= */
+
+.coin-card table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+.coin-card td,
+.coin-card th {
+    padding: 5px;
+    font-size: 12px;
+    word-break: break-word;
+}
+
 
 /* =========================
    TRADINGVIEW CHART
@@ -117,37 +165,44 @@ header {
     border: none;
 }
 
-/* =========================
-   TABLE
-   ========================= */
-
-.coin-card table {
-    width: 100%;
-    border-collapse: collapse;
-}
-
-.coin-card td,
-.coin-card th {
-    padding: 6px;
-}
 
 /* =========================
    TABLET
    ========================= */
 
-@media (max-width: 1100px) {
+@media (max-width: 1200px) {
+
     .grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns:
+            repeat(4, minmax(0, 1fr));
     }
+
 }
+
+
+/* =========================
+   SMALL TABLET
+   ========================= */
+
+@media (max-width: 900px) {
+
+    .grid {
+        grid-template-columns:
+            repeat(3, minmax(0, 1fr));
+    }
+
+}
+
 
 /* =========================
    MOBILE
    ========================= */
 
 @media (max-width: 650px) {
+
     .grid {
         grid-template-columns: 1fr;
+        gap: 12px;
         padding: 12px;
     }
 
@@ -155,4 +210,5 @@ header {
         width: calc(100% - 24px);
         height: 400px;
     }
+
 }
