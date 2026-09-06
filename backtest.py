@@ -231,7 +231,7 @@ def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
     # BTC 0.140/0.278 = 0.50 (half the risk gone to fees before the trade
     # moves), ETH 0.140/0.755 = 0.19. At 0.50, TP1 (1R) nets Rs.231 while the
     # stop costs Rs.700 — breakeven needs a 75% win rate.
-    max_cost = float(cfg.get("max_cost_in_r", 0.15))
+    max_cost = float(cfg.get("max_cost_in_r", 0.75))
     if s.cost_in_r > max_cost:
         return None, "cost above max_cost_in_r limit"
 
@@ -593,7 +593,7 @@ DEFAULT_CFG = {"max_hold": 60, "rand_sl_atr": 1.0, "n_random": 400,
                #   C  up to max_concurrent independent positions
                #   D  replace a losing-so-far position if a stronger setup
                #      appears (requires score_margin improvement)
-               "max_cost_in_r": float(__import__("os").environ.get("MAX_COST_IN_R", 0.15)),
+               "max_cost_in_r": float(__import__("os").environ.get("MAX_COST_IN_R", 0.75)),
                "position_mode": "B",
                "max_concurrent": 2,
                "replace_score_margin": 2,
