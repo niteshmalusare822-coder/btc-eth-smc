@@ -324,7 +324,7 @@ def build_signal(symbol):
     reachable = [t for t in s.tps if t.get("reachable")]
     potential = max((t["net_inr"] for t in reachable), default=0)
     rr = round(potential / s.risk_inr, 2) if s.risk_inr > 0 else None
-    max_cost = float(os.environ.get("MAX_COST_IN_R", 0.15))
+    max_cost = float(os.environ.get("MAX_COST_IN_R", 0.75))
 
     base.update({
         "action": action,
