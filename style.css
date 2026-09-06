@@ -11,18 +11,45 @@ header {
     background: #1a1a1a;
 }
 
+/* =========================
+   COIN GRID
+   ========================= */
+
 .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+
+    /* ALWAYS 4 COINS PER ROW */
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+
     gap: 20px;
     padding: 20px;
+
+    width: 100%;
+    max-width: 1600px;
+    margin: 0 auto;
+
+    box-sizing: border-box;
 }
+
+/* =========================
+   COIN CARD
+   ========================= */
 
 .coin-card {
     background: #1f1f1f;
     border-radius: 15px;
     padding: 20px;
+
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+
+    overflow: hidden;
 }
+
+/* =========================
+   SIGNAL
+   ========================= */
 
 .signal-buy {
     color: #00ff66;
@@ -39,12 +66,20 @@ header {
     font-weight: bold;
 }
 
+/* =========================
+   TIMEFRAME
+   ========================= */
+
 .timeframe {
     margin: 10px 0;
     padding: 10px;
     background: #2a2a2a;
     border-radius: 10px;
 }
+
+/* =========================
+   META / REASON
+   ========================= */
 
 .meta {
     font-size: 12px;
@@ -59,8 +94,59 @@ header {
     margin: 4px 0 0 0;
 }
 
+/* =========================
+   TRADINGVIEW CHART
+   ========================= */
+
 .chart {
-    width: 100%;
+    display: block;
+
+    width: 900px;
+    max-width: calc(100% - 40px);
+
     height: 500px;
+
+    margin: 30px auto;
+
     border: none;
+}
+
+/* =========================
+   TABLE
+   ========================= */
+
+.coin-card table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.coin-card td,
+.coin-card th {
+    padding: 6px;
+}
+
+/* =========================
+   TABLET
+   ========================= */
+
+@media (max-width: 1100px) {
+    .grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+/* =========================
+   MOBILE
+   ========================= */
+
+@media (max-width: 650px) {
+    .grid {
+        grid-template-columns: 1fr;
+        padding: 12px;
+    }
+
+    .chart {
+        width: calc(100% - 24px);
+        height: 400px;
+    }
 }
