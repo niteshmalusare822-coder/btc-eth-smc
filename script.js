@@ -108,7 +108,7 @@ function tpRow(tp) {
 function renderTicket(s) {
   const dir = s.action === "BUY" ? "buy" : "sell";
   const warn = s.tradeable ? "" :
-    `<div class="warn">Fee is ${(s.cost_in_r * 100).toFixed(0)}% of the stop
+    `<div class="warn">Fee is ${(s.cost_in_r * 100).toFixed(0)}% of the stop distance — above the 70% limit. Flagged not tradeable.</div>`;
      distance — above the 75% limit. Flagged not tradeable.</div>`;
 
   return `<div class="sig">
