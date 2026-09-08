@@ -1054,7 +1054,7 @@ def load_mtf(
     bars_5m,
     allow_mixed=False,
     now=None,
-    live=False,
+    live=True,
 ):
     """
     Load 5m, 15m and 4h historical data.
