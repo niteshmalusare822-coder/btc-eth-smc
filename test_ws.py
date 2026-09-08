@@ -3,18 +3,20 @@ import socketio
 sio = socketio.Client(logger=True, engineio_logger=False)
 
 CHANNELS = [
-    "B-BTC_USDT@trades",
-    "B-BTC_USDT@prices",
-    "candlestick@B-BTC_USDT_1m",
-    "candlestick@B-BTC_USDT_1",
+    "B-BTC_USDT_1m-futures",
+    "B-BTC_USDT_1h-futures",
 ]
 
 @sio.event
 def connect():
     print(">>> connected, joining channels", flush=True)
     for ch in CHANNELS:
-        sio.emit("join", ch)
+        sio.emit("join", {"channelName": ch})
         print(f">>> joined {ch}", flush=True)
+
+@sio.on("candlestick")
+def candlestick(data):
+    print(f">>> CANDLESTICK: {data}", flush=True)
 
 @sio.on("*")
 def catch_all(event, data):
