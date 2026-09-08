@@ -49,6 +49,7 @@ import threading
 import time
 import traceback
 from collections import OrderedDict
+import socketio
 
 import numpy as np
 import pandas as pd
@@ -91,6 +92,12 @@ SYMBOLS = [
     "DEXE", "BANK",
     "BNB", "SUI", "HBAR", "LTC", "BCH", "DOT", "1000PEPE"
 ]
+
+LIVE_WS = {}
+LIVE_WS_LOCK = threading.Lock()
+LIVE_WS_STARTED = False
+LIVE_WS_LAST_ERROR = None
+
 SIGNAL_TTL = int(os.environ.get("SIGNAL_TTL", 120))
 REPORT_TTL = int(os.environ.get("REPORT_TTL", 3600))
 LIVE_BARS_5M = int(os.environ.get("LIVE_BARS_5M", 1200))
