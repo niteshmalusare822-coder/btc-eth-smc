@@ -95,7 +95,7 @@ SYMBOLS = [
 
 LIVE_WS = {}
 LIVE_WS_LOCK = threading.Lock()
-LIVE_WS_STARTED = False
+LIVE_WS_STARTED = True
 LIVE_WS_LAST_ERROR = None
 
 SIGNAL_TTL = int(os.environ.get("SIGNAL_TTL", 120))
