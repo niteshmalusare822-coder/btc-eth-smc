@@ -183,14 +183,12 @@ def _clean(df):
         .reset_index(drop=True)
     )
 
-        return df
+    return df  # <--- इथे स्पेस बरोबर सेट केली आहे (फक्त 4 स्पेसेस)
 
 
 def get_live_bars(symbol, timeframe):
     # इथे live WebSocket data घेण्याची logic येईल
     pass
-
-
 # =============================================================================
 # BAR CALCULATION
 # =============================================================================
