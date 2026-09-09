@@ -135,8 +135,10 @@ def _live_ws_worker():
 
     @sio.event
     def connect():
+        print(">>> LIVE_WS connected, joining channels", flush=True)
         for sym, pair in PAIR_WS.items():
             sio.emit("join", {"channelName": f"{pair}_1m-futures"})
+
 
     @sio.on("candlestick")
     def on_candlestick(response):
