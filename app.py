@@ -140,7 +140,6 @@ def _live_ws_worker():
         for sym, pair in PAIR_WS.items():
             sio.emit("join", {"channelName": f"{pair}_1m-futures"})
 
-
     @sio.on("candlestick")
     def on_candlestick(response):
         try:
@@ -169,17 +168,6 @@ def _live_ws_worker():
                         LIVE_WS[sym] = {"bars": bars_5m,
                                          "updated_at": time.time()}
             current_1m[sym] = row
-           
-                history_1m[sym].append(prev)
-                history_1m[sym] = history_1m[sym][-500:]
-                with LIVE_WS_LOCK:
-                    LIVE_WS_1M_COUNTS[sym] = len(history_1m[sym])
-                bars_5m = _resample_to_5m(history_1m[sym])
-                if bars_5m:
-                    with LIVE_WS_LOCK:
-                        LIVE_WS[sym] = {"bars": bars_5m,
-                                         "updated_at": time.time()}
-            current_1m[sym] = row
 
     print(">>> LIVE_WS worker thread starting", flush=True)
     while True:
@@ -191,7 +179,8 @@ def _live_ws_worker():
             LIVE_WS_LAST_ERROR = repr(e)
             print(f">>> LIVE_WS ERROR: {e!r}", flush=True)
             time.sleep(5)
-           
+
+
 def start_live_ws_once():
     global LIVE_WS_STARTED
     with LIVE_WS_LOCK:
@@ -640,6 +629,7 @@ def health():
                "max_report_bars": D.MAX_BACKTEST_BARS,
                "portfolio_max_bars": PORTFOLIO_MAX_BARS,
                "time": int(time.time())})
+
 
 @app.route("/api/live-status")
 def live_status():
