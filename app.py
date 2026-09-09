@@ -167,7 +167,7 @@ def _live_ws_worker():
                                          "updated_at": time.time()}
             current_1m[sym] = row
 
-            print(">>> LIVE_WS worker thread starting", flush=True)
+    print(">>> LIVE_WS worker thread starting", flush=True)
     while True:
         try:
             print(">>> LIVE_WS attempting connection...", flush=True)
