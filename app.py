@@ -93,10 +93,120 @@ SYMBOLS = [
     "BNB", "SUI", "HBAR", "LTC", "BCH", "DOT", "1000PEPE"
 ]
 
-LIVE_WS = {}
+LIVE_WS = {}  # symbol -> {"bars": [...], "updated_at": epoch}
 LIVE_WS_LOCK = threading.Lock()
-LIVE_WS_STARTED = True
+LIVE_WS_STARTED = False
 LIVE_WS_LAST_ERROR = None
+PAIR_WS = {s: f"B-{s}_USDT" for s in SYMBOLS}
+
+
+def _resample_to_5m(bars_1m):
+    if len(bars_1m) < 5:
+        return []
+    df = pd.DataFrame(bars_1m)
+    df["ts"] = pd.to_datetime(df["open_time"], unit="s")
+    df = df.set_index("ts").sort_index()
+    agg = df.resample("5min").agg({
+        "open": "first", "high": "max", "low": "min",
+        "close": "last", "volume": "sum",
+    }).dropna()
+    now = pd.Timestamp.utcnow().tz_localize(None)
+    agg = agg[agg.index + pd.Timedelta(minutes=5) <= now]
+    out = []
+    for ts, r in agg.iterrows():
+        out.append({
+            "ts_ms": int(ts.timestamp() * 1000),
+            "open": float(r["open"]), "high": float(r["high"]),
+            "low": float(r["low"]), "close": float(r["close"]),
+            "volume": float(r["volume"]),
+        })
+    return out[-60:]
+
+
+def _live_ws_worker():
+    global LIVE_WS_LAST_ERROR
+    import json
+    from collections import defaultdict
+
+    history_1m = defaultdict(list)
+    current_1m = {}
+    hist_lock = threading.Lock()
+    sio = socketio.Client(logger=False, engineio_logger=False)
+
+    @sio.event
+    def connect():
+        for sym, pair in PAIR_WS.items():
+            sio.emit("join", {"channelName": f"{pair}_1m-futures"})
+
+    @sio.on("candlestick")
+    def on_candlestick(response):
+        try:
+            payload = json.loads(response["data"])
+            bar = payload["data"][0]
+        except Exception:
+            return
+        sym = next((s for s, p in PAIR_WS.items() if p == bar.get("pair")),
+                    None)
+        if sym is None:
+            return
+        open_time = int(bar["open_time"])
+        row = {"open_time": open_time, "open": float(bar["open"]),
+               "high": float(bar["high"]), "low": float(bar["low"]),
+               "close": float(bar["close"]), "volume": float(bar["volume"])}
+        with hist_lock:
+            prev = current_1m.get(sym)
+            if prev is not None and prev["open_time"] != open_time:
+                history_1m[sym].append(prev)
+                history_1m[sym] = history_1m[sym][-500:]
+                bars_5m = _resample_to_5m(history_1m[sym])
+                if bars_5m:
+                    with LIVE_WS_LOCK:
+                        LIVE_WS[sym] = {"bars": bars_5m,
+                                         "updated_at": time.time()}
+            current_1m[sym] = row
+
+    while True:
+        try:
+            sio.connect("wss://stream.coindcx.com", transports=["websocket"])
+            sio.wait()
+        except Exception as e:
+            LIVE_WS_LAST_ERROR = repr(e)
+            time.sleep(5)
+
+
+def start_live_ws_once():
+    global LIVE_WS_STARTED
+    with LIVE_WS_LOCK:
+        if LIVE_WS_STARTED:
+            return
+        LIVE_WS_STARTED = True
+    threading.Thread(target=_live_ws_worker, daemon=True).start()
+
+
+def live_bars_fresh(symbol, max_age=90):
+    with LIVE_WS_LOCK:
+        entry = LIVE_WS.get(symbol)
+    if not entry:
+        return None
+    if time.time() - entry["updated_at"] > max_age:
+        return None
+    return entry["bars"]
+
+
+def _merge_live_bars(df5, live_bars):
+    if not live_bars:
+        return df5
+    live_df = pd.DataFrame(live_bars)
+    live_df["ts"] = pd.to_datetime(live_df["ts_ms"], unit="ms")
+    live_df = live_df[["ts", "open", "high", "low", "close", "volume"]]
+    cutoff = live_df["ts"].min()
+    base = df5[df5["ts"] < cutoff]
+    merged = pd.concat([base, live_df], ignore_index=True)
+    return merged.drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
+
+
+start_live_ws_once()
+
 
 SIGNAL_TTL = int(os.environ.get("SIGNAL_TTL", 120))
 REPORT_TTL = int(os.environ.get("REPORT_TTL", 3600))
