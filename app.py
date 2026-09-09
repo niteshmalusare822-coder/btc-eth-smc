@@ -316,6 +316,7 @@ def blocker_text(code):
 # ---------------------------------------------------------------------------
 # SHARED HEAVY WORK
 # ---------------------------------------------------------------------------
+
 def _load(symbol, bars, live=False):
     frames, meta = D.load_mtf(
         symbol,
@@ -323,8 +324,13 @@ def _load(symbol, bars, live=False):
         live=live,
     )
     if frames is not None:
+        if live:
+            fresh = live_bars_fresh(symbol)
+            if fresh:
+                frames["5m"] = _merge_live_bars(frames["5m"], fresh)
         frames["15m"] = frames["5m"]
     return frames, (meta or {})
+
 
 
 def report_for(symbol, bars):
