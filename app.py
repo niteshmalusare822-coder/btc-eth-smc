@@ -623,6 +623,14 @@ def health():
                "portfolio_max_bars": PORTFOLIO_MAX_BARS,
                "time": int(time.time())})
 
+@app.route("/api/live-status")
+def live_status():
+    with LIVE_WS_LOCK:
+        out = {s: {"bars": len(v["bars"]),
+                    "age_sec": round(time.time() - v["updated_at"], 1)}
+               for s, v in LIVE_WS.items()}
+    return ok({"live_symbols": out, "last_error": LIVE_WS_LAST_ERROR})
+
 
 @app.route("/api/config")
 def config():
