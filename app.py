@@ -168,7 +168,7 @@ def _live_ws_worker():
             current_1m[sym] = row
 
         print(">>> LIVE_WS worker thread starting", flush=True)
-    while True:
+        while True:
         try:
             print(">>> LIVE_WS attempting connection...", flush=True)
             sio.connect("wss://stream.coindcx.com", transports=["websocket"])
