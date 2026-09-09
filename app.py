@@ -158,7 +158,18 @@ def _live_ws_worker():
                "close": float(bar["close"]), "volume": float(bar["volume"])}
         with hist_lock:
             prev = current_1m.get(sym)
-                        if prev is not None and prev["open_time"] != open_time:
+            if prev is not None and prev["open_time"] != open_time:
+                history_1m[sym].append(prev)
+                history_1m[sym] = history_1m[sym][-500:]
+                with LIVE_WS_LOCK:
+                    LIVE_WS_1M_COUNTS[sym] = len(history_1m[sym])
+                bars_5m = _resample_to_5m(history_1m[sym])
+                if bars_5m:
+                    with LIVE_WS_LOCK:
+                        LIVE_WS[sym] = {"bars": bars_5m,
+                                         "updated_at": time.time()}
+            current_1m[sym] = row
+           
                 history_1m[sym].append(prev)
                 history_1m[sym] = history_1m[sym][-500:]
                 with LIVE_WS_LOCK:
