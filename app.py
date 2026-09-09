@@ -97,6 +97,7 @@ LIVE_WS = {}  # symbol -> {"bars": [...], "updated_at": epoch}
 LIVE_WS_LOCK = threading.Lock()
 LIVE_WS_STARTED = False
 LIVE_WS_LAST_ERROR = None
+LIVE_WS_1M_COUNTS = {}  # symbol -> raw 1-minute bars captured so far
 PAIR_WS = {s: f"B-{s}_USDT" for s in SYMBOLS}
 
 
@@ -157,9 +158,11 @@ def _live_ws_worker():
                "close": float(bar["close"]), "volume": float(bar["volume"])}
         with hist_lock:
             prev = current_1m.get(sym)
-            if prev is not None and prev["open_time"] != open_time:
+                        if prev is not None and prev["open_time"] != open_time:
                 history_1m[sym].append(prev)
                 history_1m[sym] = history_1m[sym][-500:]
+                with LIVE_WS_LOCK:
+                    LIVE_WS_1M_COUNTS[sym] = len(history_1m[sym])
                 bars_5m = _resample_to_5m(history_1m[sym])
                 if bars_5m:
                     with LIVE_WS_LOCK:
@@ -633,7 +636,9 @@ def live_status():
         out = {s: {"bars": len(v["bars"]),
                     "age_sec": round(time.time() - v["updated_at"], 1)}
                for s, v in LIVE_WS.items()}
-    return ok({"live_symbols": out, "last_error": LIVE_WS_LAST_ERROR})
+        raw_1m = dict(LIVE_WS_1M_COUNTS)
+    return ok({"live_symbols": out, "raw_1m_bars_captured": raw_1m,
+               "last_error": LIVE_WS_LAST_ERROR})
 
 
 @app.route("/api/config")
