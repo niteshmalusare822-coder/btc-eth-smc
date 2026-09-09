@@ -167,13 +167,17 @@ def _live_ws_worker():
                                          "updated_at": time.time()}
             current_1m[sym] = row
 
+        print(">>> LIVE_WS worker thread starting", flush=True)
     while True:
         try:
+            print(">>> LIVE_WS attempting connection...", flush=True)
             sio.connect("wss://stream.coindcx.com", transports=["websocket"])
             sio.wait()
         except Exception as e:
             LIVE_WS_LAST_ERROR = repr(e)
+            print(f">>> LIVE_WS ERROR: {e!r}", flush=True)
             time.sleep(5)
+
 
 
 def start_live_ws_once():
