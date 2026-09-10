@@ -9,6 +9,11 @@
  * NOTE on the timeframe dropdown: the engine is now fixed multi-timeframe
  * (1H bias, 15M setup, 5M entry). A single-timeframe selector no longer means
  * anything, so it is disabled on load rather than silently ignored.
+ *
+ * NOTE on live price: /api/live-prices is polled separately and fast (every
+ * 3s). It only patches the price line already rendered by loadSignals — it
+ * never touches entry/SL/TP/structure, which stay driven by the 30s signal
+ * poll so the strategy still decides only on closed candles.
  */
 
 const API = "https://crypto-scanner-api-xnwd.onrender.com";
@@ -17,6 +22,7 @@ const SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "AVAX", "LINK", "DOGE", "ADA", "DEX
 // start a second request while a free Render instance is still answering.
 const REFRESH_MS = 30000;
 const SENTIMENT_REFRESH_MS = 300000;
+const PRICE_REFRESH_MS = 3000;
 let signalsLoading = false;
 
 const CSS = `
@@ -149,6 +155,22 @@ function renderTicket(s) {
   </div>`;
 }
 
+async function loadLivePrices() {
+  try {
+    const r = await fetch(`${API}/api/live-prices`, { cache: "no-store" });
+    if (!r.ok) return;
+    const d = await r.json();
+    Object.entries(d.prices || {}).forEach(([sym, info]) => {
+      const el = document.querySelector(`#${sym.toLowerCase()}-content .px`);
+      if (el && info.live_price != null && info.age_sec < 10) {
+        el.textContent = px(info.live_price);
+      }
+    });
+  } catch (e) {
+    // silent — 30s full poll recovers automatically
+  }
+}
+
 async function loadSignals() {
   if (signalsLoading) return;
   signalsLoading = true;
@@ -247,6 +269,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // Signals are checked every 30 seconds. The API cache prevents a full
     // scan on every browser poll.
     setInterval(loadSignals, REFRESH_MS);
+    // Live price ticks refresh fast and independently of the signal engine.
+    setInterval(loadLivePrices, PRICE_REFRESH_MS);
     // Market sentiment is independent and does not need frequent polling.
     setInterval(loadMarketSentiment, SENTIMENT_REFRESH_MS);
 });
