@@ -93,8 +93,14 @@ function chip(label, value, on) {
 function renderFlat(s) {
   const bias = s.htf_bias_1h || "—";
   const trig = s.trigger_5m || "none";
+  const status = s.action === "WATCHING" ? "WATCHING"
+    : s.action === "ENTRY_READY" ? "ENTRY READY"
+    : "NO TRADE";
+  const statusClass = s.action === "WATCHING" ? "watching"
+    : s.action === "ENTRY_READY" ? "ready"
+    : "flat";
   return `<div class="sig">
-    <span class="act flat">NO TRADE</span>
+    <span class="act ${statusClass}">${status}</span>
     <div class="px">${px(s.price)}</div>
     <div class="chips">
       ${chip("1H", bias, bias === "BULLISH" || bias === "BEARISH")}
