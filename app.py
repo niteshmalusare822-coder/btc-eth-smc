@@ -13,6 +13,7 @@ GET /api/data-probe/<symbol>     pagination only, seconds not minutes
 GET /api/diagnostic/<symbol>     missed-move analysis
 GET /api/portfolio               all four assets plus pooled portfolio
 GET /api/entry-quality/<symbol>  entry vs exit failure, gate value, modes
+GET /api/live-prices             fast websocket tick prices, no backtest
 
 A NO_TRADE is returned with the reason, not as an empty payload. Knowing which
 timeframe disagreed is the useful part.
@@ -42,6 +43,12 @@ REVIEW FIXES IN THIS VERSION
    helper now does it everywhere.
 9. build_signal() produces signal-only tickets. It does not replay historical
    candles to pretend that a manual position was opened or to manage a stop.
+10. Live price is now sourced from a separate CoinDCX trades websocket channel
+    instead of the closed-candle price used for structure/entry decisions.
+    /api/signal, /api/signals and the new /api/live-prices endpoint expose it
+    as `live_price` alongside the existing closed-candle `price`. Structure,
+    bias and entry logic are untouched — they still run on closed candles
+    only, so nothing here can repaint a past decision.
 """
 
 import os
@@ -100,6 +107,8 @@ LIVE_WS_LAST_ERROR = None
 LIVE_WS_1M_COUNTS = {}  # symbol -> raw 1-minute bars captured so far
 PAIR_WS = {s: f"B-{s}_USDT" for s in SYMBOLS}
 
+LIVE_PRICE = {}  # symbol -> {"price": float, "updated_at": epoch}
+
 
 def _resample_to_5m(bars_1m):
     if len(bars_1m) < 5:
@@ -139,6 +148,7 @@ def _live_ws_worker():
         print(">>> LIVE_WS connected, joining channels", flush=True)
         for sym, pair in PAIR_WS.items():
             sio.emit("join", {"channelName": f"{pair}_1m-futures"})
+            sio.emit("join", {"channelName": f"{pair}@trades-futures"})
 
     @sio.on("candlestick")
     def on_candlestick(response):
@@ -169,6 +179,26 @@ def _live_ws_worker():
                                          "updated_at": time.time()}
             current_1m[sym] = row
 
+    @sio.on("new-trade")
+    def on_new_trade(response):
+        global LIVE_PRICE
+        try:
+            payload = json.loads(response["data"])
+            raw = payload.get("data")
+            trade = raw[0] if isinstance(raw, list) else raw
+        except Exception:
+            return
+        pair = trade.get("s") or trade.get("pair") or trade.get("symbol")
+        sym = next((s for s, p in PAIR_WS.items() if p == pair), None)
+        if sym is None:
+            return
+        try:
+            price = float(trade.get("p") or trade.get("price"))
+        except (TypeError, ValueError):
+            return
+        with LIVE_WS_LOCK:
+            LIVE_PRICE[sym] = {"price": price, "updated_at": time.time()}
+
     print(">>> LIVE_WS worker thread starting", flush=True)
     while True:
         try:
@@ -198,6 +228,16 @@ def live_bars_fresh(symbol, max_age=90):
     if time.time() - entry["updated_at"] > max_age:
         return None
     return entry["bars"]
+
+
+def live_price_fresh(symbol, max_age=10):
+    with LIVE_WS_LOCK:
+        entry = LIVE_PRICE.get(symbol)
+    if not entry:
+        return None
+    if time.time() - entry["updated_at"] > max_age:
+        return None
+    return entry["price"]
 
 
 def _merge_live_bars(df5, live_bars):
@@ -660,6 +700,10 @@ def signal_one(symbol):
     try:
         res, hit = cached(("sig", symbol), SIGNAL_TTL,
                           lambda: build_signal(symbol))
+        res = dict(res)
+        fresh = live_price_fresh(symbol)
+        if fresh is not None:
+            res["live_price"] = _f(fresh)
         return ok({**res, "from_cache": hit})
     except Exception as e:
         traceback.print_exc()
@@ -674,6 +718,10 @@ def signals():
         try:
             res, _ = cached(("sig", s), SIGNAL_TTL,
                             lambda s=s: build_signal(s))
+            res = dict(res)
+            fresh = live_price_fresh(s)
+            if fresh is not None:
+                res["live_price"] = _f(fresh)
             out.append(res)
         except Exception as e:
             traceback.print_exc()
@@ -842,6 +890,15 @@ def entry_quality(symbol):
         return ok({"symbol": symbol, "error": str(e)}, 500)
 
 
+@app.route("/api/live-prices")
+def live_prices_route():
+    with LIVE_WS_LOCK:
+        out = {s: {"live_price": _f(v["price"]),
+                    "age_sec": round(time.time() - v["updated_at"], 1)}
+               for s, v in LIVE_PRICE.items()}
+    return ok({"prices": out, "time": int(time.time())})
+
+
 @app.route("/")
 def root():
     return ok({"service": "smc-mtf-scanner",
@@ -852,7 +909,8 @@ def root():
                              "/api/data-probe/<symbol>",
                              "/api/diagnostic/<symbol>",
                              "/api/portfolio",
-                             "/api/entry-quality/<symbol>"]})
+                             "/api/entry-quality/<symbol>",
+                             "/api/live-prices"]})
 
 
 if __name__ == "__main__":
