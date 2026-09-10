@@ -108,7 +108,6 @@ LIVE_WS_1M_COUNTS = {}  # symbol -> raw 1-minute bars captured so far
 PAIR_WS = {s: f"B-{s}_USDT" for s in SYMBOLS}
 
 LIVE_PRICE = {}  # symbol -> {"price": float, "updated_at": epoch}
-_NEW_TRADE_LOGGED = False  # prints the raw new-trade payload once, for schema confirmation
 
 
 def _resample_to_5m(bars_1m):
@@ -183,26 +182,22 @@ def _live_ws_worker():
     @sio.on("new-trade")
     def on_new_trade(response):
         global LIVE_PRICE
-        global _NEW_TRADE_LOGGED
         try:
             payload = json.loads(response["data"])
         except Exception:
             return
 
-        # LOG THE RAW SHAPE ONCE. The exact schema for this channel was
-        # assumed, not confirmed against a real payload. Until it is
-        # confirmed, print it the first time so the field names below can be
-        # corrected against real data instead of guessed again.
-        if not _NEW_TRADE_LOGGED:
-            _NEW_TRADE_LOGGED = True
-            print(f">>> NEW_TRADE RAW PAYLOAD: {payload!r}", flush=True)
-
-        raw = payload.get("data") if isinstance(payload, dict) else payload
+        # CoinDCX trade payload (confirmed from Render logs, 10 Sep 2026):
+        # {'T': ..., 'RT': ..., 'p': '77957.6', 'q': '0.003', 'm': 1,
+        #  's': 'B-BTC_USDT', 'pr': 'f'}
+        # No "data" wrapper on this channel — unlike candlestick, the payload
+        # IS the trade object. 's' is the pair (matches PAIR_WS values
+        # directly), 'p' is price as a STRING. payload.get("data", payload)
+        # falls back to the payload itself when there is no "data" key, so
+        # this stays safe if a future channel DOES wrap its payload.
+        raw = payload.get("data", payload) if isinstance(payload, dict) else payload
         trade = raw[0] if isinstance(raw, list) and raw else raw
 
-        # The crash was here: trade was None (wrong key, or an event with no
-        # data yet) and .get() was called on it unconditionally. Every tick
-        # crashed this thread instead of just being skipped.
         if not isinstance(trade, dict):
             return
 
