@@ -155,16 +155,25 @@ def _live_ws_worker():
         try:
             payload = json.loads(response["data"])
             bar = payload["data"][0]
-        except Exception:
+        except Exception as e:
+            print(">>> CANDLE PARSE ERROR:", repr(e), repr(response), flush=True)
             return
+
         sym = next((s for s, p in PAIR_WS.items() if p == bar.get("pair")),
-                    None)
+                   None)
         if sym is None:
             return
+
         open_time = int(bar["open_time"])
-        row = {"open_time": open_time, "open": float(bar["open"]),
-               "high": float(bar["high"]), "low": float(bar["low"]),
-               "close": float(bar["close"]), "volume": float(bar["volume"])}
+        row = {
+            "open_time": open_time,
+            "open": float(bar["open"]),
+            "high": float(bar["high"]),
+            "low": float(bar["low"]),
+            "close": float(bar["close"]),
+            "volume": float(bar["volume"]),
+        }
+
         with hist_lock:
             prev = current_1m.get(sym)
 
@@ -173,13 +182,10 @@ def _live_ws_worker():
                 history_1m[sym].append(prev)
                 history_1m[sym] = history_1m[sym][-500:]
 
-            # Keep the current 1m candle live. This prevents the live pipeline
-            # from waiting for the next 1m boundary before publishing updates.
+            # Keep the current 1m candle live.
             current_1m[sym] = row
 
-            # Build the 5m stream from completed candles plus the current
-            # in-progress 1m candle. Historical strategy logic can still use
-            # closed candles; LIVE_WS is the real-time/freshness layer.
+            # Include the current candle in the live pipeline.
             live_1m = history_1m[sym] + [current_1m[sym]]
 
             with LIVE_WS_LOCK:
@@ -199,6 +205,7 @@ def _live_ws_worker():
         global LIVE_PRICE
         try:
             payload = json.loads(response["data"])
+            print(">>> TRADE EVENT:", repr(response), flush=True)
         except Exception:
             return
 
