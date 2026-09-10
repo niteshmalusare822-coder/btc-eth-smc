@@ -305,7 +305,6 @@ def _merge_live_bars(df5, live_bars):
     return merged.drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
 
 
-start_live_ws_once()
 
 
 SIGNAL_TTL = int(os.environ.get("SIGNAL_TTL", 120))
