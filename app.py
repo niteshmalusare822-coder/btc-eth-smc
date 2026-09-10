@@ -205,36 +205,49 @@ def _live_ws_worker():
         global LIVE_PRICE
         try:
             payload = json.loads(response["data"])
-            print(">>> TRADE EVENT:", repr(response), flush=True)
-        except Exception:
+        except Exception as e:
+            print(">>> TRADE PARSE ERROR:", repr(e), flush=True)
             return
 
-        # CoinDCX trade payload (confirmed from Render logs, 10 Sep 2026):
-        # {'T': ..., 'RT': ..., 'p': '77957.6', 'q': '0.003', 'm': 1,
-        #  's': 'B-BTC_USDT', 'pr': 'f'}
-        # No "data" wrapper on this channel — unlike candlestick, the payload
-        # IS the trade object. 's' is the pair (matches PAIR_WS values
-        # directly), 'p' is price as a STRING. payload.get("data", payload)
-        # falls back to the payload itself when there is no "data" key, so
-        # this stays safe if a future channel DOES wrap its payload.
         raw = payload.get("data", payload) if isinstance(payload, dict) else payload
         trade = raw[0] if isinstance(raw, list) and raw else raw
 
         if not isinstance(trade, dict):
             return
 
-        pair = (trade.get("s") or trade.get("pair") or trade.get("symbol")
-                or trade.get("market"))
-        sym = next((s for s, p in PAIR_WS.items() if p == pair), None)
+        pair = (
+            trade.get("s")
+            or trade.get("pair")
+            or trade.get("symbol")
+            or trade.get("market")
+        )
+
+        sym = next(
+            (s for s, p in PAIR_WS.items() if p == pair),
+            None
+        )
+
         if sym is None:
+            print(">>> TRADE SYM MISMATCH:", repr(pair), flush=True)
             return
+
         try:
-            price = float(trade.get("p") or trade.get("price")
-                         or trade.get("last_price"))
+            price = float(
+                trade.get("p")
+                or trade.get("price")
+                or trade.get("last_price")
+            )
         except (TypeError, ValueError):
+            print(">>> TRADE PRICE ERROR:", repr(trade), flush=True)
             return
+
         with LIVE_WS_LOCK:
-            LIVE_PRICE[sym] = {"price": price, "updated_at": time.time()}
+            LIVE_PRICE[sym] = {
+                "price": price,
+                "updated_at": time.time()
+            }
+
+        print(">>> LIVE PRICE SAVED:", sym, price, flush=True)
 
     print(">>> LIVE_WS worker thread starting", flush=True)
     while True:
