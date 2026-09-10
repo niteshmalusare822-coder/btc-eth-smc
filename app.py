@@ -132,7 +132,7 @@ def _live_ws_worker():
     history_1m = defaultdict(list)
     current_1m = {}
     hist_lock = threading.Lock()
-    sio = socketio.Client(logger=False, engineio_logger=False)
+    sio = socketio.Client(logger=True, engineio_logger=True)
 
     @sio.event
     def connect():
