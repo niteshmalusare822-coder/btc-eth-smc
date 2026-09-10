@@ -234,6 +234,9 @@ def start_live_ws_once():
         LIVE_WS_STARTED = True
     threading.Thread(target=_live_ws_worker, daemon=True).start()
 
+def post_worker_init(worker):
+    start_live_ws_once()
+
 
 def live_bars_fresh(symbol, max_age=90):
     with LIVE_WS_LOCK:
