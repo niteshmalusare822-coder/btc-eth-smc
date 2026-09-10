@@ -167,17 +167,32 @@ def _live_ws_worker():
                "close": float(bar["close"]), "volume": float(bar["volume"])}
         with hist_lock:
             prev = current_1m.get(sym)
+
+            # Finalize the previous 1m candle when a new 1m candle starts.
             if prev is not None and prev["open_time"] != open_time:
                 history_1m[sym].append(prev)
                 history_1m[sym] = history_1m[sym][-500:]
-                with LIVE_WS_LOCK:
-                    LIVE_WS_1M_COUNTS[sym] = len(history_1m[sym])
-                bars_5m = _resample_to_5m(history_1m[sym])
-                if bars_5m:
-                    with LIVE_WS_LOCK:
-                        LIVE_WS[sym] = {"bars": bars_5m,
-                                         "updated_at": time.time()}
+
+            # Keep the current 1m candle live. This prevents the live pipeline
+            # from waiting for the next 1m boundary before publishing updates.
             current_1m[sym] = row
+
+            # Build the 5m stream from completed candles plus the current
+            # in-progress 1m candle. Historical strategy logic can still use
+            # closed candles; LIVE_WS is the real-time/freshness layer.
+            live_1m = history_1m[sym] + [current_1m[sym]]
+
+            with LIVE_WS_LOCK:
+                LIVE_WS_1M_COUNTS[sym] = len(history_1m[sym])
+
+            bars_5m = _resample_to_5m(live_1m)
+
+            if bars_5m:
+                with LIVE_WS_LOCK:
+                    LIVE_WS[sym] = {
+                        "bars": bars_5m,
+                        "updated_at": time.time()
+                    }
 
     @sio.on("new-trade")
     def on_new_trade(response):
