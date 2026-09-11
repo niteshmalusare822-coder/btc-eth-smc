@@ -497,11 +497,23 @@ def build_signal(symbol):
     price = float(df5["close"].iat[i])
 
     bias = ctx["bias"][i]
-    trig = ctx["trigger"][i] or "none"
+    
+    # --- 1-MINUTE LIVE TRIGGER (HYBRID LOGIC) ---
+    fresh_bars = live_bars_fresh(symbol)
+    live_trig = "none"
+    if fresh_bars and len(fresh_bars) > 0:
+        last_1m = fresh_bars[-1]
+        if last_1m["close"] > last_1m["open"]:
+            live_trig = "bull"
+        elif last_1m["close"] < last_1m["open"]:
+            live_trig = "bear"
+            
+    trig = live_trig if live_trig != "none" else (ctx["trigger"][i] or "none")
+
     # same call the backtest makes: no price arguments, so this reports a
     # RESTING LIMIT rather than pretending the bar already filled it
     action, setup, side, level, code = mtf.decide(
-        bias, ctx["trigger"][i], ctx["setups"], ts)
+        bias, trig, ctx["setups"], ts)
 
     base = {
         "symbol": symbol, "source": meta.get("source"), "price": _f(price),
