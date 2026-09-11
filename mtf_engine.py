@@ -555,6 +555,62 @@ def align_htf(df_5m, df_htf_state, tf, col):
                            direction="backward")
     return merged[col].to_numpy()
 
+def structure_targets_at(df_15m, swings, ts, side, entry, max_targets=3):
+    """Return confirmed opposing swing/liquidity targets available at ts.
+
+    Only swings whose confirmation timestamp is already <= ts are eligible.
+    No future swing can be used.
+    """
+    ts = pd.Timestamp(ts)
+    entry = float(entry)
+    candidates = []
+
+    if df_15m is None or df_15m.empty:
+        return []
+
+    ts_series = pd.to_datetime(df_15m["ts"]).reset_index(drop=True)
+
+    for sw in swings:
+        if sw.confirmed_idx is None:
+            continue
+
+        idx = int(sw.confirmed_idx)
+
+        if idx < 0 or idx >= len(ts_series):
+            continue
+
+        confirmed_ts = ts_series.iloc[idx]
+
+        if confirmed_ts > ts:
+            continue
+
+        price = float(sw.price)
+
+        if side == "bull":
+            if sw.kind == "high" and price > entry:
+                candidates.append(price)
+
+        elif side == "bear":
+            if sw.kind == "low" and price < entry:
+                candidates.append(price)
+
+    if side == "bull":
+        levels = sorted(set(candidates))
+    else:
+        levels = sorted(set(candidates), reverse=True)
+
+    # Remove levels that are effectively duplicates.
+    unique = []
+    for level in levels:
+        if not unique:
+            unique.append(level)
+            continue
+
+        if abs(level - unique[-1]) / unique[-1] > 0.001:
+            unique.append(level)
+
+    return unique[:max_targets]
+
 
 def build_context(df_5m, df_15m, df_4h, p=None, calib_end=None):
     """Everything a bar-by-bar loop needs, precomputed and causal.
