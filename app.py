@@ -645,13 +645,14 @@ def build_signal(symbol):
 # Use only 15M swings that were already confirmed at this signal time.
 # This keeps TP selection causal and prevents future structure from leaking
 # into the live/backtest decision.
-structure_targets = mtf.structure_targets_at(
-    df15,
-    ctx.get("swings_15m", []),
-    ts,
-    side,
+s = R.size_position(
+    symbol,
+    action,
     level,
-    max_targets=3,
+    sl,
+    atr=atr,
+    structure_limit=structure_limit,
+    structure_targets=structure_targets,
 )
 
 # The sizing engine still needs a structure limit. Use the furthest
