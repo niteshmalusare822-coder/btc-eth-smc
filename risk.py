@@ -147,7 +147,7 @@ class Sizing:
 
 def size_position(symbol, direction, entry, sl,
                   capital_inr=None, max_risk_inr=None, usdt_inr=None,
-                  atr=None, structure_limit=None):
+                  atr=None, structure_limit=None, structure_targets=None):
     """Solve quantity from the stop distance with all costs inside the cap.
 
     structure_limit: the furthest price the market structure can plausibly
@@ -210,8 +210,16 @@ def size_position(symbol, direction, entry, sl,
     # fee expressed against the stop: the number that decides viability
     cost_in_r = (entry_inr * ROUND_TRIP_COST) / sl_dist_inr
 
-    tps = _rupee_targets(direction, entry, qty, usdt_inr, sl_dist,
-                         atr=atr, structure_limit=structure_limit)
+    tps = _rupee_targets(
+    direction,
+    entry,
+    qty,
+    usdt_inr,
+    sl_dist,
+    atr=atr,
+    structure_limit=structure_limit,
+    structure_targets=structure_targets,
+)
 
     return Sizing(
         ok=True,
@@ -230,36 +238,114 @@ def size_position(symbol, direction, entry, sl,
 
 
 def _rupee_targets(direction, entry, qty, usdt_inr, sl_dist,
-                   atr=None, structure_limit=None):
-    """Structural R ladder, with the rupee value of each level reported.
+                   atr=None, structure_limit=None, structure_targets=None):
+    """Build TP levels from confirmed market structure.
 
-    reachable is decided by market structure only. An unreachable level is
-    still returned so the dashboard can show it greyed out, but the backtest
-    must not use it as an exit target.
+    structure_targets contains causal 15M opposing swing/liquidity levels.
+    When supplied, those levels become TP1/TP2/TP3.
+
+    No future swing should reach this function: the caller is responsible
+    for passing only structure levels confirmed at the signal timestamp.
+
+    If no structure targets are available, retain the existing R-ladder
+    fallback so the sizing engine remains backward compatible.
     """
     out = []
+
     if qty <= 0 or sl_dist <= 0:
         return out
+
     entry_inr = entry * usdt_inr
     cost_inr = qty * entry_inr * ROUND_TRIP_COST
 
+    # ---------------------------------------------------------------
+    # PRIMARY: confirmed structure / liquidity targets
+    # ---------------------------------------------------------------
+    if structure_targets:
+        for i, raw_px in enumerate(structure_targets[:3], start=1):
+            try:
+                px = float(raw_px)
+            except (TypeError, ValueError):
+                continue
+
+            if not np.isfinite(px) or px <= 0:
+                continue
+
+            # Target must actually be in the trade direction.
+            if direction == "BUY" and px <= entry:
+                continue
+            if direction == "SELL" and px >= entry:
+                continue
+
+            move_px = abs(px - entry)
+
+            gross_inr = qty * move_px * usdt_inr
+            net_inr = gross_inr - cost_inr
+
+            r_multiple = move_px / sl_dist
+
+            reachable = True
+            why = ""
+
+            # Do not use an absurdly distant structural target.
+            if atr and atr > 0 and move_px > 6 * atr:
+                reachable = False
+                why = f"needs {r_multiple:.1f}R / {move_px / atr:.1f} ATR of travel"
+
+            want = (
+                TP_TARGETS_INR[i - 1]
+                if i <= len(TP_TARGETS_INR)
+                else None
+            )
+
+            out.append({
+                "level": f"TP{i}",
+                "price": round(px, 8),
+                "r_multiple": round(r_multiple, 2),
+                "gross_inr": round(gross_inr, 0),
+                "net_inr": round(net_inr, 0),
+                "target_inr": want,
+                "meets_target": bool(
+                    want is not None and net_inr >= want
+                ),
+                "reachable": reachable,
+                "note": why,
+            })
+
+        if out:
+            return out
+
+    # ---------------------------------------------------------------
+    # FALLBACK: existing R ladder
+    # ---------------------------------------------------------------
     for i, r_mult in enumerate(TP_R_LADDER, start=1):
         move_px = r_mult * sl_dist
-        px = entry + move_px if direction == "BUY" else entry - move_px
+        px = (
+            entry + move_px
+            if direction == "BUY"
+            else entry - move_px
+        )
 
         gross_inr = qty * move_px * usdt_inr
-        net_inr = gross_inr - cost_inr          # full round trip, not a share
+        net_inr = gross_inr - cost_inr
 
         reachable, why = True, ""
+
         if structure_limit is not None:
             if direction == "BUY" and px > structure_limit:
                 reachable, why = False, "beyond the next liquidity level"
             elif direction == "SELL" and px < structure_limit:
                 reachable, why = False, "beyond the next liquidity level"
+
         if reachable and atr and atr > 0 and move_px > 6 * atr:
             reachable, why = False, f"needs {move_px / atr:.1f} ATR of travel"
 
-        want = TP_TARGETS_INR[i - 1] if i <= len(TP_TARGETS_INR) else None
+        want = (
+            TP_TARGETS_INR[i - 1]
+            if i <= len(TP_TARGETS_INR)
+            else None
+        )
+
         out.append({
             "level": f"TP{i}",
             "price": round(px, 8),
@@ -267,14 +353,14 @@ def _rupee_targets(direction, entry, qty, usdt_inr, sl_dist,
             "gross_inr": round(gross_inr, 0),
             "net_inr": round(net_inr, 0),
             "target_inr": want,
-            "meets_target": bool(want is not None and net_inr >= want),
+            "meets_target": bool(
+                want is not None and net_inr >= want
+            ),
             "reachable": reachable,
             "note": why,
         })
+
     return out
-
-
-FUNDING_INTERVAL_HOURS = float(os.environ.get("FUNDING_INTERVAL_HOURS", 8.0))
 
 
 def funding_events(bars_held, tf_minutes):
