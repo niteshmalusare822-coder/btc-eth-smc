@@ -663,14 +663,15 @@ structure_limit = (
     else (level + 6 * atr if side == "bull" else level - 6 * atr)
 )
 
-s = R.size_position(
-    symbol,
-    action,
-    level,
-    sl,
-    atr=atr,
-    structure_limit=structure_limit,
-)
+    s = R.size_position(
+        symbol,
+        action,
+        level,
+        sl,
+        atr=atr,
+        structure_limit=structure_limit,
+        structure_targets=structure_targets,
+    )
 
     if not s.ok:
         base["action"] = "NO_TRADE"
