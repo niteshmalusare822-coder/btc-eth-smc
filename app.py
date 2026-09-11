@@ -557,10 +557,7 @@ def build_signal(symbol):
         live_bottom = float(live_setup.zone_bottom)
 
         # Entry has already been reached. Do not generate a new entry.
-        entry_hit = (
-            live_px <= live_entry if expected_side == "bull"
-            else live_px >= live_entry
-        )
+        entry_hit = live_px <= live_entry
 
         if entry_hit:
             base["action"] = "NO_TRADE"
