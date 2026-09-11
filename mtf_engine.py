@@ -561,16 +561,34 @@ def build_context(df_5m, df_15m, df_4h, p=None, calib_end=None):
 
     calib_end is accepted and ignored. Calibration is now a trailing rolling
     quantile computed per bar, so live and backtest produce identical
-    thresholds on identical candles. That is the parity guarantee: same
-    functions, same thresholds, only the data source differs.
+    thresholds on identical candles.
+
+    swings_15m contains the confirmed 15M swing structure used for
+    causal liquidity/structure-based TP targeting.
     """
     p = p or PARAMS
+
     bias_df = htf_bias_series(df_4h, p, calib_end)
     setups, thr15 = find_setups(df_15m, p, calib_end)
     trig = trigger_series(df_5m, p, calib_end)
-    bias_on_5m = align_htf(df_5m, bias_df, "4h", "htf_bias")
-    return {"bias": bias_on_5m, "setups": setups, "trigger": trig,
-            "threshold_15m": thr15}
+
+    bias_on_5m = align_htf(
+        df_5m, bias_df, "4h", "htf_bias"
+    )
+
+    swings_15m = poi.find_swings(
+        df_15m,
+        p["swing_left"],
+        p["swing_right"],
+    )
+
+    return {
+        "bias": bias_on_5m,
+        "setups": setups,
+        "trigger": trig,
+        "threshold_15m": thr15,
+        "swings_15m": swings_15m,
+    }
 
 
 def active_setups_at(setups, ts, side=None):
