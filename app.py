@@ -550,14 +550,23 @@ def build_signal(symbol):
         else []
     )
 
-    if live_setups:
+       if live_setups:
         live_setup = live_setups[0]
         live_entry = float(live_setup.entry_level)
         live_top = float(live_setup.zone_top)
         live_bottom = float(live_setup.zone_bottom)
 
         # Entry has already been reached. Do not generate a new entry.
-        entry_hit = live_px <= live_entry
+        if expected_side == "bull":
+            # BUY limit is below current price
+            entry_hit = live_px <= live_entry
+
+        elif expected_side == "bear":
+            # SELL limit is above current price
+            entry_hit = live_px >= live_entry
+
+        else:
+            entry_hit = False
 
         if entry_hit:
             base["action"] = "NO_TRADE"
@@ -577,7 +586,6 @@ def build_signal(symbol):
                 "entry_mode": live_setup.entry_mode,
             }
             return base
-
         # Setup exists BEFORE the 5M trigger.
         # This is the early-warning state.
         if trig != expected_side:
