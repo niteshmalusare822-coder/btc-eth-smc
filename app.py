@@ -550,7 +550,7 @@ def build_signal(symbol):
         else []
     )
 
-       if live_setups:
+    if live_setups:
         live_setup = live_setups[0]
         live_entry = float(live_setup.entry_level)
         live_top = float(live_setup.zone_top)
@@ -586,6 +586,7 @@ def build_signal(symbol):
                 "entry_mode": live_setup.entry_mode,
             }
             return base
+
         # Setup exists BEFORE the 5M trigger.
         # This is the early-warning state.
         if trig != expected_side:
