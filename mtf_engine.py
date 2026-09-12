@@ -46,7 +46,7 @@ PARAMS = {
     "require_ob_sweep": True,        # the OB candle must take prior liquidity
     "require_ob_imbalance": True,    # a gap must sit next to the OB
     "imbalance_window": 3,
-    "stop_buffer_frac": 0.10,        # padding beyond the OB wick
+    "stop_buffer_frac": 0.15,        # padding beyond the OB wick
     "ote_low": 0.618,
     "ote_high": 0.79,
     "trigger_lookback": 3,   # 5M bars the entry trigger may look back over
