@@ -23,6 +23,12 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, asdict
 
+# _rupee_targets() calls np.isfinite() on structure-target prices. That path
+# only runs when structure_targets is non-empty (currently ETH/XRP in
+# practice), which is why every OTHER symbol never hit this and the missing
+# import went unnoticed until now.
+import numpy as np
+
 # ── Account ────────────────────────────────────────────────────────────────
 CAPITAL_INR = float(os.environ.get("CAPITAL_INR", 10000))
 MAX_RISK_INR = float(os.environ.get("MAX_RISK_INR", 1200))
@@ -75,6 +81,15 @@ ENTRY_IS_MAKER = os.environ.get("ENTRY_IS_MAKER", "false").lower() == "true"
 
 SLIPPAGE_PER_LEG = float(os.environ.get("SLIPPAGE_PER_LEG", 0.0002))
 FUNDING_PER_8H = float(os.environ.get("FUNDING_PER_8H", 0.0001))  # 0.01%
+
+# How often the venue actually settles funding (hours). Perpetual funding is
+# a discrete stamp, not a continuous accrual — see funding_cost_inr() below.
+# This was referenced in three places (funding_events, cost_summary) but
+# never defined anywhere in the module, which is what crashed every symbol's
+# report/portfolio/diagnostic call the moment pnl_inr() reached a funding
+# calculation.
+FUNDING_INTERVAL_HOURS = float(os.environ.get("FUNDING_INTERVAL_HOURS", 8))
+
 # Venue minimum order size. NOT changed on a hunch: on DEXE this rejected 57
 # in-sample setups with "notional Rs.108 below venue minimum", which is real
 # information — a Rs.1200 risk cap against DEXE's 5x leverage cap and wide stop
