@@ -1087,7 +1087,7 @@ def _sensitivity(symbol, df5, df15, df1h, cfg, params, oos_start, n):
         "sweep_window": [10, 20, 30],
         "trigger_lookback": [2, 3, 5],
         "ob_entry_mode": ["wick", "body", "50"],
-        "stop_buffer_frac": [0.05, 0.10, 0.15],
+        "stop_buffer_frac": [0.05, 0.10, 0.30],
     }
 
     rows = []
