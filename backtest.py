@@ -1,4 +1,4 @@
-"""
+ """
 backtest.py — correct measurement first, profit second.
 
 Three arms are always run on the SAME bars, with the SAME stops, targets, fees,
@@ -318,21 +318,59 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
         rejected[why] = rejected.get(why, 0) + 1
 
     if arm == "matched_random":
-        for t in (matched or []):
+        # Apply the SAME position-management constraint as the source strategy.
+        # The side is randomized, but the opportunity timestamp and stop width
+        # remain matched.  This prevents the null from holding overlapping
+        # positions that the strategy's own position_mode would reject.
+        matched_busy_until = -1
+        matched_open_until = {"bull": -1, "bear": -1}
+        matched_open_slots = []
+
+        for t in sorted(matched or [], key=lambda x: x["i"]):
             i = t["i"]
             if not np.isfinite(atr[i]) or atr[i] <= 0:
                 continue
+
             side = "bull" if rng.random() < 0.5 else "bear"
+            mode = cfg.get("position_mode", "C")
+
+            if mode == "A":
+                blocked = i <= matched_busy_until
+            elif mode == "B":
+                blocked = i <= matched_open_until.get(side, -1)
+            else:
+                matched_open_slots = [
+                    x for x in matched_open_slots if x >= i
+                ]
+                blocked = (
+                    len(matched_open_slots)
+                    >= cfg.get("max_concurrent", 2)
+                )
+
+            if blocked:
+                _rej("matched position overlap")
+                continue
+
             level = t["entry"]
             dist = abs(t["entry"] - t["sl"])
             stop = level - dist if side == "bull" else level + dist
-            tr, why = _open_trade(symbol, df5, i, side, level, stop, atr[i], cfg,
-                                  tf_min, bias="RANDOM", setup="matched",
-                                  trigger="coin flip", arm=arm)
+
+            tr, why = _open_trade(
+                symbol, df5, i, side, level, stop, atr[i], cfg,
+                tf_min, bias="RANDOM", setup="matched",
+                trigger="coin flip", arm=arm,
+            )
             if tr:
                 trades.append(tr)
+                if mode == "A":
+                    matched_busy_until = tr["exit_i"]
+                elif mode == "B":
+                    matched_open_until[side] = tr["exit_i"]
+                else:
+                    matched_open_slots.append(tr["exit_i"])
             else:
                 _rej(why)
+
         return trades, rejected
 
     if arm == "random":
@@ -641,7 +679,9 @@ def full_report(symbol, df5, df15, df1h, cfg=None, params=None):
 
     for name, lo, hi in [
         ("in_sample", warm, split),
-        ("out_of_sample", split, n - 1),
+        # run_arm() uses an EXCLUSIVE hi_i boundary, so n includes the
+        # final available 5M bar in OOS.
+        ("out_of_sample", split, n),
     ]:
         arms, by_arm = [], {}
 
