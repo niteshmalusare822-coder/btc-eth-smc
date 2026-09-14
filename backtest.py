@@ -1,4 +1,4 @@
- """
+"""
 backtest.py — correct measurement first, profit second.
 
 Three arms are always run on the SAME bars, with the SAME stops, targets, fees,
@@ -1435,5 +1435,3 @@ def _verdict(out):
     return _v("PROVEN_EDGE",
               f"Rs.{edge:.0f} per trade over the matched random mean ({z} sigma), "
               f"stable across folds and parameter nudges, on {n} trades.", edge)
-
-    
