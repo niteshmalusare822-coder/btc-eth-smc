@@ -60,7 +60,7 @@ PARAMS = {
     #
     # OFF by default. Turning it on must be justified out of sample against
     # the unchanged baseline, not assumed.
-    "require_structure_confirmation": True,
+    "require_structure_confirmation": False,
     "confirm_bars": 1,          # closed 15M candles the shift must survive
     "confirm_max_wait": 12,     # bars allowed to complete confirmation
 
