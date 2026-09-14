@@ -89,8 +89,7 @@ PARAMS = {
     # making OB+FVG overlap mandatory, so an FVG left by the displacement leg
     # is a POI in its own right even when no order block qualified.
     #
-    # Default stays ["ob"] so this is A/B-testable against the frozen
-    # baseline rather than silently changing every result.
+    # Default uses both POI paths; each is still independently lineage-checked.
     "poi_sources": ["ob", "fvg"],       # ["ob"], ["fvg"], or ["ob", "fvg"]
     "fvg_min_size_atr": 0.0,     # optional floor on FVG height
 }
@@ -673,10 +672,10 @@ BLOCKERS = {
     "HTF_NEUTRAL": "4H bias neutral",
     "NO_TRIGGER": "no 5M trigger",
     "TRIGGER_WRONG_WAY": "5M trigger against the 4H direction",
-    "NO_SETUP": "no live 5M setup",
-    "SETUP_WRONG_WAY": "5M setup exists but on the other side",
-    "SETUP_EXPIRED": "5M setup aged out",
-    "SETUP_MITIGATED": "5M zone already invalidated by price",
+    "NO_SETUP": "no live 15M setup",
+    "SETUP_WRONG_WAY": "15M setup exists but on the other side",
+    "SETUP_EXPIRED": "15M setup aged out",
+    "SETUP_MITIGATED": "15M zone already invalidated by price",
     "AWAITING_RETEST": "POI formed but price has not returned to it",
 }
 
@@ -758,7 +757,7 @@ def gate_state(bias, trigger, setups, ts):
         "trigger_5m": trigger or "none",
         "liquidity_sweep": bool(s.swept) if s else False,
         "imbalance": bool(s.imbalance) if s else False,
-        "order_block": bool(s) ,
+        "order_block": bool(s and s.poi_quality in ("OB", "OB+FVG")),
         "fvg": bool(s.has_fvg) if s else False,
         "action": action,
         "blocker": code,
