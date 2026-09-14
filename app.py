@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """
 app.py — the only process that runs on Render.
 
@@ -427,7 +427,10 @@ def _load(symbol, bars, live=False):
             fresh = live_bars_fresh(symbol)
             if fresh:
                 frames["5m"] = _merge_live_bars(frames["5m"], fresh)
-        frames["15m"] = frames["5m"]
+
+        # Keep the actual 15M frame returned by data.load_mtf().
+        # Live strategy flow is 4H bias -> 15M setup -> 5M trigger.
+        # Do NOT alias 15M to 5M here.
     return frames, (meta or {})
 
 
@@ -498,17 +501,11 @@ def build_signal(symbol):
 
     bias = ctx["bias"][i]
     
-    # --- 1-MINUTE LIVE TRIGGER (HYBRID LOGIC) ---
-    fresh_bars = live_bars_fresh(symbol)
-    live_trig = "none"
-    if fresh_bars and len(fresh_bars) > 0:
-        last_1m = fresh_bars[-1]
-        if last_1m["close"] > last_1m["open"]:
-            live_trig = "bull"
-        elif last_1m["close"] < last_1m["open"]:
-            live_trig = "bear"
-            
-    trig = live_trig if live_trig != "none" else (ctx["trigger"][i] or "none")
+    # --- 5-MINUTE TRIGGER ---
+    # The trigger comes from mtf_engine.trigger_series() on the CLOSED
+    # 5M dataframe. A live 1M candle colour must not be substituted here.
+    # Otherwise the API could label a 1M move as a confirmed 5M trigger.
+    trig = ctx["trigger"][i] or "none"
 
     # same call the backtest makes: no price arguments, so this reports a
     # RESTING LIMIT rather than pretending the bar already filled it
@@ -721,7 +718,7 @@ def build_signal(symbol):
                  "has_fvg": setup.has_fvg, "swept": setup.swept,
                  "imbalance": setup.imbalance,
                  "entry_mode": setup.entry_mode},
-        "reason": (f"1H {bias} + 5M "
+        "reason": (f"1H {bias} + 15M "
                    f"{'OB+FVG' if setup.has_fvg else 'OB'} after liquidity "
                    f"sweep + 5M {trig} shift, entry at the order block "
                    f"{setup.entry_mode}"),
