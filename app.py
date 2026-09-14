@@ -587,42 +587,76 @@ def build_signal(symbol):
         # Setup exists BEFORE the 5M trigger.
         # This is the early-warning state.
         if trig != expected_side:
-            distance_to_zone = (
-                live_px - live_top if expected_side == "bull"
-                else live_bottom - live_px
-            )
+    distance_to_zone = (
+        live_px - live_top if expected_side == "bull"
+        else live_bottom - live_px
+    )
 
-            watch_atr = float(os.environ.get("WATCHING_ATR", 3.0))
-            near_zone = (
-                distance_to_zone >= 0
-                and distance_to_zone <= watch_atr * atr
-            )
+    watch_atr = float(os.environ.get("WATCHING_ATR", 3.0))
+    near_zone = (
+        distance_to_zone >= 0
+        and distance_to_zone <= watch_atr * atr
+    )
 
-            base["action"] = (
-                "ENTRY_READY" if near_zone else "WATCHING"
-            )
-            base["blocker"] = "WAITING_5M_TRIGGER"
-            base["reason"] = (
-                f"1H {bias} + valid 15M "
-                f"{'OB+FVG' if live_setup.has_fvg else 'OB'} setup; "
-                f"waiting for 5M {expected_side} trigger"
-            )
-            base["live_price"] = _f(live_px)
-            base["entry"] = _f(live_entry)
-            base["distance_to_entry_pct"] = _f(
-                (live_entry - live_px) / live_px * 100
-                if live_px else None
-            )
-            base["tradeable"] = False
-            base["zone"] = {
-                "top": _f(live_top),
-                "bottom": _f(live_bottom),
-                "has_fvg": live_setup.has_fvg,
-                "swept": live_setup.swept,
-                "imbalance": live_setup.imbalance,
-                "entry_mode": live_setup.entry_mode,
-            }
-            return base
+    # Price is still far from the setup zone.
+    # Keep watching, but do NOT block because of the missing 5M trigger.
+    if not near_zone:
+        base["action"] = "WATCHING"
+        base["blocker"] = "WAITING_ENTRY_ZONE"
+        base["reason"] = (
+            f"1H {bias} + valid 15M "
+            f"{'OB+FVG' if live_setup.has_fvg else 'OB'} setup; "
+            f"5M trigger not required yet"
+        )
+        base["live_price"] = _f(live_px)
+        base["entry"] = _f(live_entry)
+        base["distance_to_entry_pct"] = _f(
+            (live_entry - live_px) / live_px * 100
+            if live_px else None
+        )
+        base["tradeable"] = False
+        base["zone"] = {
+            "top": _f(live_top),
+            "bottom": _f(live_bottom),
+            "has_fvg": live_setup.has_fvg,
+            "swept": live_setup.swept,
+            "imbalance": live_setup.imbalance,
+            "entry_mode": live_setup.entry_mode,
+        }
+        return base
+
+    # Price is close enough to the valid 15M setup.
+    # 5M trigger is now OPTIONAL, not a hard gate.
+    setup = live_setup
+    side = expected_side
+    level = live_entry
+    action = "BUY" if side == "bull" else "SELL"
+
+    base["action"] = "ENTRY_READY"
+    base["blocker"] = "EARLY_ENTRY_READY"
+    base["reason"] = (
+        f"1H {bias} + valid 15M "
+        f"{'OB+FVG' if setup.has_fvg else 'OB'} setup; "
+        f"5M trigger not required for early entry"
+    )
+    base["live_price"] = _f(live_px)
+    base["entry"] = _f(level)
+    base["distance_to_entry_pct"] = _f(
+        (level - live_px) / live_px * 100
+        if live_px else None
+    )
+    base["zone"] = {
+        "top": _f(setup.zone_top),
+        "bottom": _f(setup.zone_bottom),
+        "has_fvg": setup.has_fvg,
+        "swept": setup.swept,
+        "imbalance": setup.imbalance,
+        "entry_mode": setup.entry_mode,
+    }
+
+    # IMPORTANT:
+    # Do NOT return here.
+    # Continue into the existing SL / TP / sizing logic below.
 
         # 5M trigger agrees with HTF bias and entry is still ahead.
         # Continue into the existing sizing / TP / SL logic.
