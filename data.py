@@ -545,13 +545,28 @@ def fetch_ohlcv_history(
             return None, meta_1h
         
         df_1h = df_1h.set_index("ts")
-        df_4h = df_1h.resample("4h").agg({
+
+        # Build only complete 4H candles.  A plain resample() can create a
+        # partial first bucket when the 1H history starts mid-block; that
+        # partial candle must not become an HTF decision candle.
+        grouped = df_1h.resample(
+            "4h",
+            label="left",
+            closed="left",
+        )
+        df_4h = grouped.agg({
             "open": "first",
             "high": "max",
             "low": "min",
             "close": "last",
-            "volume": "sum"
-        }).dropna().reset_index()
+            "volume": "sum",
+        })
+        counts = grouped["close"].count()
+        df_4h = (
+            df_4h[counts == 4]
+            .dropna()
+            .reset_index()
+        )
         
         cleaned_df = _clean(df_4h)
         meta_1h["timeframe"] = "4h"
@@ -758,45 +773,6 @@ def fetch_ohlcv_history(
         "stopped_reason": stopped_reason,
     }
 
-    df = _clean(
-        pd.concat(
-            frames,
-            ignore_index=True,
-        )
-    )
-
-    # Keep the newest target bars.
-
-    df = (
-        df.tail(target_bars)
-        .reset_index(drop=True)
-    )
-
-    actual_bars = int(len(df))
-
-    return df, {
-        "requested_bars": int(target_bars),
-        "actual_bars": actual_bars,
-        "short_by": max(
-            0,
-            int(target_bars) - actual_bars,
-        ),
-        "source": venue,
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "coverage_start": (
-            str(df["ts"].iat[0])
-            if not df.empty
-            else None
-        ),
-        "coverage_end": (
-            str(df["ts"].iat[-1])
-            if not df.empty
-            else None
-        ),
-        "pages_fetched": pages,
-        "stopped_reason": stopped_reason,
-    }
 
 
 # =============================================================================
