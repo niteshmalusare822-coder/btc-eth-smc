@@ -1,4 +1,4 @@
-
+#!/usr/bin/env python3
 """
 app.py — the only process that runs on Render.
 
@@ -427,10 +427,7 @@ def _load(symbol, bars, live=False):
             fresh = live_bars_fresh(symbol)
             if fresh:
                 frames["5m"] = _merge_live_bars(frames["5m"], fresh)
-
-        # Keep the actual 15M frame returned by data.load_mtf().
-        # Live strategy flow is 4H bias -> 15M setup -> 5M trigger.
-        # Do NOT alias 15M to 5M here.
+        frames["15m"] = frames["5m"]
     return frames, (meta or {})
 
 
@@ -501,11 +498,17 @@ def build_signal(symbol):
 
     bias = ctx["bias"][i]
     
-    # --- 5-MINUTE TRIGGER ---
-    # The trigger comes from mtf_engine.trigger_series() on the CLOSED
-    # 5M dataframe. A live 1M candle colour must not be substituted here.
-    # Otherwise the API could label a 1M move as a confirmed 5M trigger.
-    trig = ctx["trigger"][i] or "none"
+    # --- 1-MINUTE LIVE TRIGGER (HYBRID LOGIC) ---
+    fresh_bars = live_bars_fresh(symbol)
+    live_trig = "none"
+    if fresh_bars and len(fresh_bars) > 0:
+        last_1m = fresh_bars[-1]
+        if last_1m["close"] > last_1m["open"]:
+            live_trig = "bull"
+        elif last_1m["close"] < last_1m["open"]:
+            live_trig = "bear"
+            
+    trig = live_trig if live_trig != "none" else (ctx["trigger"][i] or "none")
 
     # same call the backtest makes: no price arguments, so this reports a
     # RESTING LIMIT rather than pretending the bar already filled it
@@ -554,16 +557,7 @@ def build_signal(symbol):
         live_bottom = float(live_setup.zone_bottom)
 
         # Entry has already been reached. Do not generate a new entry.
-        if expected_side == "bull":
-            # BUY limit is below current price
-            entry_hit = live_px <= live_entry
-
-        elif expected_side == "bear":
-            # SELL limit is above current price
-            entry_hit = live_px >= live_entry
-
-        else:
-            entry_hit = False
+        entry_hit = live_px <= live_entry
 
         if entry_hit:
             base["action"] = "NO_TRADE"
@@ -585,87 +579,86 @@ def build_signal(symbol):
             return base
 
         # Setup exists BEFORE the 5M trigger.
-        # This is the early-warning state.
+        # The 5M trigger is an optional confirmation, NOT a hard entry gate.
         if trig != expected_side:
-    distance_to_zone = (
-        live_px - live_top if expected_side == "bull"
-        else live_bottom - live_px
-    )
+            distance_to_zone = (
+                live_px - live_top if expected_side == "bull"
+                else live_bottom - live_px
+            )
 
-    watch_atr = float(os.environ.get("WATCHING_ATR", 3.0))
-    near_zone = (
-        distance_to_zone >= 0
-        and distance_to_zone <= watch_atr * atr
-    )
+            watch_atr = float(os.environ.get("WATCHING_ATR", 3.0))
+            near_zone = (
+                distance_to_zone >= 0
+                and distance_to_zone <= watch_atr * atr
+            )
 
-    # Price is still far from the setup zone.
-    # Keep watching, but do NOT block because of the missing 5M trigger.
-    if not near_zone:
-        base["action"] = "WATCHING"
-        base["blocker"] = "WAITING_ENTRY_ZONE"
-        base["reason"] = (
-            f"1H {bias} + valid 15M "
-            f"{'OB+FVG' if live_setup.has_fvg else 'OB'} setup; "
-            f"5M trigger not required yet"
-        )
-        base["live_price"] = _f(live_px)
-        base["entry"] = _f(live_entry)
-        base["distance_to_entry_pct"] = _f(
-            (live_entry - live_px) / live_px * 100
-            if live_px else None
-        )
-        base["tradeable"] = False
-        base["zone"] = {
-            "top": _f(live_top),
-            "bottom": _f(live_bottom),
-            "has_fvg": live_setup.has_fvg,
-            "swept": live_setup.swept,
-            "imbalance": live_setup.imbalance,
-            "entry_mode": live_setup.entry_mode,
-        }
-        return base
+            # Price is still far from the setup zone.
+            # Keep watching, but do not block the setup because 5M has not
+            # triggered yet.
+            if not near_zone:
+                base["action"] = "WATCHING"
+                base["blocker"] = "WAITING_ENTRY_ZONE"
+                base["reason"] = (
+                    f"1H {bias} + valid 15M "
+                    f"{'OB+FVG' if live_setup.has_fvg else 'OB'} setup; "
+                    f"5M trigger not required yet"
+                )
+                base["live_price"] = _f(live_px)
+                base["entry"] = _f(live_entry)
+                base["distance_to_entry_pct"] = _f(
+                    (live_entry - live_px) / live_px * 100
+                    if live_px else None
+                )
+                base["tradeable"] = False
+                base["zone"] = {
+                    "top": _f(live_top),
+                    "bottom": _f(live_bottom),
+                    "has_fvg": live_setup.has_fvg,
+                    "swept": live_setup.swept,
+                    "imbalance": live_setup.imbalance,
+                    "entry_mode": live_setup.entry_mode,
+                }
+                return base
 
-    # Price is close enough to the valid 15M setup.
-    # 5M trigger is now OPTIONAL, not a hard gate.
-    setup = live_setup
-    side = expected_side
-    level = live_entry
-    action = "BUY" if side == "bull" else "SELL"
+            # Price is close enough to the valid 15M setup.
+            # Continue into the normal SL / TP / sizing logic without waiting
+            # for a closed 5M trigger.
+            setup = live_setup
+            side = expected_side
+            level = live_entry
+            action = "BUY" if side == "bull" else "SELL"
 
-    base["action"] = "ENTRY_READY"
-    base["blocker"] = "EARLY_ENTRY_READY"
-    base["reason"] = (
-        f"1H {bias} + valid 15M "
-        f"{'OB+FVG' if setup.has_fvg else 'OB'} setup; "
-        f"5M trigger not required for early entry"
-    )
-    base["live_price"] = _f(live_px)
-    base["entry"] = _f(level)
-    base["distance_to_entry_pct"] = _f(
-        (level - live_px) / live_px * 100
-        if live_px else None
-    )
-    base["zone"] = {
-        "top": _f(setup.zone_top),
-        "bottom": _f(setup.zone_bottom),
-        "has_fvg": setup.has_fvg,
-        "swept": setup.swept,
-        "imbalance": setup.imbalance,
-        "entry_mode": setup.entry_mode,
-    }
+            base["action"] = "ENTRY_READY"
+            base["blocker"] = "EARLY_ENTRY_READY"
+            base["reason"] = (
+                f"1H {bias} + valid 15M "
+                f"{'OB+FVG' if setup.has_fvg else 'OB'} setup; "
+                f"5M trigger optional for early entry"
+            )
+            base["live_price"] = _f(live_px)
+            base["entry"] = _f(level)
+            base["distance_to_entry_pct"] = _f(
+                (level - live_px) / live_px * 100
+                if live_px else None
+            )
+            base["zone"] = {
+                "top": _f(setup.zone_top),
+                "bottom": _f(setup.zone_bottom),
+                "has_fvg": setup.has_fvg,
+                "swept": setup.swept,
+                "imbalance": setup.imbalance,
+                "entry_mode": setup.entry_mode,
+            }
 
-    # IMPORTANT:
-    # Do NOT return here.
-    # Continue into the existing SL / TP / sizing logic below.
-
-        # 5M trigger agrees with HTF bias and entry is still ahead.
-        # Continue into the existing sizing / TP / SL logic.
-        setup = live_setup
-        side = expected_side
-        level = live_entry
-        action = "BUY" if side == "bull" else "SELL"
-        base["action"] = action
-        base["blocker"] = "OK"
+        else:
+            # 5M trigger agrees with HTF bias and entry is still ahead.
+            # Continue into the existing sizing / TP / SL logic.
+            setup = live_setup
+            side = expected_side
+            level = live_entry
+            action = "BUY" if side == "bull" else "SELL"
+            base["action"] = action
+            base["blocker"] = "OK"
 
     # Existing sizing / SL / TP logic continues unchanged.
     if action == "NO_TRADE" or setup is None:
@@ -752,7 +745,7 @@ def build_signal(symbol):
                  "has_fvg": setup.has_fvg, "swept": setup.swept,
                  "imbalance": setup.imbalance,
                  "entry_mode": setup.entry_mode},
-        "reason": (f"1H {bias} + 15M "
+        "reason": (f"1H {bias} + 5M "
                    f"{'OB+FVG' if setup.has_fvg else 'OB'} after liquidity "
                    f"sweep + 5M {trig} shift, entry at the order block "
                    f"{setup.entry_mode}"),
