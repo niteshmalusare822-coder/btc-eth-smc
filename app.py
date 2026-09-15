@@ -575,7 +575,7 @@ def build_signal(symbol):
             else live_px >= live_entry
         )
 
-                if entry_hit:
+        if entry_hit:
             base["action"] = "NO_TRADE"
             base["blocker"] = "ENTRY_MISSED"
             base["reason"] = (
