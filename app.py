@@ -1,4 +1,4 @@
-
+#!/usr/bin/env python3
 """
 app.py — the only process that runs on Render.
 
@@ -50,14 +50,17 @@ REVIEW FIXES IN THIS VERSION
     bias and entry logic are untouched — they still run on closed candles
     only, so nothing here can repaint a past decision.
 11. entry_hit was computed OUTSIDE the `if live_setups:` block that defines
-    live_entry, at the same indentation level as the if-statement itself.
-    Whenever a symbol had no live setup in the expected direction (the common
-    case — e.g. bias BULLISH but the only live setup is on the bear side),
-    live_entry was never assigned, and the dedented entry_hit line raised
-    NameError, crashing build_signal() for that symbol. That crash was caught
-    by the route's try/except and returned as a generic error instead of the
-    correct NO_TRADE reason. The entry_hit block is now properly indented
-    inside `if live_setups:`, where live_entry actually exists.
+    live_entry. Fixed in an earlier pass — it now lives inside that block.
+12. This pass fixes three new syntax errors introduced by manual editing of
+    the FORWARD_ENTRY / ENTRY_REACHED logic: base["zone"] = {...} was closed
+    with a stray ")" instead of "}"; base["reason"] = (...) inside the
+    entry_hit branch was closed with a stray "}" instead of ")"; and the
+    `if entry_hit:` line sat at an inconsistent indentation level relative to
+    the rest of the `if live_setups:` block. None of these were reachable
+    before because the file could not even be imported — Python raises
+    SyntaxError at import time for a mismatched bracket, so every request
+    would have failed, not just the no-active-setup case this pattern hit
+    previously.
 """
 
 import os
@@ -683,7 +686,6 @@ def build_signal(symbol):
         live_top = float(live_setup.zone_top)
         live_bottom = float(live_setup.zone_bottom)
 
-        # Entry reached: do NOT kill the setup immediately.
         # Entry has already been reached. Do not generate a new entry.
         entry_hit = (
             live_px <= live_entry
@@ -700,19 +702,19 @@ def build_signal(symbol):
             "swept": live_setup.swept,
             "imbalance": live_setup.imbalance,
             "entry_mode": live_setup.entry_mode,
-       )
-               
-       if entry_hit:
+        }
+
+        if entry_hit:
             base["live_setup_active"] = True
             # Keep current setup available for the next live-entry layer.
             # Do not create a market order yet.
             base["action"] = "WATCHING"
             base["blocker"] = "ENTRY_REACHED"
             base["reason"] = (
-                  f"{expected_side.upper()} setup reached; "         
-                  f"live={live_px:.8g}, planned_entry={live_entry:.8g}; "
-                  f"waiting for live reaction"
-            }
+                f"{expected_side.upper()} setup reached; "
+                f"live={live_px:.8g}, planned_entry={live_entry:.8g}; "
+                f"waiting for live reaction"
+            )
             return base
 
         # --------------------------------------------------------------
@@ -755,6 +757,7 @@ def build_signal(symbol):
     if action == "NO_TRADE" or setup is None:
         base["action"] = "NO_TRADE"
         return base
+
     # a NaN ATR would make structure_limit NaN, and every comparison against
     # NaN is False, which silently marked unreachable targets as reachable
     if not np.isfinite(atr) or atr <= 0:
@@ -836,12 +839,13 @@ def build_signal(symbol):
                  "imbalance": setup.imbalance,
                  "entry_mode": setup.entry_mode},
         "reason": (
-             f"1H {bias} + 5M "
-             f"{'OB+FVG' if setup.has_fvg else 'OB'} after liquidity sweep; "
-             f"5M trigger={trig}, entry at the order block "
-             f"{setup.entry_mode}"
-    ),
-})
+            f"1H {bias} + 5M "
+            f"{'OB+FVG' if setup.has_fvg else 'OB'} after liquidity sweep; "
+            f"5M trigger={trig}, entry at the order block "
+            f"{setup.entry_mode}"
+        ),
+    })
+
     # Manual-signal mode: this endpoint only produces a fresh setup. It does
     # not replay old candles, track a position, or change the trade to
     # NO_TRADE after a simulated TP/SL outcome. The trader manages execution
