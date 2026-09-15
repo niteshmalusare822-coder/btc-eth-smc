@@ -349,6 +349,99 @@ def live_price_fresh(symbol, max_age=10):
         return None
     return entry["price"]
 
+
+def developing_5m_confirmation(side, dev_open, dev_high, dev_low, dev_close, atr):
+    """
+    Live developing 5M confirmation.
+    Does NOT wait for candle close.
+
+    Returns:
+        True  -> developing candle agrees with direction
+        False -> no confirmation
+    """
+    if None in (dev_open, dev_high, dev_low, dev_close):
+        return False
+
+    if not np.isfinite(atr) or atr <= 0:
+        return False
+
+    dev_range = dev_high - dev_low
+    dev_body = abs(dev_close - dev_open)
+
+    if dev_range <= 0:
+        return False
+
+    # Initial conservative threshold.
+    # Body must have meaningful size relative to 5M ATR.
+    body_ok = dev_body >= 0.40 * atr
+
+    # Candle direction.
+    bullish = dev_close > dev_open
+    bearish = dev_close < dev_open
+
+    if side == "bull":
+        return bool(body_ok and bullish)
+
+    if side == "bear":
+        return bool(body_ok and bearish)
+
+    return False
+
+
+def live_1m_reaction(side, bars_1m):
+    """
+    Detect a simple live 1M reaction from recent 1M candles.
+    No 1M candle-close requirement.
+    """
+
+    if not bars_1m or len(bars_1m) < 2:
+        return False
+
+    last = bars_1m[-1]
+    prev = bars_1m[-2]
+
+    try:
+        o = float(last["open"])
+        h = float(last["high"])
+        l = float(last["low"])
+        c = float(last["close"])
+
+        po = float(prev["open"])
+        pc = float(prev["close"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+    candle_range = h - l
+    if candle_range <= 0:
+        return False
+
+    body = abs(c - o)
+
+    # Avoid treating a tiny/noisy candle as a reaction.
+    if body < candle_range * 0.20:
+        return False
+
+    # BUY reaction:
+    # price pushed down but buyers recovered the candle.
+    if side == "bull":
+        lower_wick = min(o, c) - l
+        return (
+            lower_wick >= candle_range * 0.30
+            and c >= o
+        )
+
+    # SELL reaction:
+    # price pushed up but sellers rejected the move.
+    if side == "bear":
+        upper_wick = h - max(o, c)
+        return (
+            upper_wick >= candle_range * 0.30
+            and c <= o
+        )
+
+    return False
+
+
 def _merge_live_bars(df5, live_bars):
     if not live_bars:
         return df5
