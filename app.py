@@ -123,26 +123,57 @@ LIVE_PRICE = {}  # symbol -> {"price": float, "updated_at": epoch}
 
 
 def _resample_to_5m(bars_1m):
-    if len(bars_1m) < 5:
-        return []
+    if len(bars_1m) < 1:
+        return [], None
+
     df = pd.DataFrame(bars_1m)
     df["ts"] = pd.to_datetime(df["open_time"], unit="s")
     df = df.set_index("ts").sort_index()
+
     agg = df.resample("5min").agg({
-        "open": "first", "high": "max", "low": "min",
-        "close": "last", "volume": "sum",
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum",
     }).dropna()
+
     now = pd.Timestamp.utcnow().tz_localize(None)
-    agg = agg[agg.index + pd.Timedelta(minutes=5) <= now]
-    out = []
-    for ts, r in agg.iterrows():
-        out.append({
+
+    closed = agg[agg.index + pd.Timedelta(minutes=5) <= now]
+
+    developing = agg[
+        (agg.index <= now) &
+        (agg.index + pd.Timedelta(minutes=5) > now)
+    ]
+
+    closed_out = []
+
+    for ts, r in closed.iterrows():
+        closed_out.append({
             "ts_ms": int(ts.timestamp() * 1000),
-            "open": float(r["open"]), "high": float(r["high"]),
-            "low": float(r["low"]), "close": float(r["close"]),
+            "open": float(r["open"]),
+            "high": float(r["high"]),
+            "low": float(r["low"]),
+            "close": float(r["close"]),
             "volume": float(r["volume"]),
         })
-    return out[-60:]
+
+    developing_out = None
+
+    if not developing.empty:
+        ts, r = developing.iloc[-1].name, developing.iloc[-1]
+        developing_out = {
+            "ts_ms": int(ts.timestamp() * 1000),
+            "open": float(r["open"]),
+            "high": float(r["high"]),
+            "low": float(r["low"]),
+            "close": float(r["close"]),
+            "volume": float(r["volume"]),
+            "developing": True,
+        }
+
+    return closed_out[-60:], developing_out
 
 
 def _live_ws_worker():
