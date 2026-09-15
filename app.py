@@ -767,7 +767,7 @@ def build_signal(symbol):
              f"5M trigger={trig}, entry at the order block "
              f"{setup.entry_mode}"
     ),
-
+})
     # Manual-signal mode: this endpoint only produces a fresh setup. It does
     # not replay old candles, track a position, or change the trade to
     # NO_TRADE after a simulated TP/SL outcome. The trader manages execution
