@@ -131,7 +131,7 @@ class Swing:
     confirmed_idx: int  # idx + right
 
 
-def find_swings(df: pd.DataFrame, left: int = 2, right: int = 1) -> list[Swing]:
+def find_swings(df: pd.DataFrame, left: int = 1, right: int = 1) -> list[Swing]:
 
 
 def find_equal_levels(
