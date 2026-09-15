@@ -963,12 +963,21 @@ def health():
 @app.route("/api/live-status")
 def live_status():
     with LIVE_WS_LOCK:
-        out = {s: {"bars": len(v["bars"]),
-                    "age_sec": round(time.time() - v["updated_at"], 1)}
-               for s, v in LIVE_WS.items()}
+        out = {
+            s: {
+                "bars": len(v["bars"]),
+                "developing_5m": v.get("developing_5m"),
+                "age_sec": round(time.time() - v["updated_at"], 1),
+            }
+            for s, v in LIVE_WS.items()
+        }
         raw_1m = dict(LIVE_WS_1M_COUNTS)
-    return ok({"live_symbols": out, "raw_1m_bars_captured": raw_1m,
-               "last_error": LIVE_WS_LAST_ERROR})
+
+    return ok({
+        "live_symbols": out,
+        "raw_1m_bars_captured": raw_1m,
+        "last_error": LIVE_WS_LAST_ERROR
+    })
 
 
 @app.route("/api/config")
