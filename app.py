@@ -666,8 +666,6 @@ def build_signal(symbol):
         dev_body = dev_range = 0.0
 
     expected_side = (
-
-    expected_side = (
         "bull" if bias == "BULLISH"
         else "bear" if bias == "BEARISH"
         else None
