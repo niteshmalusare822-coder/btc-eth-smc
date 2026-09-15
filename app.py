@@ -123,6 +123,7 @@ LIVE_WS_1M_COUNTS = {}  # symbol -> raw 1-minute bars captured so far
 PAIR_WS = {s: f"B-{s}_USDT" for s in SYMBOLS}
 
 LIVE_PRICE = {}  # symbol -> {"price": float, "updated_at": epoch}
+LIVE_1M_BARS = {}  # symbol -> [ {"ts", "open", "high", "low", "close", "volume"}, ... ]
 
 
 def _resample_to_5m(bars_1m):
@@ -249,7 +250,8 @@ def _live_ws_worker():
 
     @sio.on("new-trade")
     def on_new_trade(response):
-        global LIVE_PRICE
+        global LIVE_PRICE, LIVE_1M_BARS
+
         try:
             payload = json.loads(response["data"])
         except Exception as e:
@@ -288,11 +290,42 @@ def _live_ws_worker():
             print(">>> TRADE PRICE ERROR:", repr(trade), flush=True)
             return
 
+        now = time.time()
+
         with LIVE_WS_LOCK:
+            # ----------------------------------------------------------
+            # LIVE PRICE
+            # ----------------------------------------------------------
             LIVE_PRICE[sym] = {
                 "price": price,
-                "updated_at": time.time()
+                "updated_at": now
             }
+
+            # ----------------------------------------------------------
+            # DEVELOPING 1M CANDLE
+            # ----------------------------------------------------------
+            minute_start = int(now // 60) * 60
+
+            bars = LIVE_1M_BARS.setdefault(sym, [])
+
+            if not bars or bars[-1]["ts"] != minute_start:
+                bars.append({
+                    "ts": minute_start,
+                    "open": price,
+                    "high": price,
+                    "low": price,
+                    "close": price,
+                    "volume": 0.0,
+                })
+            else:
+                candle = bars[-1]
+                candle["high"] = max(candle["high"], price)
+                candle["low"] = min(candle["low"], price)
+                candle["close"] = price
+
+            # Keep only recent 1M candles.
+            if len(bars) > 20:
+                del bars[:-20]
 
         print(">>> LIVE PRICE SAVED:", sym, price, flush=True)
 
@@ -766,6 +799,20 @@ def build_signal(symbol):
         else "bear" if bias == "BEARISH"
         else None
     )
+
+    # --------------------------------------------------------------
+    # LIVE 1M REACTION
+    # --------------------------------------------------------------
+    with LIVE_WS_LOCK:
+        live_1m = list(LIVE_1M_BARS.get(symbol, []))
+
+    one_min_reaction = live_1m_reaction(
+        expected_side,
+        live_1m,
+    )
+
+    base["live_1m_bars"] = len(live_1m)
+    base["live_1m_reaction"] = bool(one_min_reaction)
 
     live_setups = (
         mtf.active_setups_at(ctx["setups"], ts, expected_side)
