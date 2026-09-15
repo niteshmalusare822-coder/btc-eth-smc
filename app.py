@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """
 app.py — the only process that runs on Render.
 
@@ -488,6 +488,65 @@ def report_for(symbol, bars):
 # ---------------------------------------------------------------------------
 # LIVE SIGNAL
 # ---------------------------------------------------------------------------
+def _tp_price(ticket, key):
+    """Extract a TP price from a ticket safely."""
+    value = ticket.get(key)
+    if isinstance(value, dict):
+        for k in ("price", "level", "target", "tp"):
+            if value.get(k) is not None:
+                try:
+                    return float(value[k])
+                except (TypeError, ValueError):
+                    return None
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _final_tp_hit(ticket, live_px):
+    """True when live price has reached the ticket's TP3."""
+    tp3 = _tp_price(ticket, "tp3")
+    if tp3 is None or live_px is None:
+        return False
+
+    entry = _tp_price(ticket, "entry")
+    action = str(ticket.get("action", "")).upper()
+
+    # Only retire a directional trade when TP3 is on the profitable side
+    # of the entry. This also protects against malformed/legacy TP geometry.
+    if action == "BUY":
+        if entry is not None and tp3 <= entry:
+            return False
+        return float(live_px) >= tp3
+
+    if action == "SELL":
+        if entry is not None and tp3 >= entry:
+            return False
+        return float(live_px) <= tp3
+
+    return False
+
+
+def _retire_if_tp3_hit(ticket, live_px):
+    """Patch a cached ticket so a completed setup cannot remain actionable."""
+    out = dict(ticket)
+    if not _final_tp_hit(out, live_px):
+        return out
+
+    out["action"] = "NO_TRADE"
+    out["blocker"] = "TP3_HIT"
+    out["reason"] = (
+        f"TP3 already reached; live={float(live_px):.8g}, "
+        f"TP3={_tp_price(out, 'tp3'):.8g}"
+    )
+    out["live_price"] = _f(live_px)
+    out["tradeable"] = False
+    out["setup_status"] = "COMPLETED"
+    out["target_status"] = "TP3_HIT"
+    return out
+
+
 def build_signal(symbol):
     frames, meta = _load(
         symbol,
@@ -901,6 +960,7 @@ def signal_one(symbol):
         res = dict(res)
         fresh = live_price_fresh(symbol)
         if fresh is not None:
+            res = _retire_if_tp3_hit(res, float(fresh))
             res["live_price"] = _f(fresh)
         return ok({**res, "from_cache": hit})
     except Exception as e:
@@ -919,6 +979,7 @@ def signals():
             res = dict(res)
             fresh = live_price_fresh(s)
             if fresh is not None:
+                res = _retire_if_tp3_hit(res, float(fresh))
                 res["live_price"] = _f(fresh)
             out.append(res)
         except Exception as e:
