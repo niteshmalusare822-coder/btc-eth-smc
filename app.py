@@ -49,6 +49,15 @@ REVIEW FIXES IN THIS VERSION
     as `live_price` alongside the existing closed-candle `price`. Structure,
     bias and entry logic are untouched — they still run on closed candles
     only, so nothing here can repaint a past decision.
+11. entry_hit was computed OUTSIDE the `if live_setups:` block that defines
+    live_entry, at the same indentation level as the if-statement itself.
+    Whenever a symbol had no live setup in the expected direction (the common
+    case — e.g. bias BULLISH but the only live setup is on the bear side),
+    live_entry was never assigned, and the dedented entry_hit line raised
+    NameError, crashing build_signal() for that symbol. That crash was caught
+    by the route's try/except and returned as a generic error instead of the
+    correct NO_TRADE reason. The entry_hit block is now properly indented
+    inside `if live_setups:`, where live_entry actually exists.
 """
 
 import os
@@ -78,7 +87,7 @@ def format_ist_time(ts_str):
             dt = datetime.fromisoformat(ts_str)
         else:
             dt = pd.to_datetime(ts_str)
-        
+
         ist_zone = timezone(timedelta(hours=5, minutes=30))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
@@ -89,10 +98,13 @@ def format_ist_time(ts_str):
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+
 @app.after_request
 def add_headers(response):
     response.headers["Cache-Control"] = "no-store"
     return response
+
 
 SYMBOLS = [
     "BTC", "ETH", "SOL", "XRP", "AVAX", "LINK", "DOGE", "ADA",
@@ -305,8 +317,6 @@ def _merge_live_bars(df5, live_bars):
     return merged.drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
 
 
-
-
 # Live signal cache: keep this short so a setup cannot sit in the UI for
 # several minutes.  Render env cannot accidentally turn this into a 10-minute
 # signal cache; allowed range is 5-20 seconds.
@@ -438,9 +448,9 @@ def _load(symbol, bars, live=False):
             fresh = live_bars_fresh(symbol)
             if fresh:
                 frames["5m"] = _merge_live_bars(frames["5m"], fresh)
-        frames["15m"] = frames["5m"]
+        # frames["15m"] is real 15m data from data.py now — no longer
+        # aliased to the 5m frame.
     return frames, (meta or {})
-
 
 
 def report_for(symbol, bars):
@@ -508,18 +518,9 @@ def build_signal(symbol):
     price = float(df5["close"].iat[i])
 
     bias = ctx["bias"][i]
-    
+
     # --- 1-MINUTE LIVE TRIGGER (HYBRID LOGIC) ---
-    fresh_bars = live_bars_fresh(symbol)
-    live_trig = "none"
-    if fresh_bars and len(fresh_bars) > 0:
-        last_1m = fresh_bars[-1]
-        if last_1m["close"] > last_1m["open"]:
-            live_trig = "bull"
-        elif last_1m["close"] < last_1m["open"]:
-            live_trig = "bear"
-            
-    trig = live_trig if live_trig != "none" else (ctx["trigger"][i] or "none")
+    trig = ctx["trigger"][i] or "none"
 
     # same call the backtest makes: no price arguments, so this reports a
     # RESTING LIMIT rather than pretending the bar already filled it
@@ -568,7 +569,11 @@ def build_signal(symbol):
         live_bottom = float(live_setup.zone_bottom)
 
         # Entry has already been reached. Do not generate a new entry.
-        entry_hit = live_px <= live_entry
+        entry_hit = (
+            live_px <= live_entry
+            if expected_side == "bull"
+            else live_px >= live_entry
+        )
 
         if entry_hit:
             base["action"] = "NO_TRADE"
@@ -732,7 +737,7 @@ def build_signal(symbol):
     max_cost = float(os.environ.get("MAX_COST_IN_R", 0.75))
 
     base.update({
-        "action": action,
+        "action": base.get("action", action),
         "entry": _f(level), "sl": _f(sl),
         "tp1": s.tps[0] if len(s.tps) > 0 else None,
         "tp2": s.tps[1] if len(s.tps) > 1 else None,
@@ -756,11 +761,12 @@ def build_signal(symbol):
                  "has_fvg": setup.has_fvg, "swept": setup.swept,
                  "imbalance": setup.imbalance,
                  "entry_mode": setup.entry_mode},
-        "reason": (f"1H {bias} + 5M "
-                   f"{'OB+FVG' if setup.has_fvg else 'OB'} after liquidity "
-                   f"sweep + 5M {trig} shift, entry at the order block "
-                   f"{setup.entry_mode}"),
-    })
+        "reason": (
+             f"1H {bias} + 5M "
+             f"{'OB+FVG' if setup.has_fvg else 'OB'} after liquidity sweep; "
+             f"5M trigger={trig}, entry at the order block "
+             f"{setup.entry_mode}"
+    ),
 
     # Manual-signal mode: this endpoint only produces a fresh setup. It does
     # not replay old candles, track a position, or change the trade to
