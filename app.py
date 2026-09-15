@@ -236,7 +236,7 @@ def _live_ws_worker():
 
             bars_5m, developing_5m = _resample_to_5m(live_1m)
 
-            if bars_5m:
+            if bars_5m or developing_5m:
                 with LIVE_WS_LOCK:
                     LIVE_WS[sym] = {
                         "bars": bars_5m,
