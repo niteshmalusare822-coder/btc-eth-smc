@@ -35,8 +35,8 @@ import poi_factors as poi
 TF_MINUTES = {"5m": 5, "15m": 15, "4h": 240}
 
 PARAMS = {
-    "swing_left": 2,
-    "swing_right": 2,
+    "swing_left": 1,
+    "swing_right": 1,
     "body_pct": 0.85,        # calibration quantile, not a hand-picked constant
     "max_age": 60,           # bars a 15M zone stays valid
     "sweep_window": 20,      # bars allowed between the sweep and the BOS
