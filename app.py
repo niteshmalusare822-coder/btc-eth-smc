@@ -575,7 +575,7 @@ def build_signal(symbol):
             else live_px >= live_entry
         )
 
-        if entry_hit:
+                if entry_hit:
             base["action"] = "NO_TRADE"
             base["blocker"] = "ENTRY_MISSED"
             base["reason"] = (
@@ -594,93 +594,46 @@ def build_signal(symbol):
             }
             return base
 
-        # Setup exists BEFORE the 5M trigger.
-        # The 5M trigger is an optional confirmation, NOT a hard entry gate.
-        if trig != expected_side:
-            distance_to_zone = (
-                live_px - live_top if expected_side == "bull"
-                else live_bottom - live_px
-            )
+        # --------------------------------------------------------------
+        # FORWARD ENTRY
+        # A valid 15M setup already gives us the planned entry.
+        # Do NOT wait for the 5M candle close.
+        # Do NOT require price to be near the zone.
+        #
+        # If the entry is still ahead, show BUY/SELL now so the trader
+        # can prepare the limit order before the market reaches it.
+        # --------------------------------------------------------------
+        setup = live_setup
+        side = expected_side
+        level = live_entry
+        action = "BUY" if side == "bull" else "SELL"
 
-            watch_atr = float(os.environ.get("WATCHING_ATR", 3.0))
-            near_zone = (
-                distance_to_zone >= 0
-                and distance_to_zone <= watch_atr * atr
-            )
-
-            # Price is still far from the setup zone.
-            # Keep watching, but do not block the setup because 5M has not
-            # triggered yet.
-            if not near_zone:
-                base["action"] = "WATCHING"
-                base["blocker"] = "WAITING_ENTRY_ZONE"
-                base["reason"] = (
-                    f"1H {bias} + valid 15M "
-                    f"{'OB+FVG' if live_setup.has_fvg else 'OB'} setup; "
-                    f"5M trigger not required yet"
-                )
-                base["live_price"] = _f(live_px)
-                base["entry"] = _f(live_entry)
-                base["distance_to_entry_pct"] = _f(
-                    (live_entry - live_px) / live_px * 100
-                    if live_px else None
-                )
-                base["tradeable"] = False
-                base["zone"] = {
-                    "top": _f(live_top),
-                    "bottom": _f(live_bottom),
-                    "has_fvg": live_setup.has_fvg,
-                    "swept": live_setup.swept,
-                    "imbalance": live_setup.imbalance,
-                    "entry_mode": live_setup.entry_mode,
-                }
-                return base
-
-            # Price is close enough to the valid 15M setup.
-            # Continue into the normal SL / TP / sizing logic without waiting
-            # for a closed 5M trigger.
-            setup = live_setup
-            side = expected_side
-            level = live_entry
-            action = "BUY" if side == "bull" else "SELL"
-
-            base["action"] = "ENTRY_READY"
-            base["blocker"] = "EARLY_ENTRY_READY"
-            base["reason"] = (
-                f"1H {bias} + valid 15M "
-                f"{'OB+FVG' if setup.has_fvg else 'OB'} setup; "
-                f"5M trigger optional for early entry"
-            )
-            base["live_price"] = _f(live_px)
-            base["entry"] = _f(level)
-            base["distance_to_entry_pct"] = _f(
-                (level - live_px) / live_px * 100
-                if live_px else None
-            )
-            base["zone"] = {
-                "top": _f(setup.zone_top),
-                "bottom": _f(setup.zone_bottom),
-                "has_fvg": setup.has_fvg,
-                "swept": setup.swept,
-                "imbalance": setup.imbalance,
-                "entry_mode": setup.entry_mode,
-            }
-
-        else:
-            # 5M trigger agrees with HTF bias and entry is still ahead.
-            # Continue into the existing sizing / TP / SL logic.
-            setup = live_setup
-            side = expected_side
-            level = live_entry
-            action = "BUY" if side == "bull" else "SELL"
-            base["action"] = action
-            base["blocker"] = "OK"
+        base["action"] = action
+        base["blocker"] = "FORWARD_ENTRY"
+        base["reason"] = (
+            f"1H {bias} + valid 15M "
+            f"{'OB+FVG' if setup.has_fvg else 'OB'} setup; "
+            f"forward {action} entry prepared before price reaches entry"
+        )
+        base["live_price"] = _f(live_px)
+        base["entry"] = _f(level)
+        base["distance_to_entry_pct"] = _f(
+            (level - live_px) / live_px * 100
+            if live_px else None
+        )
+        base["zone"] = {
+            "top": _f(setup.zone_top),
+            "bottom": _f(setup.zone_bottom),
+            "has_fvg": setup.has_fvg,
+            "swept": setup.swept,
+            "imbalance": setup.imbalance,
+            "entry_mode": setup.entry_mode,
+        }
 
     # Existing sizing / SL / TP logic continues unchanged.
     if action == "NO_TRADE" or setup is None:
         base["action"] = "NO_TRADE"
         return base
-
     # a NaN ATR would make structure_limit NaN, and every comparison against
     # NaN is False, which silently marked unreachable targets as reachable
     if not np.isfinite(atr) or atr <= 0:
