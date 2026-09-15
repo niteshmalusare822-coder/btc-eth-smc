@@ -645,7 +645,7 @@ def build_signal(symbol):
     # Backtest / mtf_engine decision logic is NOT modified.
     # This layer only classifies the live setup before execution.
     # ------------------------------------------------------------------
-        live_px = live_price_fresh(symbol)
+    live_px = live_price_fresh(symbol)
     if live_px is None:
         live_px = price
     live_px = float(live_px)
