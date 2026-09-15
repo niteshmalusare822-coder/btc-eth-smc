@@ -327,6 +327,16 @@ def live_bars_fresh(symbol, max_age=90):
     return entry["bars"]
 
 
+def live_developing_5m(symbol, max_age=90):
+    with LIVE_WS_LOCK:
+        entry = LIVE_WS.get(symbol)
+    if not entry:
+        return None
+    if time.time() - entry["updated_at"] > max_age:
+        return None
+    return entry.get("developing_5m")
+
+
 def live_price_fresh(symbol, max_age=10):
     with LIVE_WS_LOCK:
         entry = LIVE_PRICE.get(symbol)
@@ -335,7 +345,6 @@ def live_price_fresh(symbol, max_age=10):
     if time.time() - entry["updated_at"] > max_age:
         return None
     return entry["price"]
-
 
 def _merge_live_bars(df5, live_bars):
     if not live_bars:
