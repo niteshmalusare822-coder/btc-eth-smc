@@ -234,7 +234,7 @@ def _live_ws_worker():
             with LIVE_WS_LOCK:
                 LIVE_WS_1M_COUNTS[sym] = len(history_1m[sym])
 
-            bars_5m = _resample_to_5m(live_1m)
+            bars_5m, developing_5m = _resample_to_5m(live_1m)
 
             if bars_5m:
                 with LIVE_WS_LOCK:
