@@ -683,6 +683,7 @@ def build_signal(symbol):
         live_top = float(live_setup.zone_top)
         live_bottom = float(live_setup.zone_bottom)
 
+        # Entry reached: do NOT kill the setup immediately.
         # Entry has already been reached. Do not generate a new entry.
         entry_hit = (
             live_px <= live_entry
@@ -690,22 +691,27 @@ def build_signal(symbol):
             else live_px >= live_entry
         )
 
-        if entry_hit:
-            base["action"] = "NO_TRADE"
-            base["blocker"] = "ENTRY_MISSED"
+        base["live_price"] = _f(live_px)
+        base["planned_entry"] = _f(live_entry)
+        base["zone"] = {
+            "top": _f(live_top),
+            "bottom": _f(live_bottom),
+            "has_fvg": live_setup.has_fvg,
+            "swept": live_setup.swept,
+            "imbalance": live_setup.imbalance,
+            "entry_mode": live_setup.entry_mode,
+       )
+               
+       if entry_hit:
+            base["live_setup_active"] = True
+            # Keep current setup available for the next live-entry layer.
+            # Do not create a market order yet.
+            base["action"] = "WATCHING"
+            base["blocker"] = "ENTRY_REACHED"
             base["reason"] = (
-                f"{expected_side.upper()} entry already reached; "
-                f"live={live_px:.8g}, entry={live_entry:.8g}"
-            )
-            base["live_price"] = _f(live_px)
-            base["entry"] = _f(live_entry)
-            base["zone"] = {
-                "top": _f(live_top),
-                "bottom": _f(live_bottom),
-                "has_fvg": live_setup.has_fvg,
-                "swept": live_setup.swept,
-                "imbalance": live_setup.imbalance,
-                "entry_mode": live_setup.entry_mode,
+                  f"{expected_side.upper()} setup reached; "         
+                  f"live={live_px:.8g}, planned_entry={live_entry:.8g}; "
+                  f"waiting for live reaction"
             }
             return base
 
