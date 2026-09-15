@@ -132,7 +132,23 @@ class Swing:
 
 
 def find_swings(df: pd.DataFrame, left: int = 1, right: int = 1) -> list[Swing]:
+    """Fractal swings. left/right are sweep parameters."""
+    highs = df["high"].to_numpy()
+    lows = df["low"].to_numpy()
+    n = len(df)
+    swings: list[Swing] = []
 
+    for i in range(left, n - right):
+        h = highs[i]
+        if h > highs[i - left: i].max() and h > highs[i + 1: i + right + 1].max():
+            swings.append(Swing(i, float(h), "high", i + right))
+
+        lo = lows[i]
+        if lo < lows[i - left: i].min() and lo < lows[i + 1: i + right + 1].min():
+            swings.append(Swing(i, float(lo), "low", i + right))
+
+    swings.sort(key=lambda s: s.confirmed_idx)
+    return swings 
 
 def find_equal_levels(
     swings: list[Swing],
