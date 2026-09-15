@@ -240,6 +240,7 @@ def _live_ws_worker():
                 with LIVE_WS_LOCK:
                     LIVE_WS[sym] = {
                         "bars": bars_5m,
+                        "developing_5m": developing_5m,
                         "updated_at": time.time()
                     }
 
