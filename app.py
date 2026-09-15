@@ -645,10 +645,27 @@ def build_signal(symbol):
     # Backtest / mtf_engine decision logic is NOT modified.
     # This layer only classifies the live setup before execution.
     # ------------------------------------------------------------------
-    live_px = live_price_fresh(symbol)
+        live_px = live_price_fresh(symbol)
     if live_px is None:
         live_px = price
     live_px = float(live_px)
+
+    # Developing 5M candle from live WebSocket
+    developing_5m = live_developing_5m(symbol)
+
+    if developing_5m:
+        dev_open = float(developing_5m["open"])
+        dev_high = float(developing_5m["high"])
+        dev_low = float(developing_5m["low"])
+        dev_close = float(developing_5m["close"])
+
+        dev_body = abs(dev_close - dev_open)
+        dev_range = dev_high - dev_low
+    else:
+        dev_open = dev_high = dev_low = dev_close = None
+        dev_body = dev_range = 0.0
+
+    expected_side = (
 
     expected_side = (
         "bull" if bias == "BULLISH"
