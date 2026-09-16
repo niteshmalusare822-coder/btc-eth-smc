@@ -846,16 +846,50 @@ def build_signal(symbol):
 
         if entry_hit:
             base["live_setup_active"] = True
-            # Keep current setup available for the next live-entry layer.
-            # Do not create a market order yet.
-            base["action"] = "WATCHING"
-            base["blocker"] = "ENTRY_REACHED"
-            base["reason"] = (
-                f"{expected_side.upper()} setup reached; "
-                f"live={live_px:.8g}, planned_entry={live_entry:.8g}; "
-                f"waiting for live reaction"
+
+            dev_confirm = developing_5m_confirmation(
+                expected_side,
+                dev_open,
+                dev_high,
+                dev_low,
+                dev_close,
+                atr,
             )
-            return base
+
+            base["developing_5m_confirmation"] = bool(dev_confirm)
+
+            # Live execution layer:
+            # Do not wait for the developing 5M candle to close.
+            # 15M SMC remains the setup source.
+            # 5M + 1M are used only for live execution confirmation.
+            if dev_confirm and one_min_reaction:
+                base["action"] = (
+                    "BUY" if expected_side == "bull" else "SELL"
+                )
+                base["blocker"] = "LIVE_MARKET_ENTRY"
+                base["reason"] = (
+                    f"{expected_side.upper()} 15M SMC setup reached; "
+                    f"developing 5M confirms direction and "
+                    f"live 1M reaction confirms entry"
+                )
+
+                # Market execution uses the actual current live price.
+                setup = live_setup
+                side = expected_side
+                level = live_px
+                action = base["action"]
+
+            else:
+                base["action"] = "WATCHING"
+                base["blocker"] = "ENTRY_REACHED"
+                base["reason"] = (
+                    f"{expected_side.upper()} setup reached; "
+                    f"live={live_px:.8g}, planned_entry={live_entry:.8g}; "
+                    f"waiting for live confirmation "
+                    f"(5M={'YES' if dev_confirm else 'NO'}, "
+                    f"1M={'YES' if one_min_reaction else 'NO'})"
+                )
+                return base
 
         # --------------------------------------------------------------
         # FORWARD ENTRY
