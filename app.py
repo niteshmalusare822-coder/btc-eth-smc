@@ -688,10 +688,17 @@ def _final_tp_hit(ticket, live_px):
     if action == "BUY":
         if entry is not None and tp3 <= entry:
             return False
+        # A BUY limit only fills at or below entry. If price never came
+        # down to entry, the trade never started — price sitting above
+        # TP3 means the move happened without us, not that TP3 was hit.
+        if entry is not None and float(live_px) > entry:
+            return False
         return float(live_px) >= tp3
 
     if action == "SELL":
         if entry is not None and tp3 >= entry:
+            return False
+        if entry is not None and float(live_px) < entry:
             return False
         return float(live_px) <= tp3
 
