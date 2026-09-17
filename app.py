@@ -673,6 +673,60 @@ def _tp_price(ticket, key):
     except (TypeError, ValueError):
         return None
 
+def _forward_entry_stale(entry, sl, side, live_px, stale_r=3.0):
+    """
+    Detect a stale unfilled FORWARD_ENTRY.
+
+    The order is considered stale when live price has moved against the
+    planned limit entry by >= stale_r R before the entry could fill.
+
+    BUY:
+        entry > SL
+        stale when live price >= entry + stale_r * risk
+
+    SELL:
+        SL > entry
+        stale when live price <= entry - stale_r * risk
+
+    This is intentionally independent from TP3 logic.
+    """
+    try:
+        entry = float(entry)
+        sl = float(sl)
+        live_px = float(live_px)
+        stale_r = float(stale_r)
+    except (TypeError, ValueError):
+        return False, None
+
+    if not all(np.isfinite(x) for x in (entry, sl, live_px, stale_r)):
+        return False, None
+
+    if stale_r <= 0:
+        return False, None
+
+    side = str(side or "").lower()
+
+    if side == "bull":
+        risk = entry - sl
+
+        if risk <= 0:
+            return False, None
+
+        stale_level = entry + (stale_r * risk)
+
+        return live_px >= stale_level, stale_level
+
+    if side == "bear":
+        risk = sl - entry
+
+        if risk <= 0:
+            return False, None
+
+        stale_level = entry - (stale_r * risk)
+
+        return live_px <= stale_level, stale_level
+
+    return False, None
 
 def _final_tp_hit(ticket, live_px):
     """True when live price has reached the ticket's TP3."""
@@ -827,11 +881,50 @@ def build_signal(symbol):
         else []
     )
 
-    if live_setups:
+        if live_setups:
         live_setup = live_setups[0]
         live_entry = float(live_setup.entry_level)
         live_top = float(live_setup.zone_top)
         live_bottom = float(live_setup.zone_bottom)
+
+        # --------------------------------------------------------------
+        # STALE FORWARD ENTRY GUARD
+        #
+        # A FORWARD_ENTRY is an unfilled resting limit.
+        # If price has already moved >= 3R away from the entry in the
+        # direction of the move, the setup is stale and must NOT remain
+        # as an actionable BUY/SELL ticket.
+        #
+        # IMPORTANT:
+        # This is separate from _final_tp_hit().
+        # _final_tp_hit() only handles TP3 after an entry was actually
+        # reached. This guard handles an entry that was never reached.
+        # --------------------------------------------------------------
+        stale_forward_entry, stale_level = _forward_entry_stale(
+            entry=live_entry,
+            sl=float(live_setup.stop_level),
+            side=expected_side,
+            live_px=live_px,
+            stale_r=3.0,
+        )
+
+        if stale_forward_entry:
+            base["action"] = "NO_TRADE"
+            base["blocker"] = "FORWARD_ENTRY_STALE"
+            base["reason"] = (
+                f"forward entry stale; live={live_px:.8g}, "
+                f"entry={live_entry:.8g}, "
+                f"stale_level={stale_level:.8g}; "
+                f"price moved >=3R before entry was reached"
+            )
+            base["live_price"] = _f(live_px)
+            base["planned_entry"] = _f(live_entry)
+            base["stale_level"] = _f(stale_level)
+            base["stale_r"] = 3.0
+            base["tradeable"] = False
+            base["setup_status"] = "STALE"
+            base["order_status"] = "CANCELLED"
+            return base
 
         # Entry has already been reached. Do not generate a new entry.
         entry_hit = (
