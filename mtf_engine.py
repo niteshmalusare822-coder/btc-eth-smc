@@ -677,6 +677,11 @@ BLOCKERS = {
     "SETUP_EXPIRED": "15M setup aged out",
     "SETUP_MITIGATED": "15M zone already invalidated by price",
     "AWAITING_RETEST": "POI formed but price has not returned to it",
+
+    # FORWARD_ENTRY stale protection
+    # Used by app.py when an unfilled limit entry has moved >= 3R away.
+    "FORWARD_ENTRY_STALE":
+        "Forward entry is stale; price moved too far before the entry was reached",
 }
 
 
