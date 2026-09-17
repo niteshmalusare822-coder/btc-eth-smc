@@ -881,7 +881,7 @@ def build_signal(symbol):
         else []
     )
 
-        if live_setups:
+    if live_setups:
         live_setup = live_setups[0]
         live_entry = float(live_setup.entry_level)
         live_top = float(live_setup.zone_top)
