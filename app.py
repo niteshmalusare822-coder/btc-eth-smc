@@ -728,7 +728,41 @@ def _forward_entry_stale(entry, sl, side, live_px, stale_r=3.0):
 
     return False, None
 
-def _final_tp_hit(ticket, live_px):
+
+def _forward_entry_near_miss(df5, setup, side, entry, sl, live_px,
+                             near_r=0.25, away_r=0.75):
+    """Detect a forward limit that was approached/touched and then rejected."""
+    try:
+        entry, sl, live_px = float(entry), float(sl), float(live_px)
+        near_r, away_r = float(near_r), float(away_r)
+        ts = pd.to_datetime(df5["ts"], errors="coerce")
+        start_ts = pd.Timestamp(setup.confirmed_ts)
+    except Exception:
+        return False, None
+    risk = (entry - sl) if side == "bull" else (sl - entry)
+    if risk <= 0 or not np.isfinite(risk):
+        return False, None
+    mask = ts >= start_ts
+    if not bool(mask.any()):
+        return False, None
+    lows = pd.to_numeric(df5.loc[mask, "low"], errors="coerce").to_numpy()
+    highs = pd.to_numeric(df5.loc[mask, "high"], errors="coerce").to_numpy()
+    if side == "bull":
+        lows = lows[np.isfinite(lows)]
+        if lows.size == 0:
+            return False, None
+        approached = float(np.min(lows)) <= entry + near_r * risk
+        reject_level = entry + away_r * risk
+        return bool(approached and live_px >= reject_level), reject_level
+    if side == "bear":
+        highs = highs[np.isfinite(highs)]
+        if highs.size == 0:
+            return False, None
+        approached = float(np.max(highs)) >= entry - near_r * risk
+        reject_level = entry - away_r * risk
+        return bool(approached and live_px <= reject_level), reject_level
+    return False, None
+\ndef _final_tp_hit(ticket, live_px):
     """True when live price has reached the ticket's TP3."""
     tp3 = _tp_price(ticket, "tp3")
     if tp3 is None or live_px is None:
@@ -905,7 +939,7 @@ def build_signal(symbol):
             sl=float(live_setup.stop_level),
             side=expected_side,
             live_px=live_px,
-            stale_r=3.0,
+            stale_r=float(os.environ.get("FORWARD_STALE_R", 3.0)),
         )
 
         if stale_forward_entry:
@@ -926,7 +960,7 @@ def build_signal(symbol):
             base["order_status"] = "CANCELLED"
             return base
 
-        # Entry has already been reached. Do not generate a new entry.
+        # Forward-entry lifecycle: after a closed 5M candle has approached\n        # or touched the planned entry, a material rejection cancels the old\n        # pending limit. This is deterministic across Render restarts.\n        try:\n            near_r = float(os.environ.get("FORWARD_NEAR_MISS_R", 0.25))\n            away_r = float(os.environ.get("FORWARD_REJECT_R", 0.75))\n        except (TypeError, ValueError):\n            near_r, away_r = 0.25, 0.75\n\n        near_miss, reject_level = _forward_entry_near_miss(\n            df5, live_setup, expected_side, live_entry,\n            float(live_setup.stop_level), live_px, near_r, away_r\n        )\n        if near_miss and not entry_hit:\n            base["action"] = "NO_TRADE"\n            base["blocker"] = "FORWARD_ENTRY_NEAR_MISS"\n            base["reason"] = (\n                f"forward {expected_side.upper()} entry was approached/touched " +\n                f"and then rejected; live={live_px:.8g}, entry={live_entry:.8g}, " +\n                f"reject_level={reject_level:.8g}; pending limit cancelled"\n            )\n            base["live_price"] = _f(live_px)\n            base["planned_entry"] = _f(live_entry)\n            base["tradeable"] = False\n            base["setup_status"] = "REJECTED"\n            base["order_status"] = "CANCELLED"\n            base["near_miss_r"] = _f(near_r)\n            base["reject_r"] = _f(away_r)\n            base["reject_level"] = _f(reject_level)\n            return base\n\n        # Entry has already been reached. Do not generate a new entry.
         entry_hit = (
             live_px <= live_entry
             if expected_side == "bull"
