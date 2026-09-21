@@ -1104,7 +1104,16 @@ def build_signal(symbol):
         "fees_inr": _f(s.fees_inr), "slippage_inr": _f(s.slippage_inr),
         "sl_distance_pct": _f(s.sl_distance_pct),
         "cost_in_r": _f(s.cost_in_r),
-        "order_type": "resting limit — fills on a later candle, or not at all",
+        # Preserve the actual execution route. A confirmed live-market
+        # entry must never be relabeled as a resting LIMIT after sizing.
+        "order_type": (
+            "MARKET" if base.get("blocker") == "LIVE_MARKET_ENTRY"
+            else "LIMIT"
+        ),
+        "execution": (
+            "MARKET" if base.get("blocker") == "LIVE_MARKET_ENTRY"
+            else "LIMIT"
+        ),
         "distance_to_entry_pct": _f((level - price) / price * 100)
         if price else None,
         "tradeable": bool(np.isfinite(s.cost_in_r) and s.cost_in_r <= max_cost),
