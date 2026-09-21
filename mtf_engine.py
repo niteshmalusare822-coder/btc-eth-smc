@@ -664,6 +664,14 @@ def active_setups_at(setups, ts, side=None):
         if side and s.side != side:
             continue
         out.append(s)
+
+    # Prefer the FRESHEST confirmed setup.  The previous implementation
+    # returned setups in creation order, so decide() and app.py could select
+    # an older live zone while a newer valid 15M setup was already available.
+    # That makes the planned entry stale even though a newer setup exists.
+    # This changes selection only; it does not loosen any SMC gate.
+    out.sort(key=lambda s: (s.confirmed_ts, s.retest_ts or s.confirmed_ts),
+             reverse=True)
     return out
 
 
