@@ -255,7 +255,14 @@ def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
         "bars_to_fill": fill_i - sig_i,
         "bias_1h": bias, "setup_15m": setup, "trigger_5m": trigger,
         "flags": dict(flags or {}),
-        "score": int(sum(v for k, v in (flags or {}).items() if v is True) * 0),
+        "score": (
+            (2 if (flags or {}).get("htf_1h_bias") else 0)
+            + (2 if (flags or {}).get("structure_15m") else 0)
+            + (2 if (flags or {}).get("liquidity_sweep") else 0)
+            + (1 if (flags or {}).get("ob_fvg_15m") else 0)
+            + (1 if (flags or {}).get("imbalance") else 0)
+            + (2 if (flags or {}).get("confirmation_5m") else 0)
+        ),
         "side": direction,
         "signal_level": round(level, 8),
         "actual_entry": round(entry, 8),
