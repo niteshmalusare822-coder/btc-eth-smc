@@ -93,10 +93,15 @@ function chip(label, value, on) {
 function renderFlat(s) {
   const bias = s.htf_bias_1h || "—";
   const trig = s.trigger_5m || "none";
-  const status = s.action === "WATCHING" ? "WATCHING"
+  const cancelled = s.blocker === "FORWARD_ENTRY_NEAR_MISS" ||
+    s.blocker === "FORWARD_ENTRY_STALE";
+  const status = cancelled
+    ? ((bias === "BULLISH" ? "BUY" : bias === "BEARISH" ? "SELL" : "ENTRY") + " CANCELLED")
+    : s.action === "WATCHING" ? "WATCHING"
     : s.action === "ENTRY_READY" ? "ENTRY READY"
     : "NO TRADE";
-  const statusClass = s.action === "WATCHING" ? "watching"
+  const statusClass = cancelled ? "flat"
+    : s.action === "WATCHING" ? "watching"
     : s.action === "ENTRY_READY" ? "ready"
     : "flat";
   return `<div class="sig">

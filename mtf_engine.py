@@ -690,6 +690,8 @@ BLOCKERS = {
     # Used by app.py when an unfilled limit entry has moved >= 3R away.
     "FORWARD_ENTRY_STALE":
         "Forward entry is stale; price moved too far before the entry was reached",
+    "FORWARD_ENTRY_NEAR_MISS":
+        "Forward entry was approached/touched and then rejected; pending limit cancelled",
 }
 
 
