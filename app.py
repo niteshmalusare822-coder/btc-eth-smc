@@ -762,7 +762,8 @@ def _forward_entry_near_miss(df5, setup, side, entry, sl, live_px,
         reject_level = entry - away_r * risk
         return bool(approached and live_px <= reject_level), reject_level
     return False, None
-\ndef _final_tp_hit(ticket, live_px):
+
+def _final_tp_hit(ticket, live_px):
     """True when live price has reached the ticket's TP3."""
     tp3 = _tp_price(ticket, "tp3")
     if tp3 is None or live_px is None:
