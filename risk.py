@@ -173,6 +173,13 @@ def size_position(symbol, direction, entry, sl,
     max_risk_inr = MAX_RISK_INR if max_risk_inr is None else float(max_risk_inr)
     usdt_inr = USDT_INR if usdt_inr is None else float(usdt_inr)
 
+    if (
+        not np.isfinite(capital_inr) or capital_inr <= 0
+        or not np.isfinite(max_risk_inr) or max_risk_inr <= 0
+        or not np.isfinite(usdt_inr) or usdt_inr <= 0
+    ):
+        return Sizing(False, "invalid capital, risk cap or USDT/INR")
+
     try:
         entry, sl = float(entry), float(sl)
     except (TypeError, ValueError):
@@ -213,6 +220,18 @@ def size_position(symbol, direction, entry, sl,
         qty *= max_notional / notional_inr
         notional_inr = max_notional
         capped = True
+
+        # Re-check the venue minimum AFTER leverage has capped the position.
+        # Previously the minimum was checked only before this shrink, so a
+        # leverage-capped order could pass MIN_NOTIONAL_INR and then be below
+        # the venue minimum when actually submitted.
+        if notional_inr < MIN_NOTIONAL_INR:
+            return Sizing(
+                False,
+                f"notional Rs.{notional_inr:.0f} below configured minimum "
+                f"Rs.{MIN_NOTIONAL_INR:.0f} after leverage cap "
+                f"(MIN_NOTIONAL_INR)"
+            )
 
     lev_used = round(notional_inr / capital_inr, 2) if capital_inr > 0 else 0.0
     margin_inr = notional_inr / lev_allowed if lev_allowed > 0 else notional_inr
@@ -257,7 +276,9 @@ def _rupee_targets(direction, entry, qty, usdt_inr, sl_dist,
     """Build TP levels from confirmed market structure.
 
     structure_targets contains causal 15M opposing swing/liquidity levels.
-    When supplied, those levels become TP1/TP2/TP3.
+    When supplied, those levels become TP1/TP2/TP3. The function still
+    validates that every returned target is on the profitable side of entry;
+    invalid levels are skipped rather than forced into the ticket.
 
     No future swing should reach this function: the caller is responsible
     for passing only structure levels confirmed at the signal timestamp.
