@@ -82,6 +82,8 @@ import entry_quality as EQ
 import mtf_engine as mtf
 import risk as R
 
+print(f"[TRADE_LOG] Time: {datetime.now()} | Symbol: {symbol} | Dir: {direction} | Entry: {entry} | SL: {sl}")
+
 from datetime import datetime, timezone, timedelta
 
 def format_ist_time(ts_str):
