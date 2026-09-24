@@ -84,7 +84,15 @@ import risk as R
 
 import datetime
 
-print(f"[TRADE_LOG] Time: {datetime.datetime.now()} | Symbol: {symbol} | Dir: {direction} | Entry: {entry} | SL: {sl}")
+import datetime
+
+def log_trade_signal(symbol, direction, entry, sl):
+    """ट्रेड सिग्नल सुरक्षितपणे लॉग करण्यासाठी फंक्शन"""
+    try:
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[TRADE_LOG] Time: {now_str} | Symbol: {symbol} | Dir: {direction} | Entry: {entry} | SL: {sl}")
+    except Exception as e:
+        print(f"[TRADE_LOG_ERROR] Failed to log trade: {e}")
 
 from datetime import datetime, timezone, timedelta
 
