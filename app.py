@@ -1457,6 +1457,30 @@ def report(symbol):
         traceback.print_exc()
         return ok({"symbol": symbol, "error": str(e)}, 500)
 
+@app.route("/api/all-reports")
+def all_reports_route():
+    """सर्व कॉइन्सचे बॅकटेस्ट रिपोर्ट्स एकाच JSON मध्ये मिळवण्यासाठी (सीमित डेटासह)"""
+    bars = bars_arg(default=1000, cap=2000) # सर्व्हर क्रॅश होऊ नये म्हणून bars कमी ठेवले आहेत
+    all_reports = {}
+    
+    for s in SYMBOLS:
+        try:
+            res, _ = report_for(s, bars)
+            payload = dict(res)
+            # रेकॉर्ड मोठा होऊ नये म्हणून trade_log काढून टाकला आहे
+            payload.pop("trade_log", None)
+            v = payload.get("verdict") or {}
+            payload["verdict_code"] = v.get("verdict")
+            all_reports[s] = payload
+        except Exception as e:
+            all_reports[s] = {"error": str(e)}
+            
+    return ok({
+        "status": "success",
+        "bars_used": bars,
+        "total_symbols": len(SYMBOLS),
+        "reports": all_reports
+    })
 
 @app.route("/api/trades/<symbol>")
 def trades(symbol):
