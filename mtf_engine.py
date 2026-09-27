@@ -43,7 +43,7 @@ PARAMS = {
     # OB entry model from the source material: "wick", "body" or "50".
     # OTE is a different school's entry and is no longer used for order blocks.
     "ob_entry_mode": "body",
-    "require_ob_sweep": True,        # the OB candle must take prior liquidity
+    "require_ob_sweep": False,        # the OB candle must take prior liquidity
     "require_ob_imbalance": True,    # a gap must sit next to the OB
     "imbalance_window": 3,
     "stop_buffer_frac": 0.15,        # padding beyond the OB wick
