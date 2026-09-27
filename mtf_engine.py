@@ -696,85 +696,259 @@ BLOCKERS = {
 
 
 def decide(bias, trigger, setups, ts):
-    """The one decision function. Returns (action, setup, side, level, reason).
+    """Main decision uses 4H bias + 15M setup.
 
-    NO PRICE ARGUMENTS. A resting limit is justified at the close of bar i and
-    the fill is a separate step starting at bar i+1, so the decision can never
-    read the range of the bar it was taken on.
+    5M trigger is INFORMATION ONLY.
+    It must never block a valid setup.
 
-    Every gate is an AND. `reason` is now a BLOCKERS key rather than free text,
-    so the exact gate that stopped a trade can be counted across a whole
-    history instead of guessed at.
+    Returns:
+        (action, setup, side, level, reason)
     """
-    action, s, side, level, code = _evaluate(bias, trigger, setups, ts)
+    action, s, side, level, code = _evaluate(
+        bias,
+        trigger,
+        setups,
+        ts,
+    )
+
     return action, s, side, level, code
 
 
 def _evaluate(bias, trigger, setups, ts):
+    # ------------------------------------------------------------
+    # 1. 4H BIAS = mandatory
+    # ------------------------------------------------------------
     if bias not in ("BULLISH", "BEARISH"):
-        return "NO_TRADE", None, None, None, "HTF_NEUTRAL"
+        return (
+            "NO_TRADE",
+            None,
+            None,
+            None,
+            "HTF_NEUTRAL",
+        )
 
     side = "bull" if bias == "BULLISH" else "bear"
 
-    #if trigger not in ("bull", "bear"):
-        #return "NO_TRADE", None, None, None, "NO_TRIGGER"
-    #if trigger != side:
-        #return "NO_TRADE", None, None, None, "TRIGGER_WRONG_WAY"
+    # ------------------------------------------------------------
+    # 2. 5M TRIGGER = INFORMATION ONLY
+    #
+    # IMPORTANT:
+    # Do NOT block the trade here.
+    #
+    # trigger can be:
+    #   bull
+    #   bear
+    #   None / "none"
+    #
+    # All of these are allowed to continue to the 15M setup gate.
+    # ------------------------------------------------------------
 
-    live = active_setups_at(setups, ts, side)
+    # ------------------------------------------------------------
+    # 3. 15M SETUP = mandatory
+    # ------------------------------------------------------------
+    live = active_setups_at(
+        setups,
+        ts,
+        side,
+    )
+
     if not live:
-        # separate "nothing at all" from "something, wrong side / stale", because
-        # the fix for each is different
-        any_side = active_setups_at(setups, ts)
+
+        # Check whether a setup exists on the opposite side.
+        any_side = active_setups_at(
+            setups,
+            ts,
+        )
+
         if any_side:
-            return "NO_TRADE", None, None, None, "SETUP_WRONG_WAY"
-        # The blocker code is a MEASUREMENT, so it has to describe THIS bar.
-        # The old version ran any() over every setup ever confirmed, on either
-        # side, expired or not. A single stale WAITING_FOR_RETEST setup from
-        # days earlier pinned the code to AWAITING_RETEST indefinitely, so the
-        # blocker histogram counted the wrong gate and anything concluded from
-        # it was a conclusion about the wrong thing.
-        #
-        # Only setups that COULD have been active at ts are candidates: right
-        # side, already confirmed, not yet aged out.
-        cands = [x for x in setups
-                 if x.side == side
-                 and x.confirmed_ts <= ts <= x.expires_ts]
-        alive = [x for x in cands
-                 if not (x.dead_ts is not None and x.dead_ts < ts)]
-        if any(x.state == "WAITING_FOR_RETEST"
-               or (x.retest_ts is not None and x.retest_ts > ts)
-               for x in alive):
-            return "NO_TRADE", None, None, None, "AWAITING_RETEST"
+            return (
+                "NO_TRADE",
+                None,
+                None,
+                None,
+                "SETUP_WRONG_WAY",
+            )
+
+        # Only setups which could actually have been active
+        # at this timestamp are considered.
+        cands = [
+            x for x in setups
+            if (
+                x.side == side
+                and x.confirmed_ts <= ts <= x.expires_ts
+            )
+        ]
+
+        alive = [
+            x for x in cands
+            if not (
+                x.dead_ts is not None
+                and x.dead_ts < ts
+            )
+        ]
+
+        # Setup exists but price has not retested the POI yet.
+        if any(
+            x.state == "WAITING_FOR_RETEST"
+            or (
+                x.retest_ts is not None
+                and x.retest_ts > ts
+            )
+            for x in alive
+        ):
+            return (
+                "NO_TRADE",
+                None,
+                None,
+                None,
+                "AWAITING_RETEST",
+            )
+
+        # Setup existed in its valid time window but got invalidated.
         if cands:
-            # in-window candidates existed and none survived: price killed them
-            return "NO_TRADE", None, None, None, "SETUP_MITIGATED"
-        if any(x.side == side and x.confirmed_ts <= ts for x in setups):
-            return "NO_TRADE", None, None, None, "SETUP_EXPIRED"
-        return "NO_TRADE", None, None, None, "NO_SETUP"
+            return (
+                "NO_TRADE",
+                None,
+                None,
+                None,
+                "SETUP_MITIGATED",
+            )
 
+        # A setup existed previously but has expired.
+        if any(
+            x.side == side
+            and x.confirmed_ts <= ts
+            for x in setups
+        ):
+            return (
+                "NO_TRADE",
+                None,
+                None,
+                None,
+                "SETUP_EXPIRED",
+            )
+
+        return (
+            "NO_TRADE",
+            None,
+            None,
+            None,
+            "NO_SETUP",
+        )
+
+    # ------------------------------------------------------------
+    # 4. VALID 15M SETUP
+    #
+    # 5M trigger does NOT matter here.
+    # ------------------------------------------------------------
     s = live[0]
-    return ("BUY" if side == "bull" else "SELL"), s, side, s.entry_level, "OK"
 
+    action = (
+        "BUY"
+        if side == "bull"
+        else "SELL"
+    )
+
+    return (
+        action,
+        s,
+        side,
+        s.entry_level,
+        "OK",
+    )
 
 def gate_state(bias, trigger, setups, ts):
-    """Every condition evaluated, whether or not it blocked. This is what the
-    dashboard shows instead of a bare NO TRADE."""
-    live_any = active_setups_at(setups, ts)
-    want = "bull" if bias == "BULLISH" else "bear" if bias == "BEARISH" else None
-    live_side = active_setups_at(setups, ts, want) if want else []
-    s = live_side[0] if live_side else (live_any[0] if live_any else None)
-    action, _, _, _, code = _evaluate(bias, trigger, setups, ts)
+    """Show all conditions.
+
+    5M trigger is informational only and never blocks a trade.
+    """
+
+    live_any = active_setups_at(
+        setups,
+        ts,
+    )
+
+    want = (
+        "bull"
+        if bias == "BULLISH"
+        else "bear"
+        if bias == "BEARISH"
+        else None
+    )
+
+    live_side = (
+        active_setups_at(setups, ts, want)
+        if want
+        else []
+    )
+
+    s = (
+        live_side[0]
+        if live_side
+        else (
+            live_any[0]
+            if live_any
+            else None
+        )
+    )
+
+    action, _, _, _, code = _evaluate(
+        bias,
+        trigger,
+        setups,
+        ts,
+    )
+
     return {
         "htf_bias_4h": bias,
+
         "setup_15m": bool(live_any),
-        "setup_15m_side": (s.side if s else None),
+
+        "setup_15m_side": (
+            s.side
+            if s
+            else None
+        ),
+
+        # INFORMATION ONLY
         "trigger_5m": trigger or "none",
-        "liquidity_sweep": bool(s.swept) if s else False,
-        "imbalance": bool(s.imbalance) if s else False,
-        "order_block": bool(s and s.poi_quality in ("OB", "OB+FVG")),
-        "fvg": bool(s.has_fvg) if s else False,
+
+        "trigger_5m_role": "INFORMATION_ONLY",
+
+        "liquidity_sweep": (
+            bool(s.swept)
+            if s
+            else False
+        ),
+
+        "imbalance": (
+            bool(s.imbalance)
+            if s
+            else False
+        ),
+
+        "order_block": (
+            bool(
+                s
+                and s.poi_quality in (
+                    "OB",
+                    "OB+FVG",
+                )
+            )
+        ),
+
+        "fvg": (
+            bool(s.has_fvg)
+            if s
+            else False
+        ),
+
         "action": action,
+
         "blocker": code,
-        "blocker_text": BLOCKERS.get(code, code),
+
+        "blocker_text": BLOCKERS.get(
+            code,
+            code,
+        ),
     }
