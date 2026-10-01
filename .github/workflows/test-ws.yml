@@ -5,7 +5,7 @@ on:
   push:
     branches: [ main ]
   schedule:
-    - cron: '37 20 * * *'  # रोज रात्री 2:07 AM IST (20:37 UTC)
+    - cron: 'cron: '0 21 * * *'  # रोज रात्री 2:30 AM IST (21:00 UTC)
     
 permissions:
   contents: write  # <<-- He add kelyane GitHub Action la write permission bhetel
