@@ -276,3 +276,40 @@ def main():
 
 if __name__ == "__main__":
     main()
+def update_markdown_report(pool, rows):
+    """Auto-update AUDIT_ENHANCEMENTS.md with latest pooled results and per-symbol table."""
+    md_content = f"""# SMC MTF Strategy: Deep-Dive Audit & Production Enhancements (Auto-Updated)
+
+**Author:** Elite Quant Algorithmic Trader | SMC Specialist  
+**Date:** 2026-10-02 (Auto-Generated via collect.py)  
+**Objective:** Maximize win rate, reduce false positives, optimize profit factors based on live/pooled OOS data.
+
+## Executive Summary & Latest Pooled Metrics
+- **Total Symbols Usable:** {pool.get('symbols', 0)}
+- **Total Trades Pooled:** {pool.get('total_trades', 0)}
+- **Pooled Edge (INR):** {pool.get('pooled_edge_inr', 0)}
+- **Standard Error:** {pool.get('standard_error', 0)}
+- **Sigma (Z-Score):** {pool.get('sigma', 0)}
+- **Significant at 95%:** {pool.get('significant_at_95pct', False)}
+- **Pooled Net PnL (INR):** {pool.get('pooled_net_inr', 0)}
+
+## Verdict
+> {pool.get('verdict', 'No verdict available')}
+
+## Per-Symbol Performance Table (Latest Run)
+| Symbol | Trades | Win% | PF | Expectancy (INR) | Random Mean | Edge | Net PnL (INR) | WF Folds |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+"""
+    for r in rows:
+        if r.get("error") or not r.get("trades"):
+            continue
+        edge = (r["expectancy_inr"] - r["random_mean_expectancy"] if r.get("random_mean_expectancy") is not None else 0)
+        md_content += f"| {r['symbol']} | {r['trades']} | {r.get('win_rate_pct', 0)}% | {r.get('profit_factor', 0)} | {r.get('expectancy_inr', 0)} | {r.get('random_mean_expectancy', 0)} | {edge:+.1f} | {r.get('net_pnl_inr', 0)} | {r.get('wf', 'N/A')} |\n"
+
+    md_content += """
+---
+*Note: This report is dynamically updated by the automated daily GitHub Action using `collect.py`.*
+"""
+    with open("AUDIT_ENHANCEMENTS.md", "w") as f:
+        f.write(md_content)
+    print("AUDIT_ENHANCEMENTS.md successfully updated with latest metrics!")
