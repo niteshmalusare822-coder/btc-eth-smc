@@ -1,29 +1,6 @@
 #!/usr/bin/env python3
 """
 collect.py — pool trades across many symbols to reach a decidable sample.
-
-WHY THIS EXISTS
----------------
-On four symbols over 36 days the SMC arm produced 55 out-of-sample trades and a
-pooled edge of -0.09 sigma against the matched random baseline. That is not a
-negative result; it is not a result at all. The sample cannot distinguish an
-edge of +50 rupees per trade from an edge of zero.
-
-Nothing about the strategy is changed here. The only variable is how many
-independent trades the same rules are measured over.
-
-WHAT IT DOES NOT DO
--------------------
-It does not search for the best symbols. Every symbol that returns usable data
-is included and reported, winners and losers alike. Dropping the losers after
-seeing the results is how a backtest gets fabricated, so the per-symbol table
-is printed in full and the pooled figure uses all of it.
-
-USAGE
-    python3 collect.py --discover                 list tradeable CoinDCX pairs
-    python3 collect.py --symbols BTC,ETH,SOL,XRP  run those
-    python3 collect.py --from-file symbols.txt    run a saved list
-    python3 collect.py --symbols ... --bars 20000 --out run1.json
 """
 
 from __future__ import annotations
@@ -38,18 +15,13 @@ import numpy as np
 
 import backtest as B
 import data as D
+import research_data as RD  # <<-- Bybit research loader import kelay
 
-ARM = "SMC"                 # the statistically testable arm
+ARM = "SMC"
 MATCHED = "MATCHED_RANDOM_vs_SMC"
 
 
-# ---------------------------------------------------------------------------
 def discover_pairs(limit=60):
-    """Ask CoinDCX which futures pairs exist, so the symbol list is not guessed.
-
-    data.PAIR_MAP only knows four. Anything else has to be looked up, and a
-    wrong pair string fails silently as "no data" rather than as an error.
-    """
     import requests
     urls = ["https://api.coindcx.com/exchange/v1/derivatives/futures/data/active_instruments",
             "https://public.coindcx.com/market_data/v3/current_prices/futures/rt"]
@@ -72,15 +44,13 @@ def discover_pairs(limit=60):
 
 
 def register(symbol, pair):
-    """Teach data.py about a pair for this process only. Nothing is written to
-    the repository, so a bad discovery cannot poison the deployed config."""
     D.PAIR_MAP[symbol] = pair
     D.CCXT_MAP.setdefault(symbol, f"{symbol}/USDT:USDT")
 
 
-# ---------------------------------------------------------------------------
 def run_symbol(symbol, bars, cfg):
-    frames, meta = D.load_mtf(symbol, bars)
+    # D.load_mtf (CoinDCX) aivaji RD.load_research (Bybit) vapartoy, mhanje gap yenar nahi
+    frames, meta = RD.load_research(symbol, bars)
     if frames is None:
         return {"symbol": symbol, "error": (meta or {}).get("error", "no data")}
     rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["1h"],
@@ -112,11 +82,6 @@ def run_symbol(symbol, bars, cfg):
 
 
 def pooled(rows):
-    """Inverse-variance weighted edge across symbols.
-
-    Weighting by 1/sigma^2 rather than averaging expectancies stops a symbol
-    with 4 noisy trades from carrying the same weight as one with 40.
-    """
     usable = [r for r in rows
               if r.get("trades") and r.get("random_std_expectancy")
               and r.get("expectancy_inr") is not None
@@ -177,7 +142,6 @@ def pooled(rows):
 
 
 def update_markdown_report(pool, rows):
-    """Auto-update AUDIT_ENHANCEMENTS.md with latest pooled results and per-symbol table."""
     md_content = f"""# SMC MTF Strategy: Deep-Dive Audit & Production Enhancements (Auto-Updated)
 
 **Author:** Elite Quant Algorithmic Trader | SMC Specialist  
@@ -215,7 +179,6 @@ def update_markdown_report(pool, rows):
     print("AUDIT_ENHANCEMENTS.md successfully updated with latest metrics!")
 
 
-# ---------------------------------------------------------------------------
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--symbols", help="comma separated, e.g. BTC,ETH,SOL")
@@ -234,8 +197,6 @@ def main():
         print(f"{len(pairs)} futures pairs found:\n")
         for pr in pairs:
             print(f"  {pr.replace('B-', '').replace('_USDT', ''):10s} {pr}")
-        print("\nSave the ones you want, then run:")
-        print("  python3 collect.py --symbols BTC,ETH,SOL,XRP")
         return
 
     if a.from_file:
@@ -272,37 +233,7 @@ def main():
                   f"{r['coverage_days']}d  {time.time() - t1:.0f}s")
 
     print(f"\ncollected in {time.time() - t0:.0f}s")
-
-    print("\n" + "=" * 92)
-    print("PER SYMBOL — SMC arm, out of sample. Every symbol shown, none dropped.")
-    print("=" * 92)
-    print(f"{'sym':<8}{'n':>4}{'win%':>7}{'PF':>6}{'exp':>9}{'random':>9}"
-          f"{'edge':>8}{'gross':>9}{'net':>9}{'cost/R':>8}{'WF':>6}")
-    print("-" * 92)
-    for r in rows:
-        if r.get("error") or not r.get("trades"):
-            print(f"{r['symbol']:<8}  {r.get('error', 'no trades')}")
-            continue
-        edge = (r["expectancy_inr"] - r["random_mean_expectancy"]
-                if r.get("random_mean_expectancy") is not None else None)
-        print(f"{r['symbol']:<8}{r['trades']:>4}{r['win_rate_pct']:>7.1f}"
-              f"{str(r['profit_factor']):>6}{r['expectancy_inr']:>9.1f}"
-              f"{str(r['random_mean_expectancy']):>9}"
-              f"{(f'{edge:+.1f}' if edge is not None else '-'):>8}"
-              f"{str(r['gross_pnl_inr']):>9}{str(r['net_pnl_inr']):>9}"
-              f"{str(r['median_cost_in_r']):>8}{r['wf']:>6}")
-
     pool = pooled(rows)
-    print("\n" + "=" * 92)
-    print("POOLED")
-    print("=" * 92)
-    for k in ("symbols", "total_trades", "pooled_edge_inr", "standard_error",
-              "sigma", "significant_at_95pct", "trades_needed_for_95pct",
-              "pooled_net_inr"):
-        print(f"  {k:26s} {pool.get(k)}")
-    print(f"  {'long':26s} {pool.get('long')}")
-    print(f"  {'short':26s} {pool.get('short')}")
-    print(f"\n  {pool.get('verdict')}")
 
     with open(a.out, "w") as f:
         json.dump({"per_symbol": [{k: v for k, v in r.items()
@@ -312,7 +243,6 @@ def main():
                   default=str)
     print(f"\nwritten to {a.out}")
 
-    # Auto update markdown audit file
     update_markdown_report(pool, rows)
 
 
