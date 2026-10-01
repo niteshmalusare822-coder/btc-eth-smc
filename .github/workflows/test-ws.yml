@@ -5,10 +5,10 @@ on:
   push:
     branches: [ main ]
   schedule:
-    - cron: 'cron: '0 21 * * *'  # रोज रात्री 2:30 AM IST (21:00 UTC)
-    
+    - cron: '20 21 * * *'  # रोज रात्री 2:50 AM IST (21:20 UTC)
+
 permissions:
-  contents: write  # <<-- He add kelyane GitHub Action la write permission bhetel
+  contents: write
 
 jobs:
   test:
@@ -21,7 +21,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
-        run: pip install "python-socketio==4.6.1" "python-engineio==3.14.2" websocket-client pandas numpy
+        run: pip install "python-socketio==4.6.1" "python-engineio==3.14.2" websocket-client pandas numpy requests ccxt
 
       - name: Run test (auto-stop after 90s)
         run: timeout 90 python3 -u test_ws.py || true
