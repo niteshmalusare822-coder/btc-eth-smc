@@ -5,9 +5,8 @@ on:
   push:
     branches: [ main ]
   schedule:
-    - cron: '15 20 * * *'  # रोज रात्री 8:15 PM UTC (म्हणजेच रात्री 1:45 AM IST)
-  workflow_dispatch:        # याच्यामुळे मॅन्युअली पण रन करता येईल
-
+    - cron: '37 20 * * *'  # रोज रात्री 2:07 AM IST (20:37 UTC)
+    
 permissions:
   contents: write  # <<-- He add kelyane GitHub Action la write permission bhetel
 
