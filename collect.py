@@ -15,7 +15,7 @@ import numpy as np
 
 import backtest as B
 import data as D
-import research_data as RD  # <<-- Bybit research loader import kelay
+import research_data as RD  # CoinDCX historical loader
 
 ARM = "SMC"
 MATCHED = "MATCHED_RANDOM_vs_SMC"
@@ -49,7 +49,6 @@ def register(symbol, pair):
 
 
 def run_symbol(symbol, bars, cfg):
-    # D.load_mtf (CoinDCX) aivaji RD.load_research (Bybit) vapartoy, mhanje gap yenar nahi
     frames, meta = RD.load_research(symbol, bars)
     if frames is None:
         return {"symbol": symbol, "error": (meta or {}).get("error", "no data")}
@@ -237,7 +236,7 @@ def main():
 
     with open(a.out, "w") as f:
         json.dump({"per_symbol": [{k: v for k, v in r.items()
-                                 if k != "_trades"} for r in rows],
+                                   if k != "_trades"} for r in rows],
                    "pooled": {k: v for k, v in pool.items()
                               if not k.startswith("_")}}, f, indent=1,
                   default=str)
