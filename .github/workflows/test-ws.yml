@@ -7,6 +7,9 @@ on:
   schedule:
     - cron: '30 19 * * *'  # Ratri 1:00 AM (IST) sathi UTC 19:30 la run hoil
 
+permissions:
+  contents: write  # <<-- He add kelyane GitHub Action la write permission bhetel
+
 jobs:
   test:
     runs-on: ubuntu-latest
