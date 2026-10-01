@@ -3,9 +3,9 @@ name: test-coindcx-websocket-and-audit
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]  # Future madhe konta hi code push kelyavar auto-run hoil
+    branches: [ main ]
   schedule:
-    - cron: '30 18 * * *'  # IST pramaneloch ratrichya 12:30 AM sathi UTC 18:30 la run hoil
+    - cron: '30 19 * * *'  # Ratri 1:00 AM (IST) sathi UTC 19:30 la run hoil
 
 jobs:
   test:
@@ -23,5 +23,13 @@ jobs:
       - name: Run test (auto-stop after 90s)
         run: timeout 90 python3 -u test_ws.py || true
 
-      - name: Run Data Collection & Audit update
+      - name: Run Data Collection & Generate Latest Audit Report
         run: python3 collect.py || true
+
+      - name: Commit and Push Updated Audit Report
+        run: |
+          git config --global user.name "GitHub Action Bot"
+          git config --global user.email "action@github.com"
+          git add AUDIT_ENHANCEMENTS.md
+          git commit -m "Auto-update AUDIT_ENHANCEMENTS.md with latest research/pooled data [skip ci]" || exit 0
+          git push
