@@ -11,7 +11,7 @@ through the unchanged path in app.py.
 """
 import data as D
 
-VENUE = "bybit"
+VENUE = "coindcx"
 
 
 def load_research(symbol, bars_5m):
