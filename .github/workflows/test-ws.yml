@@ -27,7 +27,7 @@ jobs:
         run: timeout 90 python3 -u test_ws.py || true
 
       - name: Run Data Collection & Generate Latest Audit Report
-        run: python3 collect.py --discover --bars 10000
+        run: python3 collect.py --symbols BTC,ETH,SOL,XRP,AVAX,LINK,DOGE,ADA,DEXE,BANK,BNB,SUI,HBAR,LTC,BCH,DOT,1000PEPE --bars 10000
 
       - name: Cost Breakdown Check
         run: python3 cost_breakdown.py
