@@ -182,29 +182,33 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--symbols", help="comma separated, e.g. BTC,ETH,SOL")
     p.add_argument("--from-file")
-    p.add_argument("--discover", action="store_true")
+    p.add_argument("--discover", action="store_true",
+                    help="pull active CoinDCX futures pairs and run collection on them")
+    p.add_argument("--discover-limit", type=int, default=60)
     p.add_argument("--bars", type=int, default=10000)
     p.add_argument("--seeds", type=int, default=200)
     p.add_argument("--out", default="collect_results.json")
     a = p.parse_args()
 
     if a.discover:
-        pairs = discover_pairs()
+        pairs = discover_pairs(limit=a.discover_limit)
         if not pairs:
             print("no pairs returned; check network access to CoinDCX")
             sys.exit(1)
-        print(f"{len(pairs)} futures pairs found:\n")
-        for pr in pairs:
-            print(f"  {pr.replace('B-', '').replace('_USDT', ''):10s} {pr}")
-        return
-
-    if a.from_file:
+        syms = [pr.replace("B-", "").replace("_USDT", "") for pr in pairs]
+        print(f"{len(syms)} futures pairs found via discovery\n")
+    elif a.from_file:
         syms = [s.strip().upper() for s in open(a.from_file)
                 if s.strip() and not s.startswith("#")]
     elif a.symbols:
         syms = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
     else:
         syms = list(D.PAIR_MAP)
+
+    if not syms:
+        print("no symbols resolved; nothing to collect. "
+              "Pass --discover, --symbols, or --from-file.")
+        sys.exit(1)
 
     for s in syms:
         if s not in D.PAIR_MAP:
