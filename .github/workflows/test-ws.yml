@@ -5,7 +5,7 @@ on:
   push:
     branches: [ main ]
   schedule:
-    - cron: '20 21 * * *'  # रोज रात्री 2:50 AM IST (21:20 UTC)
+    - cron: 'cron: '30 9 * * *'  # दररोज दुपारी 2:30 PM IST (09:00 UTC)
 
 permissions:
   contents: write
@@ -27,7 +27,10 @@ jobs:
         run: timeout 90 python3 -u test_ws.py || true
 
       - name: Run Data Collection & Generate Latest Audit Report
-        run: python3 collect.py
+        run: python3 collect.py --discover --bars 10000
+
+      - name: Cost Breakdown Check
+        run: python3 cost_breakdown.py
 
       - name: Commit and Push Updated Audit Report
         run: |
