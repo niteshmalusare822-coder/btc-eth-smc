@@ -52,7 +52,7 @@ def run_symbol(symbol, bars, cfg):
     frames, meta = RD.load_research(symbol, bars)
     if frames is None:
         return {"symbol": symbol, "error": (meta or {}).get("error", "no data")}
-    rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["1h"],
+    rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["4h"],
                         cfg=cfg)
     oos = {m["arm"]: m for m in rep.get("out_of_sample", [])}
     smc, rnd = oos.get(ARM, {}), oos.get(MATCHED, {})
