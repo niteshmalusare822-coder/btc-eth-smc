@@ -1,4 +1,3 @@
-
 import data as D, mtf_engine as m, risk as R, numpy as np
 
 print("=" * 66)
@@ -15,7 +14,7 @@ for sym in ("BTC", "ETH"):
     if f is None:
         continue
     df5 = f["5m"]
-    ctx = m.build_context(df5, f["15m"], f["1h"])
+    ctx = m.build_context(df5, f["15m"], f["4h"])
     ts = m._ts(df5["ts"])
     tr = df5["high"] - df5["low"]
     atr_s = tr.rolling(14, min_periods=5).mean()
