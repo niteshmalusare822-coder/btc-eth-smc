@@ -27,7 +27,7 @@ jobs:
         run: timeout 90 python3 -u test_ws.py || true
 
       - name: Run Data Collection & Generate Latest Audit Report
-        run: python3 collect.py || true
+        run: python3 collect.py
 
       - name: Commit and Push Updated Audit Report
         run: |
