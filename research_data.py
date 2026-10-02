@@ -4,7 +4,7 @@ import data as D
 
 VENUE = "coindcx"
 
-REQUIRED_TFS = ["5m", "15m", "1h"]
+REQUIRED_TFS = ["5m", "15m", "4h"]
 
 
 def load_research(symbol, bars_5m):
