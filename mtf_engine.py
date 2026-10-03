@@ -21,6 +21,17 @@ zones_active_at(). Nothing in this file touches an index above the current bar.
 
 DECISION PARAMETERS: 7 total. That is the whole tunable surface.
     swing_left/right, body_pct, max_age, sweep_window, ote band, trigger_lookback
+
+ENTRY QUALITY GATE
+-------------------
+trigger_series() stays informational by design — see decide() below, that
+contract is unchanged. Separately, entry_quality_series() reads the 5M
+candle AT THE ENTRY BAR ITSELF for volume expansion and a close near one
+extreme of its range (i.e. not a wick-poke/doji). This is a DIFFERENT,
+BLOCKING gate: decide() will not return OK on a bar that fails it, even when
+a live 15M setup exists. Before this gate existed, the 5M candle at the
+entry bar was never inspected at all — the 15M-setup path accepted any bar
+inside a live setup's window regardless of what the 5M candle looked like.
 """
 
 from __future__ import annotations
@@ -92,6 +103,12 @@ PARAMS = {
     # Default uses both POI paths; each is still independently lineage-checked.
     "poi_sources": ["ob", "fvg"],       # ["ob"], ["fvg"], or ["ob", "fvg"]
     "fvg_min_size_atr": 0.0,     # optional floor on FVG height
+
+    # ── 5M ENTRY QUALITY GATE (blocking, unlike trigger_series) ────────
+    "require_5m_quality_gate": True,
+    "volume_expansion_min": 1.2,   # entry bar volume must exceed MA20 * this
+    "close_ratio_min": 0.5,        # how close to an extreme the bar must close
+                                     # 0 = anywhere, 1 = exact high/low
 }
 
 
@@ -468,11 +485,15 @@ def _confirm_structure(df, breaks, swings, p):
 
 
 # ---------------------------------------------------------------------------
-# 5M TRIGGER
+# 5M TRIGGER (informational — see module docstring)
 # ---------------------------------------------------------------------------
 def trigger_series(df_5m, p=None, calib_end=None):
     """Micro structure shift on 5M. Direction-agnostic: it reports what the
-    5M chart just did, and the caller checks it against the 4H/15M side."""
+    5M chart just did, and the caller checks it against the 4H/15M side.
+
+    STAYS INFORMATIONAL. decide() does not gate on this — see
+    entry_quality_series() below for the blocking 5M check.
+    """
     p = p or PARAMS
     df = poi.add_candle_metrics(df_5m)
     thr = _calibrate(df, p, calib_end)
@@ -494,6 +515,52 @@ def trigger_series(df_5m, p=None, calib_end=None):
                 warm[i] = trig[j]
                 break
     return warm
+
+
+# ---------------------------------------------------------------------------
+# 5M ENTRY QUALITY GATE (blocking)
+# ---------------------------------------------------------------------------
+def entry_quality_series(df_5m, p=None):
+    """True on 5M bars that show real conviction, False on wick-pokes/noise.
+
+    Two conditions, both must hold:
+      1. volume on this bar exceeds its 20-bar MA by volume_expansion_min
+      2. the close sits near one extreme of the bar's range (close_ratio_min),
+         ruling out dojis and reversal wicks
+
+    This is read by decide() as an independent, BLOCKING condition on the
+    entry bar — unlike trigger_series, which stays informational by design.
+    Before this existed, nothing in the 15M-setup entry path inspected the
+    5M candle at all.
+
+    Returns a boolean numpy array, one entry per 5M bar. Bars inside the
+    volume-MA warmup window (no finite MA yet) are not penalized.
+    """
+    p = p or PARAMS
+    vol = df_5m["volume"].to_numpy(dtype=float)
+    vol_ma = pd.Series(vol).rolling(20, min_periods=5).mean().to_numpy()
+
+    o = df_5m["open"].to_numpy(dtype=float)
+    c = df_5m["close"].to_numpy(dtype=float)
+    h = df_5m["high"].to_numpy(dtype=float)
+    lo = df_5m["low"].to_numpy(dtype=float)
+
+    rng = h - lo
+    close_ratio = np.where(rng > 1e-12, (c - lo) / np.maximum(rng, 1e-12), 0.5)
+    # 0 = closed exactly mid-range (doji-like), 1 = closed exactly at an extreme
+    extremity = np.abs(close_ratio - 0.5) * 2.0
+
+    vol_min = float(p.get("volume_expansion_min", 1.2))
+    ext_min = float(p.get("close_ratio_min", 0.5))
+
+    vol_ok = vol > (vol_ma * vol_min)
+    shape_ok = extremity >= ext_min
+
+    ok = vol_ok & shape_ok
+    # no volume MA yet (warmup) -> do not penalize, let the setup/bias gates decide
+    ok = np.where(np.isnan(vol_ma), True, ok)
+
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -620,12 +687,17 @@ def build_context(df_5m, df_15m, df_4h, p=None, calib_end=None):
 
     swings_15m contains the confirmed 15M swing structure used for
     causal liquidity/structure-based TP targeting.
+
+    "quality" is the blocking 5M entry-quality gate (entry_quality_series).
+    It is a plain boolean numpy array aligned 1:1 with df_5m, so callers can
+    index it the same way as "trigger": ctx["quality"][i].
     """
     p = p or PARAMS
 
     bias_df = htf_bias_series(df_4h, p, calib_end)
     setups, thr15 = find_setups(df_15m, p, calib_end)
     trig = trigger_series(df_5m, p, calib_end)
+    quality = entry_quality_series(df_5m, p)
 
     bias_on_5m = align_htf(
         df_5m, bias_df, "4h", "htf_bias"
@@ -641,6 +713,7 @@ def build_context(df_5m, df_15m, df_4h, p=None, calib_end=None):
         "bias": bias_on_5m,
         "setups": setups,
         "trigger": trig,
+        "quality": quality,
         "threshold_15m": thr15,
         "swings_15m": swings_15m,
     }
@@ -685,6 +758,8 @@ BLOCKERS = {
     "SETUP_EXPIRED": "15M setup aged out",
     "SETUP_MITIGATED": "15M zone already invalidated by price",
     "AWAITING_RETEST": "POI formed but price has not returned to it",
+    "WEAK_5M_CONFIRMATION":
+        "15M setup is live but the 5M entry bar lacks volume/close conviction",
 
     # FORWARD_ENTRY stale protection
     # Used by app.py when an unfilled limit entry has moved >= 3R away.
@@ -695,26 +770,35 @@ BLOCKERS = {
 }
 
 
-def decide(bias, trigger, setups, ts):
-    """Main decision uses 4H bias + 15M setup.
+def decide(bias, trigger, setups, ts, quality=True, p=None):
+    """Main decision uses 4H bias + 15M setup, plus the 5M quality gate.
 
-    5M trigger is INFORMATION ONLY.
+    5M trigger (the `trigger` argument) is INFORMATION ONLY, unchanged.
     It must never block a valid setup.
+
+    `quality` is the BLOCKING 5M check (see entry_quality_series). Pass
+    ctx["quality"][i] from build_context's output. Callers that do not pass
+    it get the default True, which reproduces the old behaviour exactly —
+    so existing call sites keep working until they are updated to pass it.
 
     Returns:
         (action, setup, side, level, reason)
     """
+    p = p or PARAMS
     action, s, side, level, code = _evaluate(
         bias,
         trigger,
         setups,
         ts,
+        quality,
+        p,
     )
 
     return action, s, side, level, code
 
 
-def _evaluate(bias, trigger, setups, ts):
+def _evaluate(bias, trigger, setups, ts, quality=True, p=None):
+    p = p or PARAMS
     # ------------------------------------------------------------
     # 1. 4H BIAS = mandatory
     # ------------------------------------------------------------
@@ -839,9 +923,18 @@ def _evaluate(bias, trigger, setups, ts):
     # ------------------------------------------------------------
     # 4. VALID 15M SETUP
     #
-    # 5M trigger does NOT matter here.
+    # 5M trigger does NOT matter here. The 5M QUALITY gate does.
     # ------------------------------------------------------------
     s = live[0]
+
+    if p.get("require_5m_quality_gate", True) and not bool(quality):
+        return (
+            "NO_TRADE",
+            None,
+            None,
+            None,
+            "WEAK_5M_CONFIRMATION",
+        )
 
     action = (
         "BUY"
@@ -857,11 +950,13 @@ def _evaluate(bias, trigger, setups, ts):
         "OK",
     )
 
-def gate_state(bias, trigger, setups, ts):
+def gate_state(bias, trigger, setups, ts, quality=True, p=None):
     """Show all conditions.
 
     5M trigger is informational only and never blocks a trade.
+    The 5M quality gate (volume + close conviction on the entry bar) does.
     """
+    p = p or PARAMS
 
     live_any = active_setups_at(
         setups,
@@ -897,6 +992,8 @@ def gate_state(bias, trigger, setups, ts):
         trigger,
         setups,
         ts,
+        quality,
+        p,
     )
 
     return {
@@ -914,6 +1011,11 @@ def gate_state(bias, trigger, setups, ts):
         "trigger_5m": trigger or "none",
 
         "trigger_5m_role": "INFORMATION_ONLY",
+
+        # BLOCKING
+        "quality_5m": bool(quality),
+
+        "quality_5m_role": "BLOCKING",
 
         "liquidity_sweep": (
             bool(s.swept)
