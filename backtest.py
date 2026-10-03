@@ -455,7 +455,8 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
 
         if arm == "smc_mtf":
             action, s, side, level, why = mtf.decide(
-                ctx["bias"][i], ctx["trigger"][i], ctx["setups"], ts)
+                ctx["bias"][i], ctx["trigger"][i], ctx["setups"], ts,
+                quality=ctx["quality"][i])
             if action == "NO_TRADE":
                 continue
             gates["signals_generated"] += 1
