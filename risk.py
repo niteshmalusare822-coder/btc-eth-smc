@@ -310,54 +310,51 @@ def _rupee_targets(direction, entry, qty, usdt_inr, sl_dist,
 
     # ---------------------------------------------------------------
     # PRIMARY: confirmed structure / liquidity targets
+    #
+    # A structural target is useful only if it pays enough R to justify
+    # the trade. Skip nearby noise levels rather than calling them TP1.
+    # The same thresholds are used by live and backtest.
     # ---------------------------------------------------------------
     if structure_targets:
-        for i, raw_px in enumerate(structure_targets[:3], start=1):
+        minimum_r = TP_R_LADDER
+        for raw_px in structure_targets[:3]:
             try:
                 px = float(raw_px)
             except (TypeError, ValueError):
                 continue
-
             if not np.isfinite(px) or px <= 0:
                 continue
-
-            # Target must actually be in the trade direction.
             if direction == "BUY" and px <= entry:
                 continue
             if direction == "SELL" and px >= entry:
                 continue
 
             move_px = abs(px - entry)
+            r_multiple = move_px / sl_dist
+            target_index = len(out)
+            if target_index >= 3:
+                break
+            if r_multiple < minimum_r[target_index]:
+                continue
 
             gross_inr = qty * move_px * usdt_inr
             net_inr = gross_inr - cost_inr
-
-            r_multiple = move_px / sl_dist
-
             reachable = True
             why = ""
 
-            # Do not use an absurdly distant structural target.
             if atr and atr > 0 and move_px > 6 * atr:
                 reachable = False
                 why = f"needs {r_multiple:.1f}R / {move_px / atr:.1f} ATR of travel"
 
-            want = (
-                TP_TARGETS_INR[i - 1]
-                if i <= len(TP_TARGETS_INR)
-                else None
-            )
-
+            want = TP_TARGETS_INR[target_index] if target_index < len(TP_TARGETS_INR) else None
             out.append({
-                "level": f"TP{i}",
+                "level": f"TP{target_index + 1}",
                 "price": round(px, 8),
                 "r_multiple": round(r_multiple, 2),
                 "gross_inr": round(gross_inr, 0),
                 "net_inr": round(net_inr, 0),
                 "target_inr": want,
-                "meets_target": bool(
-                    want is not None and net_inr >= want
-                ),
+                "meets_target": bool(want is not None and net_inr >= want),
                 "reachable": reachable,
                 "note": why,
             })

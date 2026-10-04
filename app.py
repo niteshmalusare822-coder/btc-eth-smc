@@ -1023,89 +1023,39 @@ def build_signal(symbol):
             "entry_mode": live_setup.entry_mode,
         }
 
-        if entry_hit:
-            base["live_setup_active"] = True
-
-            dev_confirm = developing_5m_confirmation(
-                expected_side,
-                dev_open,
-                dev_high,
-                dev_low,
-                dev_close,
-                atr,
+        if not entry_hit:
+            base["action"] = "WATCHING"
+            base["blocker"] = "WAITING_FOR_ENTRY"
+            base["reason"] = (
+                f"{expected_side.upper()} setup valid; waiting for price to "
+                f"touch exact {'bottom' if expected_side == 'bull' else 'top'} "
+                f"entry={live_entry:.8g}"
             )
+            base["live_price"] = _f(live_px)
+            base["entry"] = _f(live_entry)
+            base["distance_to_entry_pct"] = _f(
+                (live_entry - live_px) / live_px * 100 if live_px else None
+            )
+            base["setup_status"] = "WAITING_FOR_ENTRY"
+            base["order_status"] = "PENDING_LIMIT"
+            return base
 
-            base["developing_5m_confirmation"] = bool(dev_confirm)
-
-            # Live execution layer:
-            # Do not wait for the developing 5M candle to close.
-            # 15M SMC remains the setup source.
-            # 5M + 1M are used only for live execution confirmation.
-            if dev_confirm and one_min_reaction:
-                base["action"] = (
-                    "BUY" if expected_side == "bull" else "SELL"
-                )
-                base["blocker"] = "LIVE_MARKET_ENTRY"
-                base["reason"] = (
-                    f"{expected_side.upper()} 15M SMC setup reached; "
-                    f"developing 5M confirms direction and "
-                    f"live 1M reaction confirms entry"
-                )
-
-                # Market execution uses the actual current live price.
-                setup = live_setup
-                side = expected_side
-                level = live_px
-                action = base["action"]
-
-            else:
-                base["action"] = "WATCHING"
-                base["blocker"] = "ENTRY_REACHED"
-                base["reason"] = (
-                    f"{expected_side.upper()} setup reached; "
-                    f"live={live_px:.8g}, planned_entry={live_entry:.8g}; "
-                    f"waiting for live confirmation "
-                    f"(5M={'YES' if dev_confirm else 'NO'}, "
-                    f"1M={'YES' if one_min_reaction else 'NO'})"
-                )
-                return base
-
-        # --------------------------------------------------------------
-        # FORWARD ENTRY
-        # A valid 15M setup already gives us the planned entry.
-        # Do NOT wait for the 5M candle close.
-        # Do NOT require price to be near the zone.
-        #
-        # If the entry is still ahead, show BUY/SELL now so the trader
-        # can prepare the limit order before the market reaches it.
-        # --------------------------------------------------------------
+        # Price reached the exact POI edge: this is the signal.
+        # No 5M confirmation, no 1M reaction and no market-price chase.
+        base["live_setup_active"] = True
+        base["action"] = "BUY" if expected_side == "bull" else "SELL"
+        base["blocker"] = "ENTRY_REACHED"
+        base["reason"] = (
+            f"{expected_side.upper()} 15M SMC setup reached exact POI "
+            f"{'bottom' if expected_side == 'bull' else 'top'}; "
+            f"entry={live_entry:.8g}"
+        )
         setup = live_setup
         side = expected_side
         level = live_entry
-        action = "BUY" if side == "bull" else "SELL"
+        action = base["action"]
 
-        base["action"] = action
-        base["blocker"] = "FORWARD_ENTRY"
-        base["reason"] = (
-            f"1H {bias} + valid 15M "
-            f"{'OB+FVG' if setup.has_fvg else 'OB'} setup; "
-            f"forward {action} entry prepared before price reaches entry"
-        )
-        base["live_price"] = _f(live_px)
-        base["entry"] = _f(level)
-        base["distance_to_entry_pct"] = _f(
-            (level - live_px) / live_px * 100
-            if live_px else None
-        )
-        base["zone"] = {
-            "top": _f(setup.zone_top),
-            "bottom": _f(setup.zone_bottom),
-            "has_fvg": setup.has_fvg,
-            "swept": setup.swept,
-            "imbalance": setup.imbalance,
-            "entry_mode": setup.entry_mode,
-        }
-
+        # Entry was reached above; continue with the canonical planned entry.
     # Existing sizing / SL / TP logic continues unchanged.
     if action == "NO_TRADE" or setup is None:
         base["action"] = "NO_TRADE"
@@ -1201,10 +1151,10 @@ def build_signal(symbol):
                  "imbalance": setup.imbalance,
                  "entry_mode": setup.entry_mode},
         "reason": (
-            f"1H {bias} + 5M "
-            f"{'OB+FVG' if setup.has_fvg else 'OB'} after liquidity sweep; "
-            f"5M trigger={trig}, entry at the order block "
-            f"{setup.entry_mode}"
+            f"1H {bias} + 15M "
+            f"{'OB+FVG' if setup.has_fvg else setup.poi_quality} after liquidity sweep; "
+            f"entry at {setup.entry_mode} "
+            f"({'bottom' if side == 'bull' else 'top'})"
         ),
     })
 

@@ -195,7 +195,8 @@ def _find_fill(df, side, level, start, cfg):
 
 def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
                 bias=None, setup=None, trigger=None, arm="",
-                setup_ts=None, entry_reason="", flags=None):
+                setup_ts=None, entry_reason="", flags=None,
+                structure_targets=None):
     """Place a resting limit at the close of sig_i, fill from sig_i+1 onward.
 
     Returns (trade_dict, reject_reason). trade_dict carries the full audit
@@ -215,8 +216,15 @@ def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
     if (side == "bull" and entry <= sl) or (side == "bear" and entry >= sl):
         return None, "filled beyond the stop"
 
-    lim = entry + 6 * atr if side == "bull" else entry - 6 * atr
-    s = R.size_position(symbol, direction, entry, sl, atr=atr, structure_limit=lim)
+    lim = (
+        structure_targets[-1]
+        if structure_targets
+        else (entry + 6 * atr if side == "bull" else entry - 6 * atr)
+    )
+    s = R.size_position(
+        symbol, direction, entry, sl, atr=atr,
+        structure_limit=lim, structure_targets=structure_targets,
+    )
     if not s.ok:
         return None, s.reason
 
@@ -481,6 +489,15 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
             _rej("setup already traded once")
             continue
 
+        structure_targets = mtf.structure_targets_at(
+            ctx.get("df15"),
+            ctx.get("swings_15m", []),
+            ts,
+            side,
+            level,
+            max_targets=3,
+        )
+
         tr, why = _open_trade(symbol, df5, i, side, level, s.stop_level, atr[i],
                               cfg, tf_min, bias=bias_s, setup=setup_s,
                               trigger=trig_s, arm=arm,
@@ -492,8 +509,9 @@ def run_arm(symbol, df5, ctx, arm, cfg, lo_i, hi_i, rng=None, matched=None):
                                   "liquidity_sweep": bool(s.swept),
                                   "ob_fvg_15m": bool(s.has_fvg),
                                   "imbalance": bool(s.imbalance),
-                                  "confirmation_5m": trig_s in ("bull", "bear"),
-                              })
+                                  "confirmation_5m": False,
+                              },
+                              structure_targets=structure_targets)
         if tr:
             # marked only on a real fill, so a sizing rejection does not
             # burn the setup
