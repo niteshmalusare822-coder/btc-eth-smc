@@ -60,9 +60,12 @@ def simulate(df, side, entry, sl, tps, start, max_hold, manage=True,
     n = len(df)
     last = min(start + max_hold, n - 1)
 
+    # Never simulate an unreachable structural target. If every target is
+    # marked unreachable by risk.py, there is no valid TP path for this trade.
     live = [t for t in (tps or []) if t.get("reachable")]
     if not live:
-        live = [tps[0]] if tps else []
+        realised = [(1.0, cl[min(start + max_hold, n - 1)])]
+        return realised, [], "TIMEOUT", min(start + max_hold, n - 1)
     splits = TP_SPLIT[:len(live)]
     if splits:
         splits = [s / sum(splits) for s in splits]
