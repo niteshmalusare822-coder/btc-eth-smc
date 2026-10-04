@@ -293,26 +293,23 @@ class Zone:
     def mid(self) -> float:
         return (self.top + self.bottom) / 2.0
 
-    def entry_at(self, mode: str = "body") -> float:
-        """The three source-defined entries.
+    def entry_at(self, mode: str = "zone_edge") -> float:
+        """Canonical POI edge entry used by live and backtest.
 
-        Price returns to the block from outside it, so every mode enters at the
-        edge it reaches FIRST. For a bullish block price falls in from above,
-        so that is the upper edge; for a bearish block it rises in from below.
+        BUY enters at the BOTTOM of the bullish OB/FVG.
+        SELL enters at the TOP of the bearish OB/FVG.
 
-            wick  full candle range      earliest fill, worst price
-            body  open/close only        fills less often, better price
-            50    midpoint of the block  fills least often, best price
-
-        The stop does not move between modes. It sits beyond the wick in all
-        three, which is why a deeper entry is a smaller risk rather than a
-        different trade.
+        Legacy wick/body/50 modes remain accepted for compatibility, but the
+        strategy default is the zone edge so Entry/SL/TP math is identical
+        across live and backtest.
         """
         wt = self.wick_top if self.wick_top is not None else self.top
         wb = self.wick_bottom if self.wick_bottom is not None else self.bottom
         bt = self.body_top if self.body_top is not None else self.top
         bb = self.body_bottom if self.body_bottom is not None else self.bottom
 
+        if mode in ("zone_edge", "edge", "bottom_top"):
+            return self.bottom if self.side == "bull" else self.top
         if mode == "wick":
             return wt if self.side == "bull" else wb
         if mode == "body":
