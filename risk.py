@@ -54,7 +54,14 @@ TP_TARGETS_INR = [
 # see what each one pays and whether it clears your target, but it no longer
 # dictates where the level sits.
 TP_R_LADDER = [
-    float(os.environ.get("TP1_R", 1.0)),
+    # WAS 1.0. At 1.0R the round-trip cost (0.14% of notional) was eating
+    # 24-42% of the gross win on real setups (measured via cost_breakdown.py:
+    # BTC cost_in_r=0.24, ETH cost_in_r=0.42), while the stop loss always
+    # pays out the FULL risk cap. That asymmetry forced a 60%+ win rate just
+    # to break even on TP1 alone, even on setups with a genuine directional
+    # edge. Moving TP1 to 1.5R keeps the net win roughly equal to the full
+    # loss, cutting the required win rate back toward 50%.
+    float(os.environ.get("TP1_R", 1.5)),
     float(os.environ.get("TP2_R", 2.0)),
     float(os.environ.get("TP3_R", 3.0)),
 ]
@@ -75,6 +82,13 @@ FEE_PER_LEG = float(os.environ.get("FEE_PER_LEG", 0.0005))       # 0.05% taker
 #
 # DEFAULTS ARE UNCHANGED: both rates fall back to FEE_PER_LEG, so nothing moves
 # until the real CoinDCX schedule is entered. Do NOT lower these on a hunch.
+#
+# NOTE: backtest.py's default entry_model is now "limit_ote" (a resting limit
+# order), which on a real exchange is a MAKER fill, not a taker one. If
+# CoinDCX's actual maker fee is lower than its taker fee, ENTRY_IS_MAKER
+# should be set to "true" via environment variable to reflect that correctly
+# — check the real CoinDCX futures fee schedule before changing this, since
+# an incorrect maker rate here would understate real trading costs.
 FEE_MAKER_PER_LEG = float(os.environ.get("FEE_MAKER_PER_LEG", FEE_PER_LEG))
 FEE_TAKER_PER_LEG = float(os.environ.get("FEE_TAKER_PER_LEG", FEE_PER_LEG))
 ENTRY_IS_MAKER = os.environ.get("ENTRY_IS_MAKER", "false").lower() == "true"
