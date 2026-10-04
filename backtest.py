@@ -624,7 +624,12 @@ RANDOM_SEEDS = list(range(11, 11 + 1000))
 
 DEFAULT_CFG = {"max_hold": 60, "rand_sl_atr": 1.0, "n_random": 400,
                "wf_seeds": 10,
-               "entry_model": "next_open",   # or "limit_ote"
+               "entry_model": "limit_ote",   # was "next_open": ignored the OB
+                                              # level entirely and filled at
+                                              # the next bar's market open,
+                                              # with SL still pinned to the
+                                              # zone wick -- risk/reward had
+                                              # no relation to the zone depth
                "max_wait": 12,      # bars a resting limit stays live before cancel
                "manage_stop": True, # breakeven after TP1, TP1 after TP2
                "matched_seeds": 200,
