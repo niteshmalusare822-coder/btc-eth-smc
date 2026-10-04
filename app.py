@@ -1115,6 +1115,23 @@ def build_signal(symbol):
     potential = max((t["net_inr"] for t in reachable), default=0)
     rr = round(potential / s.risk_inr, 2) if s.risk_inr > 0 else None
     max_cost = float(os.environ.get("MAX_COST_IN_R", 0.75))
+    tradeable = bool(np.isfinite(s.cost_in_r) and s.cost_in_r <= max_cost)
+
+    # Keep live and backtest execution semantics identical: a setup that
+    # fails the cost gate is NOT an actionable BUY/SELL signal.
+    if not tradeable:
+        base["action"] = "NO_TRADE"
+        base["blocker"] = "COST_ABOVE_MAX"
+        base["reason"] = (
+            f"setup reached entry but cost_in_r={s.cost_in_r:.3f} "
+            f"exceeds max_cost_in_r={max_cost:.3f}"
+        )
+        base["tradeable"] = False
+        base["setup_status"] = "REJECTED"
+        base["order_status"] = "CANCELLED"
+        base["cost_in_r"] = _f(s.cost_in_r)
+        base["max_cost_in_r"] = _f(max_cost)
+        return base
 
     base.update({
         "action": base.get("action", action),
@@ -1145,7 +1162,7 @@ def build_signal(symbol):
         ),
         "distance_to_entry_pct": _f((level - price) / price * 100)
         if price else None,
-        "tradeable": bool(np.isfinite(s.cost_in_r) and s.cost_in_r <= max_cost),
+        "tradeable": tradeable,
         "zone": {"top": _f(setup.zone_top), "bottom": _f(setup.zone_bottom),
                  "has_fvg": setup.has_fvg, "swept": setup.swept,
                  "imbalance": setup.imbalance,
