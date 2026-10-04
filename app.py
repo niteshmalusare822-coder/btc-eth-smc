@@ -1151,10 +1151,10 @@ def build_signal(symbol):
                  "imbalance": setup.imbalance,
                  "entry_mode": setup.entry_mode},
         "reason": (
-            f"1H {bias} + 5M "
-            f"{'OB+FVG' if setup.has_fvg else 'OB'} after liquidity sweep; "
-            f"5M trigger={trig}, entry at the order block "
-            f"{setup.entry_mode}"
+            f"1H {bias} + 15M "
+            f"{'OB+FVG' if setup.has_fvg else setup.poi_quality} after liquidity sweep; "
+            f"entry at {setup.entry_mode} "
+            f"({'bottom' if side == 'bull' else 'top'})"
         ),
     })
 
