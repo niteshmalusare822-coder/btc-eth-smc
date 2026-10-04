@@ -53,7 +53,7 @@ PARAMS = {
     "sweep_window": 20,      # bars allowed between the sweep and the BOS
     # OB entry model from the source material: "wick", "body" or "50".
     # OTE is a different school's entry and is no longer used for order blocks.
-    "ob_entry_mode": "body",
+    "ob_entry_mode": "zone_edge",   # BUY=zone bottom, SELL=zone top
     "require_ob_sweep": False,        # the OB candle must take prior liquidity
     "require_ob_imbalance": True,    # a gap must sit next to the OB
     "imbalance_window": 3,
@@ -357,9 +357,10 @@ def find_setups(df_15m, p=None, calib_end=None):
     for z in obs:
         has_fvg = any(f.confirmed_idx <= z.confirmed_idx and poi.dragon_fruit(z, f)
                       for f in fvgs)
-        mode = p.get("ob_entry_mode", "body")
+        # Canonical execution edge: BUY at POI bottom, SELL at POI top.
+        mode = p.get("ob_entry_mode", "zone_edge")
         entry = z.entry_at(mode)
-        stop = z.stop_at(p.get("stop_buffer_frac", 0.15))
+        stop = z.stop_at(p.get("stop_buffer_frac", 0.30))
         # NOT clamped to len(df)-1. Clamping expired every setup near the end
         # of the frame early: the last 15M bar closes up to 15 minutes before
         # the last 5M bar, so a fresh setup could be reported expired on the
@@ -716,6 +717,7 @@ def build_context(df_5m, df_15m, df_4h, p=None, calib_end=None):
         "quality": quality,
         "threshold_15m": thr15,
         "swings_15m": swings_15m,
+        "df15": df_15m,
     }
 
 
@@ -927,15 +929,8 @@ def _evaluate(bias, trigger, setups, ts, quality=True, p=None):
     # ------------------------------------------------------------
     s = live[0]
 
-    if p.get("require_5m_quality_gate", True) and not bool(quality):
-        return (
-            "NO_TRADE",
-            None,
-            None,
-            None,
-            "WEAK_5M_CONFIRMATION",
-        )
-
+    # 5M confirmation/quality is informational only. The 15M POI edge
+    # is the execution price; the execution layer waits for price to touch it.
     action = (
         "BUY"
         if side == "bull"
@@ -1015,7 +1010,7 @@ def gate_state(bias, trigger, setups, ts, quality=True, p=None):
         # BLOCKING
         "quality_5m": bool(quality),
 
-        "quality_5m_role": "BLOCKING",
+        "quality_5m_role": "INFORMATION_ONLY",
 
         "liquidity_sweep": (
             bool(s.swept)
