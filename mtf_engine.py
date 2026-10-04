@@ -71,7 +71,7 @@ PARAMS = {
     #
     # OFF by default. Turning it on must be justified out of sample against
     # the unchanged baseline, not assumed.
-    "require_structure_confirmation": False,
+    "require_structure_confirmation": True,
     "confirm_bars": 1,          # closed 15M candles the shift must survive
     "confirm_max_wait": 12,     # bars allowed to complete confirmation
 
@@ -105,7 +105,7 @@ PARAMS = {
     "fvg_min_size_atr": 0.0,     # optional floor on FVG height
 
     # ── 5M ENTRY QUALITY GATE (blocking, unlike trigger_series) ────────
-    "require_5m_quality_gate": True,
+    "require_5m_quality_gate": False,
     "volume_expansion_min": 1.2,   # entry bar volume must exceed MA20 * this
     "close_ratio_min": 0.5,        # how close to an extreme the bar must close
                                      # 0 = anywhere, 1 = exact high/low
