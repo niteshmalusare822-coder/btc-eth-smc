@@ -5,37 +5,32 @@
 **Objective:** Maximize win rate, reduce false positives, optimize profit factors based on live/pooled OOS data.
 
 ## Executive Summary & Latest Pooled Metrics
-- **Total Symbols Usable:** 17
-- **Total Trades Pooled:** 175
-- **Pooled Edge (INR):** 56.2
-- **Standard Error:** 16.6
-- **Sigma (Z-Score):** 3.39
+- **Total Symbols Usable:** 9
+- **Total Trades Pooled:** 38
+- **Pooled Edge (INR):** -75.4
+- **Standard Error:** 7.9
+- **Sigma (Z-Score):** -9.56
 - **Significant at 95%:** True
-- **Pooled Net PnL (INR):** -20285.0
+- **Pooled Net PnL (INR):** -755.0
 
 ## Verdict
-> Pooled edge is positive and outside the noise band. This is worth walk-forward and sensitivity confirmation before anything is called an edge.
+> Pooled edge is significantly NEGATIVE. The rules lose to a coin flip on matched entries. Stop tuning and reconsider the premise.
 
 ## Per-Symbol Performance Table (Latest Run)
 | Symbol | Trades | Win% | PF | Expectancy (INR) | Random Mean | Edge | Net PnL (INR) | WF Folds |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| BTC | 3 | 33.3% | 0.38 | -424.0 | -626.3 | +202.3 | -1272.0 | 2/3 |
-| ETH | 11 | 45.5% | 0.79 | -94.6 | -469.7 | +375.1 | -1041.0 | 3/4 |
-| SOL | 11 | 54.5% | 0.92 | -8.1 | -66.0 | +57.9 | -89.0 | 2/3 |
-| XRP | 13 | 30.8% | 0.53 | -75.9 | -160.1 | +84.2 | -987.0 | 4/4 |
-| AVAX | 9 | 22.2% | 0.33 | -258.6 | -398.5 | +139.9 | -2327.0 | 2/4 |
-| LINK | 8 | 75.0% | 2.39 | 108.8 | -87.6 | +196.4 | 870.0 | 3/4 |
-| DOGE | 15 | 33.3% | 0.27 | -142.7 | -186.1 | +43.4 | -2141.0 | 4/4 |
-| ADA | 19 | 52.6% | 0.77 | -42.7 | -128.8 | +86.1 | -811.0 | 1/3 |
-| DEXE | 2 | 100.0% | None | 101.5 | -23.5 | +125.0 | 203.0 | 2/3 |
-| BANK | 5 | 80.0% | 3.22 | 182.4 | -84.9 | +267.3 | 912.0 | 2/3 |
-| BNB | 12 | 25.0% | 0.2 | -102.5 | -118.5 | +16.0 | -1230.0 | 3/4 |
-| SUI | 13 | 23.1% | 0.21 | -285.7 | -328.6 | +42.9 | -3714.0 | 3/3 |
-| HBAR | 12 | 33.3% | 0.45 | -113.1 | -169.0 | +55.9 | -1357.0 | 4/4 |
-| LTC | 9 | 33.3% | 0.25 | -161.6 | -141.6 | -20.0 | -1454.0 | 2/3 |
-| BCH | 9 | 33.3% | 0.35 | -162.2 | -147.7 | -14.5 | -1460.0 | 1/4 |
-| DOT | 12 | 8.3% | 0.03 | -352.3 | -205.6 | -146.7 | -4228.0 | 1/4 |
-| 1000PEPE | 12 | 33.3% | 0.94 | -13.2 | -173.0 | +159.8 | -159.0 | 4/4 |
+| XRP | 1 | 0.0% | 0.0 | -138.0 | -138.0 | +0.0 | -138.0 | 1/2 |
+| AVAX | 5 | 40.0% | 0.35 | -388.2 | -145.8 | -242.4 | -1941.0 | 2/2 |
+| LINK | 1 | 100.0% | None | 443.0 | 26.9 | +416.1 | 443.0 | 1/1 |
+| DOGE | 4 | 25.0% | 0.37 | -126.8 | -110.5 | -16.3 | -507.0 | 0/1 |
+| ADA | 7 | 71.4% | 2.06 | 301.9 | -78.2 | +380.1 | 2113.0 | 2/2 |
+| BANK | 1 | 0.0% | 0.0 | -137.0 | -137.0 | +0.0 | -137.0 | 1/1 |
+| SUI | 8 | 62.5% | 2.96 | 115.4 | -74.6 | +190.0 | 923.0 | 1/2 |
+| HBAR | 1 | 100.0% | None | 54.0 | -14.4 | +68.4 | 54.0 | 1/1 |
+| LTC | 1 | 0.0% | 0.0 | -163.0 | -163.0 | +0.0 | -163.0 | 0/1 |
+| BCH | 2 | 0.0% | 0.0 | -266.0 | -166.7 | -99.3 | -532.0 | 0/1 |
+| DOT | 5 | 40.0% | 0.2 | -286.2 | -122.4 | -163.8 | -1431.0 | 1/1 |
+| 1000PEPE | 5 | 60.0% | 1.36 | 24.6 | -103.1 | +127.7 | 123.0 | 1/2 |
 
 ---
 *Note: This report is dynamically updated by the automated daily GitHub Action using `collect.py`.*
