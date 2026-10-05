@@ -1521,3 +1521,16 @@ def test_fvg_poi_is_never_tradeable_before_its_break(frames):
     for s in setups[:40]:
         assert s.expires_ts >= s.confirmed_ts
         assert s.stop_level != s.entry_level
+
+
+def test_ob_fvg_use_same_zone_edge_entry():
+    """OB and FVG POIs must execute at the same canonical zone edge."""
+    from poi_factors import Zone
+    bull_ob = Zone("ob", "bull", 110.0, 100.0, wick_top=112.0, wick_bottom=98.0)
+    bull_fvg = Zone("fvg", "bull", 105.0, 100.0)
+    bear_ob = Zone("ob", "bear", 110.0, 100.0, wick_top=112.0, wick_bottom=98.0)
+    bear_fvg = Zone("fvg", "bear", 110.0, 105.0)
+    assert bull_ob.entry_at("zone_edge") == 100.0
+    assert bull_fvg.entry_at("zone_edge") == 100.0
+    assert bear_ob.entry_at("zone_edge") == 110.0
+    assert bear_fvg.entry_at("zone_edge") == 110.0
