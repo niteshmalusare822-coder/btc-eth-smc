@@ -49,13 +49,13 @@ PARAMS = {
     "swing_left": 1,
     "swing_right": 1,
     "body_pct": 0.85,        # calibration quantile, not a hand-picked constant
-    "max_age": 60,           # bars a 15M zone stays valid
-    "sweep_window": 20,      # bars allowed between the sweep and the BOS
+    "max_age": 96,           # bars a 15M zone stays valid
+    "sweep_window": 24,      # bars allowed between the sweep and the BOS
     # OB entry model from the source material: "wick", "body" or "50".
     # OTE is a different school's entry and is no longer used for order blocks.
     "ob_entry_mode": "zone_edge",   # BUY=zone bottom, SELL=zone top
     "require_ob_sweep": False,        # the OB candle must take prior liquidity
-    "require_ob_imbalance": True,    # a gap must sit next to the OB
+    "require_ob_imbalance": False,    # a gap must sit next to the OB
     "imbalance_window": 3,
     "stop_buffer_frac": 0.30,        # padding beyond the OB wick
     "ote_low": 0.618,
