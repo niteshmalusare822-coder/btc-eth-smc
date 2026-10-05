@@ -49,13 +49,14 @@ PARAMS = {
     "swing_left": 1,
     "swing_right": 1,
     "body_pct": 0.85,        # calibration quantile, not a hand-picked constant
-    "max_age": 60,           # bars a 15M zone stays valid
-    "sweep_window": 20,      # bars allowed between the sweep and the BOS
+    "max_age": 96,           # bars a 15M zone stays valid
+    "sweep_window": 24,      # bars allowed between the sweep and the BOS
+    "require_liquidity_sweep": False,  # sweep is quality/context, not a mandatory POI gate
     # OB entry model from the source material: "wick", "body" or "50".
     # OTE is a different school's entry and is no longer used for order blocks.
     "ob_entry_mode": "zone_edge",   # BUY=zone bottom, SELL=zone top
     "require_ob_sweep": False,        # the OB candle must take prior liquidity
-    "require_ob_imbalance": True,    # a gap must sit next to the OB
+    "require_ob_imbalance": False,    # a gap must sit next to the OB
     "imbalance_window": 3,
     "stop_buffer_frac": 0.30,        # padding beyond the OB wick
     "ote_low": 0.618,
@@ -228,11 +229,15 @@ class Setup:
 
 
 def find_setups(df_15m, p=None, calib_end=None):
-    """Sweep -> BOS -> order block, with the FVG overlap flagged.
+    """Displacement/BOS -> OB or FVG POI, with liquidity sweep as context.
 
-    A setup is only emitted when a liquidity sweep of the OPPOSITE side
-    happened within sweep_window bars before the break. That is the whole
-    SMC premise: liquidity is taken, then structure shifts.
+    A valid displacement BOS can create a tradeable POI on its own. A prior
+    opposite-side liquidity sweep is preferred SMC context, but it is not a
+    mandatory gate by default. This prevents the engine from going silent
+    during clean displacement moves where price never produces the exact
+    sweep+BOS sequence.
+
+    If require_liquidity_sweep=True, the stricter sweep->BOS path is restored.
     """
     p = p or PARAMS
     df = poi.add_candle_metrics(df_15m)
@@ -244,9 +249,14 @@ def find_setups(df_15m, p=None, calib_end=None):
     sweeps = [b for b in bos if b.is_sweep]
 
     kept = []
+    require_sweep = bool(p.get("require_liquidity_sweep", False))
     for b in breaks:
         want = "bear" if b.side == "bull" else "bull"
-        if any(s.side == want and 0 < b.idx - s.idx <= p["sweep_window"] for s in sweeps):
+        swept = any(
+            s.side == want and 0 < b.idx - s.idx <= p["sweep_window"]
+            for s in sweeps
+        )
+        if (not require_sweep) or swept:
             kept.append(b)
 
     confirm_at = {}
