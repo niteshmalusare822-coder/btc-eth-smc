@@ -672,7 +672,7 @@ def _touched_setup_at(setups, ts, side, df5, developing=None):
     ts = pd.Timestamp(ts)
     candidates = []
     for s in setups:
-        if s.confirmed_ts > ts or (side and s.side != side):
+        if s.confirmed_ts > ts or s.expires_ts < ts or (side and s.side != side):
             continue
         if s.state == "WAITING_FOR_RETEST":
             continue
