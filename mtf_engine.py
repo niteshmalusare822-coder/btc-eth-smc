@@ -107,6 +107,7 @@ PARAMS = {
 
     # ── 5M ENTRY QUALITY GATE (blocking, unlike trigger_series) ────────
     "require_5m_quality_gate": False,
+    "early_poi": True,
     "volume_expansion_min": 1.2,   # entry bar volume must exceed MA20 * this
     "close_ratio_min": 0.5,        # how close to an extreme the bar must close
                                      # 0 = anywhere, 1 = exact high/low
@@ -272,6 +273,14 @@ def find_setups(df_15m, p=None, calib_end=None):
         require_sweep=p.get("require_ob_sweep", True),
         require_imbalance=p.get("require_ob_imbalance", True),
         imbalance_window=p.get("imbalance_window", 3))
+
+    # EARLY POI: arm the zone at the close of the displacement candle.
+    # This is causal and avoids waiting for a later confirmed swing/BOS.
+    if p.get("early_poi", True):
+        obs.extend(
+            poi.find_displacement_pois(df, body_threshold=thr)
+        )
+
     fvgs = poi.find_fvgs(df, body_threshold=thr, require_displacement=True)
 
     if not use_ob:
