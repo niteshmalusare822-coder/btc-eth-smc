@@ -783,16 +783,13 @@ BLOCKERS = {
 
 
 def decide(bias, trigger, setups, ts, quality=True, p=None):
-    """Main decision uses 4H bias + 15M setup, plus the 5M quality gate.
+    """Main decision uses 4H bias + 15M setup.
 
-    5M trigger (the `trigger` argument) is INFORMATION ONLY, unchanged.
-    It must never block a valid setup.
+    5M trigger is INFORMATION ONLY and never blocks a valid setup.
 
-    `quality` is the BLOCKING 5M check (see entry_quality_series). Pass
-    ctx["quality"][i] from build_context's output. Callers that do not pass
-    it get the default True, which reproduces the old behaviour exactly —
-    so existing call sites keep working until they are updated to pass it.
-
+    The optional 5M quality gate is controlled by
+    `require_5m_quality_gate`. It is OFF by default, so quality remains
+    informational unless explicitly enabled.
     Returns:
         (action, setup, side, level, reason)
     """
