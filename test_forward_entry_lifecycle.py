@@ -89,3 +89,25 @@ def test_buy_entry_touch_uses_low_not_current_price():
     touched, _, touch_i = _find_entry_touch(df, setup, "bull", 100.0)
     assert touched is True
     assert touch_i == 1
+
+
+def test_entry_touch_never_counts_pre_arming_candle():
+    """A POI is not fillable before the displacement/confirmation candle closes."""
+    from app import _find_entry_touch
+
+    df = pd.DataFrame({
+        "ts": pd.date_range("2026-10-06 10:00", periods=4, freq="5min"),
+        "high": [1.5000, 1.4980, 1.5002, 1.4970],
+        "low": [1.4970, 1.4960, 1.4980, 1.4950],
+    })
+    setup = SimpleNamespace(
+        confirmed_ts=pd.Timestamp("2026-10-06 10:15"),
+        armed_ts=pd.Timestamp("2026-10-06 10:15"),
+        dead_ts=None,
+    )
+    touched, touch_ts, touch_i = _find_entry_touch(
+        df, setup, "bear", 1.4991
+    )
+    assert touched is True
+    assert touch_i == 2
+    assert touch_ts == df["ts"].iat[2]
