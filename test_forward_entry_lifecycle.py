@@ -56,3 +56,36 @@ def test_far_move_without_entry_touch_uses_existing_stale_guard():
         df, _setup(), "bull", 100.0, 99.0, 101.0
     )
     assert cancelled is False
+
+
+
+def test_entry_touch_is_an_event_not_current_price():
+    """A SELL limit remains filled after price moves below the entry."""
+    from types import SimpleNamespace
+    from app import _find_entry_touch
+
+    df = pd.DataFrame({
+        "ts": pd.date_range("2026-10-06 10:00", periods=3, freq="5min"),
+        "high": [1.4980, 1.5000, 1.4960],
+        "low": [1.4960, 1.4970, 1.4940],
+    })
+    setup = SimpleNamespace(confirmed_ts=pd.Timestamp("2026-10-06 10:00"), dead_ts=None)
+    touched, touch_ts, touch_i = _find_entry_touch(df, setup, "bear", 1.4991)
+    assert touched is True
+    assert touch_i == 1
+    assert touch_ts == df["ts"].iat[1]
+
+
+def test_buy_entry_touch_uses_low_not_current_price():
+    from types import SimpleNamespace
+    from app import _find_entry_touch
+
+    df = pd.DataFrame({
+        "ts": pd.date_range("2026-10-06 10:00", periods=3, freq="5min"),
+        "high": [100.8, 101.2, 102.0],
+        "low": [100.5, 99.9, 101.0],
+    })
+    setup = SimpleNamespace(confirmed_ts=pd.Timestamp("2026-10-06 10:00"), dead_ts=None)
+    touched, _, touch_i = _find_entry_touch(df, setup, "bull", 100.0)
+    assert touched is True
+    assert touch_i == 1
