@@ -947,27 +947,35 @@ def build_signal(symbol):
         # _final_tp_hit() only handles TP3 after an entry was actually
         # reached. This guard handles an entry that was never reached.
         # --------------------------------------------------------------
+        # Stale cancellation is opt-in. A valid OB/FVG limit stays armed
+        # while its 15M setup remains alive; the old 3R default cancelled
+        # retracements after late 15M confirmation.
+        try:
+            stale_r_cfg = float(os.environ.get("FORWARD_STALE_R", 0.0))
+        except (TypeError, ValueError):
+            stale_r_cfg = 0.0
+
         stale_forward_entry, stale_level = _forward_entry_stale(
             entry=live_entry,
             sl=float(live_setup.stop_level),
             side=expected_side,
             live_px=live_px,
-            stale_r=float(os.environ.get("FORWARD_STALE_R", 3.0)),
+            stale_r=stale_r_cfg,
         )
 
-        if stale_forward_entry:
+        if stale_r_cfg > 0 and stale_forward_entry:
             base["action"] = "NO_TRADE"
             base["blocker"] = "FORWARD_ENTRY_STALE"
             base["reason"] = (
                 f"forward entry stale; live={live_px:.8g}, "
                 f"entry={live_entry:.8g}, "
                 f"stale_level={stale_level:.8g}; "
-                f"price moved >=3R before entry was reached"
+                f"price moved >={stale_r_cfg:g}R before entry was reached"
             )
             base["live_price"] = _f(live_px)
             base["planned_entry"] = _f(live_entry)
             base["stale_level"] = _f(stale_level)
-            base["stale_r"] = 3.0
+            base["stale_r"] = _f(stale_r_cfg)
             base["tradeable"] = False
             base["setup_status"] = "STALE"
             base["order_status"] = "CANCELLED"
@@ -983,16 +991,21 @@ def build_signal(symbol):
         # Forward-entry lifecycle: after a closed 5M candle has approached
         # or touched the planned entry, a material rejection cancels the old
         # pending limit. This is deterministic across Render restarts.
+        # Near-miss cancellation is opt-in too. A transient dashboard
+        # price move must not revoke a real resting POI limit.
         try:
-            near_r = float(os.environ.get("FORWARD_NEAR_MISS_R", 0.25))
-            away_r = float(os.environ.get("FORWARD_REJECT_R", 0.75))
+            near_r = float(os.environ.get("FORWARD_NEAR_MISS_R", 0.0))
+            away_r = float(os.environ.get("FORWARD_REJECT_R", 0.0))
         except (TypeError, ValueError):
-            near_r, away_r = 0.25, 0.75
+            near_r, away_r = 0.0, 0.0
 
-        near_miss, reject_level = _forward_entry_near_miss(
-            df5, live_setup, expected_side, live_entry,
-            float(live_setup.stop_level), live_px, near_r, away_r
-        )
+        if near_r > 0 and away_r > 0:
+            near_miss, reject_level = _forward_entry_near_miss(
+                df5, live_setup, expected_side, live_entry,
+                float(live_setup.stop_level), live_px, near_r, away_r
+            )
+        else:
+            near_miss, reject_level = False, None
 
         if near_miss and not entry_hit:
             base["action"] = "NO_TRADE"
