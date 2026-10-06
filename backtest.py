@@ -196,9 +196,9 @@ def _find_fill(df, side, level, start, cfg):
     # the POI but then rejects materially. Reproduce the same lifecycle from
     # OHLC bars so historical fills do not include trades live would cancel.
     try:
-        stale_r = float(cfg.get("forward_stale_r", 3.0))
-        near_r = float(cfg.get("forward_near_miss_r", 0.25))
-        reject_r = float(cfg.get("forward_reject_r", 0.75))
+        stale_r = float(cfg.get("forward_stale_r", 0.0))
+        near_r = float(cfg.get("forward_near_miss_r", 0.0))
+        reject_r = float(cfg.get("forward_reject_r", 0.0))
     except (TypeError, ValueError):
         stale_r, near_r, reject_r = 3.0, 0.25, 0.75
 
@@ -210,7 +210,9 @@ def _find_fill(df, side, level, start, cfg):
     except (TypeError, ValueError):
         risk_dist = 0.0
 
-    if risk_dist > 0 and np.isfinite(risk_dist):
+    if risk_dist > 0 and np.isfinite(risk_dist) and (
+        stale_r > 0 or (near_r > 0 and reject_r > 0)
+    ):
         approached = False
         for j in range(start, last + 1):
             lo = float(lows[j])
@@ -708,10 +710,11 @@ DEFAULT_CFG = {"max_hold": 60, "rand_sl_atr": 1.0, "n_random": 400,
                                               # with SL still pinned to the
                                               # zone wick -- risk/reward had
                                               # no relation to the zone depth
-               "max_wait": 12,      # bars a resting limit stays live before cancel
-                "forward_stale_r": 3.0,
-                "forward_near_miss_r": 0.25,
-                "forward_reject_r": 0.75,
+               # Keep a valid POI armed for the full 15M setup lifetime: 96x15M = 288x5M.
+               "max_wait": 288,
+               "forward_stale_r": 0.0,
+               "forward_near_miss_r": 0.0,
+               "forward_reject_r": 0.0,
                "manage_stop": True, # breakeven after TP1, TP1 after TP2
                "matched_seeds": 200,
                "bootstrap_n": 5000,
