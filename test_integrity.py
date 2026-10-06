@@ -1534,3 +1534,40 @@ def test_ob_fvg_use_same_zone_edge_entry():
     assert bull_fvg.entry_at("zone_edge") == 100.0
     assert bear_ob.entry_at("zone_edge") == 110.0
     assert bear_fvg.entry_at("zone_edge") == 110.0
+
+
+# 13 ── forward-entry lifecycle matches live stale / near-miss semantics
+def test_forward_entry_lifecycle_parity():
+    df = pd.DataFrame({
+        "ts": pd.date_range("2024-01-01", periods=5, freq="5min"),
+        "open": [105, 105, 103, 104, 100],
+        "high": [106, 106, 106, 105, 101],
+        "low":  [104, 104, 102.8, 103, 99],
+        "close": [105, 105, 104, 104, 100],
+        "volume": [1, 1, 1, 1, 1],
+    })
+    cfg = {
+        "entry_model": "limit_ote",
+        "max_wait": 4,
+        "forward_stale_r": 3.0,
+        "forward_near_miss_r": 0.25,
+        "forward_reject_r": 0.75,
+        "_forward_entry_sl": 101.0,
+    }
+
+    # Entry=100, 1R=1: approach within 0.25R then reject to >=0.75R.
+    fill_i, fill_px = B._find_fill(df, "bull", 100.0, 1, cfg)
+    assert fill_i is None and fill_px is None
+
+    # Exact touch must fill rather than be classified as stale/rejected.
+    touch = df.copy()
+    touch.loc[2, "low"] = 100.0
+    fill_i, fill_px = B._find_fill(touch, "bull", 100.0, 1, cfg)
+    assert fill_i == 2 and fill_px == 100.0
+
+    # A clean 3R move away before touching the entry cancels the order.
+    stale = df.copy()
+    stale.loc[2, "high"] = 103.0
+    stale.loc[2, "low"] = 102.9
+    fill_i, fill_px = B._find_fill(stale, "bull", 100.0, 1, cfg)
+    assert fill_i is None and fill_px is None
