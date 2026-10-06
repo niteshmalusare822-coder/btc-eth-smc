@@ -220,6 +220,8 @@ class Setup:
     entry_mode: str
     imbalance: bool
     confirmed_ts: pd.Timestamp
+    # Causal timestamp when this POI becomes known/armed (the candle close).
+    armed_ts: pd.Timestamp
     expires_ts: pd.Timestamp
     has_fvg: bool
     swept: bool
@@ -287,7 +289,8 @@ def find_setups(df_15m, p=None, calib_end=None):
     fvgs = poi.find_fvgs(df, body_threshold=thr, require_displacement=True)
 
     if not use_ob:
-        obs = []
+        # Preserve early FVGs when OB is disabled; the old clear deleted them.
+        obs = [z for z in obs if z.kind != "ob"]
 
     # ── FVG AS A POI IN ITS OWN RIGHT ───────────────────────────────────
     # An FVG only qualifies when it was left BY the displacement leg that
@@ -299,14 +302,14 @@ def find_setups(df_15m, p=None, calib_end=None):
         look = int(p.get("ob_lookback", 30))
         floor_atr = float(p.get("fvg_min_size_atr", 0.0))
         rng = (df["high"] - df["low"]).rolling(14, min_periods=5).mean().to_numpy()
-        claimed = {z.formed_idx for z in obs}
+        claimed = {(z.kind, z.formed_idx) for z in obs}
         for ev in kept:
             for f in fvgs:
                 if f.side != ev.side:
                     continue
                 if not (ev.idx - look <= f.formed_idx <= ev.idx):
                     continue
-                if f.formed_idx in claimed:
+                if ("fvg", f.formed_idx) in claimed:
                     continue
                 if floor_atr > 0:
                     a = rng[f.formed_idx]
@@ -316,7 +319,7 @@ def find_setups(df_15m, p=None, calib_end=None):
                 f.confirmed_idx = max(f.confirmed_idx, ev.idx)
                 f.meta["from_break_idx"] = ev.idx
                 obs.append(f)
-                claimed.add(f.formed_idx)
+                claimed.add(("fvg", f.formed_idx))
                 break
 
     obs.sort(key=lambda z: z.confirmed_idx)
@@ -399,6 +402,7 @@ def find_setups(df_15m, p=None, calib_end=None):
             imbalance=bool(z.meta.get("imbalance")),
             # confirmed only once the 15M candle that broke structure CLOSED
             confirmed_ts=pd.Timestamp(ts[z.confirmed_idx]) + bar,
+            armed_ts=pd.Timestamp(ts[z.confirmed_idx]) + bar,
             expires_ts=(pd.Timestamp(ts[z.confirmed_idx])
                         + bar * (1 + int(p["max_age"]))),
             has_fvg=has_fvg,
