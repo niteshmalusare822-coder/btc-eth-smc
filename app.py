@@ -620,7 +620,7 @@ def _find_entry_touch(df5, setup, side, entry, developing=None):
     """Return (touched, touch_ts, touch_i) using candle-range semantics."""
     try:
         entry = float(entry)
-        start_ts = pd.Timestamp(setup.confirmed_ts)
+        start_ts = pd.Timestamp(getattr(setup, "armed_ts", setup.confirmed_ts))
     except Exception:
         return False, None, None
 
