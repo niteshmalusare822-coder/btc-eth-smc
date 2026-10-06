@@ -188,6 +188,61 @@ def _find_fill(df, side, level, start, cfg):
     lows = df["low"].to_numpy()
     highs = df["high"].to_numpy()
     last = min(start + cfg["max_wait"], len(df) - 2)
+
+    # LIVE/BACKTEST PARITY:
+    # A resting forward limit is not kept alive indefinitely after price has
+    # already run away from the planned POI. Live app.py cancels at a
+    # configurable R distance and also cancels a near-miss that approaches
+    # the POI but then rejects materially. Reproduce the same lifecycle from
+    # OHLC bars so historical fills do not include trades live would cancel.
+    try:
+        stale_r = float(cfg.get("forward_stale_r", 3.0))
+        near_r = float(cfg.get("forward_near_miss_r", 0.25))
+        reject_r = float(cfg.get("forward_reject_r", 0.75))
+    except (TypeError, ValueError):
+        stale_r, near_r, reject_r = 3.0, 0.25, 0.75
+
+    # The same stop distance used by the live helper defines 1R.
+    # If the caller supplied an invalid level/SL, retain the old fill logic.
+    sl = cfg.get("_forward_entry_sl")
+    try:
+        risk_dist = abs(float(level) - float(sl))
+    except (TypeError, ValueError):
+        risk_dist = 0.0
+
+    if risk_dist > 0 and np.isfinite(risk_dist):
+        approached = False
+        for j in range(start, last + 1):
+            lo = float(lows[j])
+            hi = float(highs[j])
+
+            # Exact touch wins: this is a real limit fill, so do not classify
+            # the same bar as stale or rejected.
+            if side == "bull" and lo <= level:
+                return j, level
+            if side == "bear" and hi >= level:
+                return j, level
+
+            if side == "bull":
+                # Price moving upward away from a bullish entry.
+                if hi >= level + stale_r * risk_dist:
+                    return None, None
+                if lo <= level + near_r * risk_dist:
+                    approached = True
+                if approached and hi >= level + reject_r * risk_dist:
+                    return None, None
+            else:
+                # Price moving downward away from a bearish entry.
+                if lo <= level - stale_r * risk_dist:
+                    return None, None
+                if hi >= level - near_r * risk_dist:
+                    approached = True
+                if approached and lo <= level - reject_r * risk_dist:
+                    return None, None
+
+        return None, None
+
+    # Compatibility fallback when no stop distance is available.
     for j in range(start, last + 1):
         if side == "bull" and lows[j] <= level:
             return j, level
@@ -213,7 +268,9 @@ def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
     if (side == "bull" and level <= sl) or (side == "bear" and level >= sl):
         return None, "entry on the wrong side of the stop"
 
-    fill_i, entry = _find_fill(df, side, level, sig_i + 1, cfg)
+    fill_cfg = dict(cfg)
+    fill_cfg["_forward_entry_sl"] = stop_level
+    fill_i, entry = _find_fill(df, side, level, sig_i + 1, fill_cfg)
     if fill_i is None:
         return None, "order never filled"
     if (side == "bull" and entry <= sl) or (side == "bear" and entry >= sl):
@@ -652,6 +709,9 @@ DEFAULT_CFG = {"max_hold": 60, "rand_sl_atr": 1.0, "n_random": 400,
                                               # zone wick -- risk/reward had
                                               # no relation to the zone depth
                "max_wait": 12,      # bars a resting limit stays live before cancel
+                "forward_stale_r": 3.0,
+                "forward_near_miss_r": 0.25,
+                "forward_reject_r": 0.75,
                "manage_stop": True, # breakeven after TP1, TP1 after TP2
                "matched_seeds": 200,
                "bootstrap_n": 5000,
