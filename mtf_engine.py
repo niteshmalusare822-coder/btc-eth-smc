@@ -277,9 +277,12 @@ def find_setups(df_15m, p=None, calib_end=None):
     # EARLY POI: arm the zone at the close of the displacement candle.
     # This is causal and avoids waiting for a later confirmed swing/BOS.
     if p.get("early_poi", True):
-        obs.extend(
-            poi.find_displacement_pois(df, body_threshold=thr)
-        )
+        early = poi.find_displacement_pois(df, body_threshold=thr)
+        if not use_ob:
+            early = [z for z in early if z.kind != "ob"]
+        if not use_fvg:
+            early = [z for z in early if z.kind != "fvg"]
+        obs.extend(early)
 
     fvgs = poi.find_fvgs(df, body_threshold=thr, require_displacement=True)
 
