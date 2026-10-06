@@ -31,6 +31,7 @@ const CSS = `
   font-size:11px;font-weight:700;letter-spacing:.05em;margin-bottom:8px}
 .sig .act.buy{background:#2ea043;color:#fff}
 .sig .act.sell{background:#da3633;color:#fff}
+.sig .act.setup{background:#5c6bc0;color:#fff}
 .sig .act.flat{background:#484f58;color:#fff}
 .sig .px{font-size:20px;font-weight:600;margin:4px 0 8px}
 .sig .chips{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}
@@ -126,6 +127,28 @@ function tpRow(tp) {
     <td>${inr(tp.net_inr)}</td><td>${note}</td></tr>`;
 }
 
+function renderSetup(s) {
+  const bullish = s.htf_bias_1h === "BULLISH";
+  const side = bullish ? "BUY" : s.htf_bias_1h === "BEARISH" ? "SELL" : "SETUP";
+  const dir = bullish ? "buy" : side === "SELL" ? "sell" : "flat";
+  const zoneLabel = s.zone?.has_fvg ? "OB + FVG" : "OB/FVG";
+  return `<div class="sig">
+    <span class="act setup ${dir}">${side} SETUP</span>
+    <div class="px">${px(s.price)}</div>
+    <div class="chips">
+      ${chip("1H", s.htf_bias_1h || "—", bullish || s.htf_bias_1h === "BEARISH")}
+      ${chip("15M", zoneLabel, !!s.setup_15m)}
+      ${chip("5M", s.trigger_5m || "informational", false)}
+    </div>
+    <table>
+      <tr><td>Entry</td><td>${px(s.entry)}</td><td colspan="2">exact OB/FVG edge · limit</td></tr>
+      ${s.sl != null ? `<tr class="sl"><td>SL</td><td>${px(s.sl)}</td><td colspan="2">planned stop</td></tr>` : ""}
+    </table>
+    <div class="why">${s.reason || "valid 15M setup; waiting for exact entry touch"}</div>
+    <div class="src">${s.order_status || "PENDING_LIMIT"} · no price chasing · ${s.source || ""}</div>
+  </div>`;
+}
+
 function renderTicket(s) {
   const dir = s.action === "BUY" ? "buy" : "sell";
     const warn = s.tradeable ? "" :
@@ -204,12 +227,19 @@ async function loadSignals() {
       const el = targets[s.symbol];
       if (!el) return;
       el.innerHTML = (s.action === "BUY" || s.action === "SELL")
-        ? renderTicket(s) : renderFlat(s);
+        ? renderTicket(s)
+        : s.action === "WATCHING" && s.setup_15m
+          ? renderSetup(s)
+          : renderFlat(s);
     });
 
     const n = d.actionable ?? 0;
-    setStatus(`🟢 Live · ${n} actionable · ${new Date().toLocaleTimeString("en-IN")}`,
-      n > 0 ? "#2ea043" : "#8b949e");
+    const setupCount = (d.results || []).filter(s =>
+      s.action === "WATCHING" && s.setup_15m &&
+      (s.htf_bias_1h === "BULLISH" || s.htf_bias_1h === "BEARISH")
+    ).length;
+    setStatus(`🟢 Live · ${n} actionable · ${setupCount} pending setups · ${new Date().toLocaleTimeString("en-IN")}`,
+      n > 0 || setupCount > 0 ? "#2ea043" : "#8b949e");
   } catch (e) {
     setStatus(`🔴 Disconnected (${e.message}) — retrying`, "#da3633");
     SYMBOLS.forEach(s => {
