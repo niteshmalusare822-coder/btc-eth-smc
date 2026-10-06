@@ -373,6 +373,69 @@ def find_fvgs(
     return zones
 
 
+def find_displacement_pois(
+    df: pd.DataFrame,
+    body_threshold=2.0,
+) -> list[Zone]:
+    """Causal OB/FVG candidates armed at the completed displacement bar.
+
+    No confirmed swing/BOS is required. At candle i close the displacement
+    candle is fully known, so its immediately preceding opposite candle can
+    be used as the OB and a three-candle gap ending at i can be used as FVG.
+    """
+    if "body_vs_median" not in df.columns:
+        df = add_candle_metrics(df)
+    o, c = df["open"].to_numpy(), df["close"].to_numpy()
+    h, lo = df["high"].to_numpy(), df["low"].to_numpy()
+    bvm, dom = df["body_vs_median"].to_numpy(), df["body_dominance"].to_numpy()
+    n = len(df)
+    thr = _as_array(body_threshold, n)
+    zones = []
+
+    for i in range(1, n):
+        if not np.isfinite(bvm[i]) or bvm[i] < thr[i]:
+            continue
+        side = "bull" if c[i] > o[i] else "bear" if c[i] < o[i] else None
+        if side is None:
+            continue
+        j = i - 1
+        opposite = (side == "bull" and c[j] < o[j]) or (side == "bear" and c[j] > o[j])
+        if opposite:
+            wt, wb = float(h[j]), float(lo[j])
+            bt, bb = float(max(o[j], c[j])), float(min(o[j], c[j]))
+            top, bottom = (bt, bb) if dom[j] >= 0.6 else (wt, wb)
+            zones.append(Zone(
+                "ob", side, top, bottom,
+                wick_top=wt, wick_bottom=wb, body_top=bt, body_bottom=bb,
+                formed_idx=j, confirmed_idx=i,
+                meta={"early_displacement": True, "displacement_idx": i,
+                      "displacement": float(bvm[i])},
+            ))
+
+    if n >= 3:
+        for i in range(2, n):
+            mid = i - 1
+            if not np.isfinite(bvm[mid]) or bvm[mid] < thr[mid]:
+                continue
+            bull_gap = lo[i] - h[i - 2]
+            if bull_gap > 0:
+                zones.append(Zone(
+                    "fvg", "bull", float(lo[i]), float(h[i - 2]),
+                    formed_idx=mid, confirmed_idx=i,
+                    meta={"early_displacement": True, "displacement_idx": mid,
+                          "displacement": float(bvm[mid])},
+                ))
+            bear_gap = lo[i - 2] - h[i]
+            if bear_gap > 0:
+                zones.append(Zone(
+                    "fvg", "bear", float(lo[i - 2]), float(h[i]),
+                    formed_idx=mid, confirmed_idx=i,
+                    meta={"early_displacement": True, "displacement_idx": mid,
+                          "displacement": float(bvm[mid])},
+                ))
+    return zones
+
+
 def find_order_blocks(
     df: pd.DataFrame,
     bos_events: list[BOS],

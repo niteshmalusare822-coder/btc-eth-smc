@@ -41,8 +41,9 @@ REVIEW FIXES IN THIS VERSION
    silently "reachable". Guarded.
 8. bars was parsed in several places with different failure behaviour. One
    helper now does it everywhere.
-9. build_signal() produces signal-only tickets. It does not replay historical
-   candles to pretend that a manual position was opened or to manage a stop.
+9. build_signal() is a signal/lifecycle endpoint. Once the exact POI edge is
+   touched, the symbol is locked to that position until TP3 or SL; only then
+   does the next poll scan for a new POI.
 10. Live price is now sourced from a separate CoinDCX trades websocket channel
     instead of the closed-candle price used for structure/entry decisions.
     /api/signal, /api/signals and the new /api/live-prices endpoint expose it
@@ -603,6 +604,180 @@ def _f(x):
     return None if not np.isfinite(v) else round(v, 8)
 
 
+
+# ---------------------------------------------------------------------------
+# LIVE PER-SYMBOL POSITION LIFECYCLE
+# ---------------------------------------------------------------------------
+# A limit entry is an event, not a snapshot of current price. Once a POI edge
+# is touched, that symbol owns one live position until TP3/SL. The state is
+# reconstructable from 5M history so a Render restart does not automatically
+# turn an already-entered trade back into PENDING_LIMIT.
+LIVE_POSITIONS = {}
+LIVE_POSITIONS_LOCK = threading.Lock()
+
+
+def _find_entry_touch(df5, setup, side, entry, developing=None):
+    """Return (touched, touch_ts, touch_i) using candle-range semantics."""
+    try:
+        entry = float(entry)
+        start_ts = pd.Timestamp(setup.confirmed_ts)
+    except Exception:
+        return False, None, None
+
+    # The zone replay already records the first full mitigation. With the
+    # default kill_on='full', that is exactly the canonical zone-edge touch.
+    # Use it directly when available, avoiding a full historical scan.
+    dead_ts = getattr(setup, "dead_ts", None)
+    if dead_ts is not None:
+        try:
+            dts = pd.Timestamp(dead_ts)
+            if dts >= start_ts:
+                ts_series = pd.to_datetime(df5["ts"], errors="coerce")
+                after = np.flatnonzero(ts_series.to_numpy() >= dts.to_datetime64())
+                if len(after):
+                    return True, dts, int(after[0])
+                return True, dts, None
+        except Exception:
+            pass
+
+    ts = pd.to_datetime(df5["ts"], errors="coerce")
+    mask = ts >= start_ts
+    if bool(mask.any()):
+        sub = df5.loc[mask]
+        if side == "bull":
+            hit = pd.to_numeric(sub["low"], errors="coerce") <= entry
+        else:
+            hit = pd.to_numeric(sub["high"], errors="coerce") >= entry
+        idxs = sub.index[hit.fillna(False)]
+        if len(idxs):
+            i = int(idxs[0])
+            return True, pd.Timestamp(ts.loc[i]), i
+
+    if developing:
+        try:
+            dts = pd.to_datetime(developing.get("ts_ms"), unit="ms")
+            dh = float(developing["high"])
+            dl = float(developing["low"])
+            touched = dl <= entry if side == "bull" else dh >= entry
+            if touched and dts >= start_ts:
+                return True, dts, None
+        except Exception:
+            pass
+
+    return False, None, None
+
+
+def _touched_setup_at(setups, ts, side, df5, developing=None):
+    """Find the newest POI whose exact entry edge has already been touched."""
+    ts = pd.Timestamp(ts)
+    candidates = []
+    for s in setups:
+        if s.confirmed_ts > ts or s.expires_ts < ts or (side and s.side != side):
+            continue
+        if s.state == "WAITING_FOR_RETEST":
+            continue
+        touched, touch_ts, touch_i = _find_entry_touch(
+            df5, s, s.side, float(s.entry_level), developing=developing
+        )
+        if touched and touch_ts is not None and touch_ts <= ts:
+            candidates.append((touch_ts, s.confirmed_ts, s, touch_i))
+    if not candidates:
+        return None, None, None
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    touch_ts, _, setup, touch_i = candidates[0]
+    return setup, touch_ts, touch_i
+
+
+def _position_ticket(state, live_px, status="ACTIVE"):
+    side = state["side"]
+    action = "BUY" if side == "bull" else "SELL"
+    tps = list(state.get("tps") or []) + [None, None, None]
+    return {
+        "symbol": state["symbol"],
+        "action": action,
+        "blocker": "ACTIVE_POSITION",
+        "reason": f"{action} position active; waiting for TP/SL before next {state['symbol']} setup",
+        "live_price": _f(live_px),
+        "entry": _f(state["entry"]),
+        "planned_entry": _f(state["entry"]),
+        "sl": _f(state["sl"]),
+        "tp1": tps[0],
+        "tp2": tps[1],
+        "tp3": tps[2],
+        "tradeable": True,
+        "setup_status": status,
+        "order_status": "ACTIVE",
+        "position_active": True,
+        "entry_time": str(state.get("entry_ts")),
+        "source": state.get("source"),
+    }
+
+
+def _manage_live_position(symbol, df5, live_px):
+    """Manage one open symbol position with the same exit model as backtest."""
+    with LIVE_POSITIONS_LOCK:
+        state = LIVE_POSITIONS.get(symbol)
+    if not state:
+        return None, None
+
+    side = state["side"]
+    entry = float(state["entry"])
+    sl = float(state["sl"])
+    tps = [float(x) for x in (state.get("tps") or []) if x is not None]
+    cost_r = float(state.get("cost_in_r", 0.0) or 0.0)
+    entry_i = int(state.get("entry_i", max(len(df5) - 1, 0)))
+    start = min(entry_i + 1, max(len(df5) - 1, 0))
+
+    closed = False
+    close_reason = None
+    hit = []
+    cur_sl = sl
+
+    if tps and len(df5) > start:
+        sim_tps = [
+            {"level": f"TP{i+1}", "price": px, "reachable": True,
+             "r_multiple": abs(px - entry) / max(abs(entry - sl), 1e-12)}
+            for i, px in enumerate(tps[:3])
+        ]
+        _, hit, outcome, _ = C.simulate(
+            df5, side, entry, sl, sim_tps, start,
+            max(1, len(df5) - start - 1),
+            manage=True, cost_r=cost_r,
+        )
+        if outcome in ("STOP", "TRAILED_STOP", "TP_ALL"):
+            closed = True
+            close_reason = "SL_HIT" if outcome in ("STOP", "TRAILED_STOP") else "TP3_HIT"
+
+        risk = abs(entry - sl)
+        if hit and risk > 0:
+            for n in range(1, len(hit) + 1):
+                if n == 1:
+                    pad = cost_r * risk
+                    cur_sl = entry + pad if side == "bull" else entry - pad
+                elif n == 2 and tps:
+                    cur_sl = tps[0]
+            cur_sl = max(sl, cur_sl) if side == "bull" else min(sl, cur_sl)
+
+    if not closed:
+        px = float(live_px)
+        if side == "bull":
+            if px <= cur_sl:
+                closed, close_reason = True, "SL_HIT"
+            elif len(hit) < len(tps) and px >= tps[len(hit)] and len(hit) + 1 >= len(tps):
+                closed, close_reason = True, "TP3_HIT"
+        else:
+            if px >= cur_sl:
+                closed, close_reason = True, "SL_HIT"
+            elif len(hit) < len(tps) and px <= tps[len(hit)] and len(hit) + 1 >= len(tps):
+                closed, close_reason = True, "TP3_HIT"
+
+    if closed:
+        with LIVE_POSITIONS_LOCK:
+            LIVE_POSITIONS.pop(symbol, None)
+        return None, close_reason
+
+    return _position_ticket(state, live_px), None
+
 def _atr(df, period=14):
     h, l, c = df["high"], df["low"], df["close"]
     pc = c.shift(1)
@@ -908,6 +1083,14 @@ def build_signal(symbol):
         else None
     )
 
+    # One symbol = one active position. Do not replace an open trade with a
+    # newer POI until TP3 or SL closes it.
+    active_ticket, _closed_reason = _manage_live_position(symbol, df5, live_px)
+    if active_ticket is not None:
+        active_ticket["htf_bias_1h"] = bias
+        active_ticket["last_closed"] = format_ist_time(ts)
+        return active_ticket
+
     # --------------------------------------------------------------
     # LIVE 1M REACTION
     # --------------------------------------------------------------
@@ -927,6 +1110,19 @@ def build_signal(symbol):
         if expected_side
         else []
     )
+
+    # A full POI touch makes the zone non-active in the structural replay.
+    # Recover that already-filled setup once so the live lifecycle can keep
+    # the symbol locked instead of reverting to PENDING_LIMIT on the next poll.
+    recovered_setup = None
+    recovered_touch_ts = None
+    recovered_touch_i = None
+    if not live_setups and expected_side:
+        recovered_setup, recovered_touch_ts, recovered_touch_i = _touched_setup_at(
+            ctx["setups"], ts, expected_side, df5, developing=developing_5m
+        )
+        if recovered_setup is not None:
+            live_setups = [recovered_setup]
 
     if live_setups:
         live_setup = live_setups[0]
@@ -981,12 +1177,12 @@ def build_signal(symbol):
             base["order_status"] = "CANCELLED"
             return base
 
-        # Entry has already been reached. Do not generate a new entry.
-        entry_hit = (
-            live_px <= live_entry
-            if expected_side == "bull"
-            else live_px >= live_entry
+        # Entry is an event. Current price may already be beyond the edge
+        # after the candle touched it; that must remain ENTRY_REACHED.
+        touched_now, touch_ts, touch_i = _find_entry_touch(
+            df5, live_setup, expected_side, live_entry, developing=developing_5m
         )
+        entry_hit = bool(touched_now and touch_ts is not None and touch_ts <= ts)
 
         # Forward-entry lifecycle: after a closed 5M candle has approached
         # or touched the planned entry, a material rejection cancels the old
@@ -1188,10 +1384,34 @@ def build_signal(symbol):
         ),
     })
 
-    # Manual-signal mode: this endpoint only produces a fresh setup. It does
-    # not replay old candles, track a position, or change the trade to
-    # NO_TRADE after a simulated TP/SL outcome. The trader manages execution
-    # and any trailing stop manually.
+    # Lock the symbol as soon as the canonical POI edge has actually been
+    # touched. Subsequent polls manage TP/SL and suppress newer setups until
+    # this position is closed.
+    if base.get("blocker") == "ENTRY_REACHED" and setup is not None:
+        tps = []
+        for t in s.tps[:3]:
+            try:
+                tps.append(float(t.get("price")))
+            except (TypeError, ValueError):
+                tps.append(None)
+        entry_i = touch_i if touch_i is not None else max(len(df5) - 1, 0)
+        state = {
+            "symbol": symbol,
+            "side": side,
+            "entry": float(level),
+            "sl": float(sl),
+            "tps": tps,
+            "cost_in_r": float(s.cost_in_r),
+            "entry_i": int(entry_i),
+            "entry_ts": str(touch_ts or ts),
+            "source": meta.get("source"),
+        }
+        with LIVE_POSITIONS_LOCK:
+            LIVE_POSITIONS[symbol] = state
+        base["position_active"] = True
+        base["setup_status"] = "ACTIVE"
+        base["order_status"] = "ACTIVE"
+
     return base
 
 
