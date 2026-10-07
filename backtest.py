@@ -1244,6 +1244,9 @@ def _sensitivity(symbol, df5, df15, df1h, cfg, params, oos_start, n):
         "trigger_lookback": [2, 3, 5],
         "ob_entry_mode": ["wick", "body", "50"],
         "stop_buffer_frac": [0.05, 0.10, 0.30],
+        # OOS-only experiments; production defaults remain unchanged.
+        "require_5m_quality_gate": [False, True],
+        "require_liquidity_sweep": [False, True],
     }
 
     rows = []
@@ -1534,6 +1537,19 @@ def _verdict(out):
                   f"Positive P&L, but a coin flip on the same bars with the same "
                   f"stops averages Rs.{base['random_mean_expectancy']:.0f} against "
                   f"this strategy's Rs.{e:.0f}. Not an edge.", edge)
+
+    # A relative edge is not enough for a trading system. Require direct
+    # profitability before the final verdict can become PROVEN_EDGE.
+    net_oos = smc.get("net_pnl_inr")
+    pf_oos = smc.get("profit_factor")
+    if net_oos is None or float(net_oos) <= 0 or pf_oos is None or float(pf_oos) <= 1.0:
+        return _v(
+            "POSITIVE_EDGE_BUT_UNPROFITABLE",
+            f"Relative edge is positive, but OOS net P&L is Rs.{float(net_oos or 0):.0f} "
+            f"and profit factor is {pf_oos if pf_oos is not None else 'n/a'}. "
+            "Do not treat a relative edge as a profitable strategy.",
+            edge,
+        )
     if z is not None and z < 1.0:
         return _v("FRAGILE",
                   f"Beats the random mean by Rs.{edge:.0f}, but the random "

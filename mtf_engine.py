@@ -952,8 +952,20 @@ def _evaluate(bias, trigger, setups, ts, quality=True, p=None):
     # ------------------------------------------------------------
     s = live[0]
 
-    # 5M confirmation/quality is informational only. The 15M POI edge
-    # is the execution price; the execution layer waits for price to touch it.
+    # 5M trigger is informational. The optional quality gate is a real
+    # blocking condition when explicitly enabled, in this shared decision
+    # layer so live and backtest cannot disagree.
+    if p.get("require_5m_quality_gate", False) and not bool(quality):
+        return (
+            "NO_TRADE",
+            None,
+            None,
+            None,
+            "WEAK_5M_CONFIRMATION",
+        )
+
+    # The 15M POI edge is the execution price; the execution layer waits for
+    # price to touch it.
     action = (
         "BUY"
         if side == "bull"
@@ -1033,7 +1045,11 @@ def gate_state(bias, trigger, setups, ts, quality=True, p=None):
         # BLOCKING
         "quality_5m": bool(quality),
 
-        "quality_5m_role": "INFORMATION_ONLY",
+        "quality_5m_role": (
+            "BLOCKING"
+            if p.get("require_5m_quality_gate", False)
+            else "INFORMATION_ONLY"
+        ),
 
         "liquidity_sweep": (
             bool(s.swept)
