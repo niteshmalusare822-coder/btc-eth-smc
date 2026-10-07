@@ -660,6 +660,17 @@ def _find_entry_touch(df5, setup, side, entry, developing=None):
             dl = float(developing["low"])
             touched = dl <= entry if side == "bull" else dh >= entry
             if touched and dts >= start_ts:
+                print(
+                    "[DEV_TOUCH]",
+                    "side=", side,
+                    "entry=", entry,
+                    "high=", dh,
+                    "low=", dl,
+                    "developing_ts=", dts,
+                    "start_ts=", start_ts,
+                    "touched=", touched,
+                )
+
                 return True, dts, None
         except Exception:
             pass
@@ -689,6 +700,10 @@ def _touched_setup_at(setups, ts, side, df5, developing=None):
 
 
 def _position_ticket(state, live_px, status="ACTIVE"):
+    print(
+        "[ACTIVE_POSITION]",
+        state
+    )
     side = state["side"]
     action = "BUY" if side == "bull" else "SELL"
     tps = list(state.get("tps") or []) + [None, None, None]
@@ -1189,7 +1204,22 @@ def build_signal(symbol):
         touched_now, touch_ts, touch_i = _find_entry_touch(
             df5, live_setup, expected_side, live_entry, developing=developing_5m
         )
-        entry_hit = bool(touched_now and touch_ts is not None and touch_ts <= ts)
+        entry_hit = bool(
+            touched_now
+            and touch_ts is not None
+            and touch_ts <= ts
+        )
+
+        print(
+            "[ENTRY_DEBUG]",
+            "symbol=", symbol,
+            "entry=", live_entry,
+            "touched_now=", touched_now,
+            "touch_ts=", touch_ts,
+            "closed_ts=", ts,
+            "entry_hit=", entry_hit,
+            "developing_5m=", bool(developing_5m),
+        )
 
         # Forward-entry lifecycle: after a closed 5M candle has approached
         # or touched the planned entry, a material rejection cancels the old
@@ -1417,6 +1447,12 @@ def build_signal(symbol):
             "entry_ts": str(touch_ts or ts),
             "source": meta.get("source"),
         }
+        print(
+            "[POSITION_CREATED]",
+            symbol,
+            state
+        )
+
         with LIVE_POSITIONS_LOCK:
             LIVE_POSITIONS[symbol] = state
         base["position_active"] = True
