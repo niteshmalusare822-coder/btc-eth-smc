@@ -1,10 +1,10 @@
 # SMC MTF Strategy: Deep-Dive Audit & Production Enhancements (Auto-Updated)
 
 **Author:** Elite Quant Algorithmic Trader | SMC Specialist  
-**Date:** 2026-10-07 (engineering update; next collect run refreshes metrics)  
+**Date:** 2026-10-07 (engineering update; stored metrics below are legacy)  
 **Objective:** Maximize win rate, reduce false positives, optimize profit factors based on live/pooled OOS data.
 
-## Executive Summary & Latest Pooled Metrics
+## Executive Summary & Latest Stored Metrics (LEGACY — pre-collector correction)
 - **Total Symbols Usable:** 17
 - **Total Trades Pooled:** 583
 - **Pooled Edge (INR):** 54.9
@@ -12,6 +12,8 @@
 - **Sigma (Z-Score):** 8.41
 - **Significant at 95%:** True
 - **Pooled Net PnL (INR):** -43258.0
+
+> **Important:** The 583-trade snapshot above was produced before the collector was corrected to measure the production SMC_MTF arm rather than the 15M-only SMC arm. Do not use those numbers as the current SMC_MTF performance estimate. Run the corrected collector before making strategy or symbol decisions.
 
 ## Verdict
 > Pooled edge is positive and outside the noise band. This is worth walk-forward and sensitivity confirmation before anything is called an edge.
@@ -56,7 +58,7 @@ The audit is now explicitly centered on the **production SMC_MTF arm** versus it
 
 ### Profitability gate
 
-The latest stored pooled result is still **not profitable**: pooled net P&L is **-Rs.43,258**. The positive matched-random gap (+Rs.54.9/trade) therefore must not be treated as proof of a profitable strategy.
+The latest stored snapshot has **-Rs.43,258 pooled net P&L**, but that snapshot is from the pre-correction collector and is not a valid current SMC_MTF estimate. The positive matched-random gap (+Rs.54.9/trade) therefore must not be treated as proof of a profitable strategy.
 
 A production promotion requires all of these together: positive OOS net P&L, profit factor above 1, sufficient OOS trades, walk-forward stability, non-fragile sensitivity, and live/backtest parity checks.
 
