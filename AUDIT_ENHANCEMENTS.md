@@ -1,70 +1,57 @@
 # SMC MTF Strategy: Deep-Dive Audit & Production Enhancements (Auto-Updated)
 
 **Author:** Elite Quant Algorithmic Trader | SMC Specialist  
-**Date:** 2026-10-07 (engineering update; stored metrics below are legacy)  
-**Objective:** Maximize win rate, reduce false positives, optimize profit factors based on live/pooled OOS data.
+**Date:** 2026-10-07 (Auto-Generated via collect.py)  
+**Objective:** Measure the production SMC_MTF rules against a matched-random null, then improve only when the improvement survives out-of-sample testing, walk-forward validation, and sensitivity checks.
 
-## Executive Summary & Latest Stored Metrics (LEGACY — pre-collector correction)
+## Canonical Strategy / Execution Contract
+- **Measured arm:** `SMC_MTF`
+- **Matched null:** `MATCHED_RANDOM_vs_SMC_MTF`
+- **Risk cap:** Rs.700 inclusive of fees and slippage
+- **Backtest max cost gate:** 0.75R
+- **1H bias / 15M setup / 5M trigger:** trigger is informational; 5M quality blocks only when explicitly enabled
+- **Retest requirement:** False
+- **Structure confirmation:** False
+- **Entry model:** `limit_ote` at the canonical POI edge
+
+## Executive Summary & Latest Pooled Metrics
 - **Total Symbols Usable:** 17
-- **Total Trades Pooled:** 583
-- **Pooled Edge (INR):** 54.9
-- **Standard Error:** 6.5
-- **Sigma (Z-Score):** 8.41
+- **Total Trades Pooled:** 301
+- **Pooled Edge (INR):** 80.9
+- **Standard Error:** 8.4
+- **Sigma (Z-Score):** 9.64
 - **Significant at 95%:** True
-- **Pooled Net PnL (INR):** -43258.0
-
-> **Important:** The 583-trade snapshot above was produced before the collector was corrected to measure the production SMC_MTF arm rather than the 15M-only SMC arm. Do not use those numbers as the current SMC_MTF performance estimate. Run the corrected collector before making strategy or symbol decisions.
+- **Pooled Net PnL (INR):** -12061.0
+- **Pooled Profit Factor:** 0.82
+- **Measured Arm:** SMC_MTF
+- **Matched Null:** MATCHED_RANDOM_vs_SMC_MTF
 
 ## Verdict
-> Pooled edge is positive and outside the noise band. This is worth walk-forward and sensitivity confirmation before anything is called an edge.
+> NO-GO — relative edge may be positive, but pooled net P&L is not profitable after costs. Keep the strategy in research and improve/validate the rules before deployment.
+
+## Profitability Gate
+A relative edge is not enough for production. The strategy is **not considered profitable** unless OOS net P&L is positive, pooled/trade-level profit factor is above 1, the OOS sample is sufficient, walk-forward remains stable, and sensitivity runs do not collapse. A negative pooled net P&L is always a **NO-GO** even when the matched-random edge is positive.
 
 ## Per-Symbol Performance Table (Latest Run)
 | Symbol | Trades | Win% | PF | Expectancy (INR) | Random Mean | Edge | Net PnL (INR) | WF Folds |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| BTC | 12 | 41.7% | 0.35 | -683.6 | -449.3 | -234.3 | -8203.0 | 2/4 |
-| ETH | 19 | 63.2% | 0.99 | -8.7 | -551.2 | +542.5 | -166.0 | 2/4 |
-| SOL | 25 | 52.0% | 0.87 | -28.4 | -56.6 | +28.2 | -709.0 | 3/4 |
-| XRP | 28 | 35.7% | 0.44 | -119.8 | -120.8 | +1.0 | -3355.0 | 1/4 |
-| AVAX | 49 | 46.9% | 0.54 | -137.8 | -124.2 | -13.6 | -6752.0 | 3/4 |
-| LINK | 41 | 48.8% | 0.73 | -73.4 | -105.9 | +32.5 | -3010.0 | 3/4 |
-| DOGE | 33 | 48.5% | 2.04 | 143.9 | -80.2 | +224.1 | 4749.0 | 4/4 |
-| ADA | 49 | 36.7% | 0.75 | -50.8 | -129.9 | +79.1 | -2490.0 | 3/4 |
-| DEXE | 21 | 71.4% | 1.07 | 15.9 | -85.9 | +101.8 | 333.0 | 4/4 |
-| BANK | 36 | 44.4% | 1.54 | 71.5 | -109.7 | +181.2 | 2575.0 | 3/4 |
-| BNB | 7 | 71.4% | 5.74 | 180.3 | -102.7 | +283.0 | 1262.0 | 3/4 |
-| SUI | 57 | 36.8% | 0.56 | -110.1 | -109.4 | -0.7 | -6273.0 | 4/4 |
-| HBAR | 39 | 41.0% | 1.72 | 121.5 | -131.3 | +252.8 | 4739.0 | 4/4 |
-| LTC | 36 | 38.9% | 0.95 | -10.8 | -94.6 | +83.8 | -390.0 | 3/4 |
-| BCH | 41 | 31.7% | 0.19 | -287.4 | -122.1 | -165.3 | -11783.0 | 4/4 |
-| DOT | 40 | 37.5% | 0.44 | -175.2 | -116.4 | -58.8 | -7008.0 | 3/4 |
-| 1000PEPE | 50 | 38.0% | 0.59 | -135.5 | -119.2 | -16.3 | -6777.0 | 4/4 |
+| BTC | 6 | 66.7% | 1.65 | 148.2 | -244.7 | +392.9 | 889.0 | 3/4 |
+| ETH | 10 | 50.0% | 0.26 | -700.8 | -467.8 | -233.0 | -7008.0 | 2/4 |
+| SOL | 12 | 58.3% | 0.65 | -97.4 | -61.6 | -35.8 | -1169.0 | 2/4 |
+| XRP | 13 | 30.8% | 0.26 | -235.3 | -92.4 | -142.9 | -3059.0 | 1/4 |
+| AVAX | 24 | 50.0% | 1.11 | 15.8 | -115.7 | +131.5 | 380.0 | 4/4 |
+| LINK | 20 | 70.0% | 3.1 | 269.9 | -97.3 | +367.2 | 5397.0 | 3/4 |
+| DOGE | 17 | 52.9% | 1.46 | 82.6 | -84.7 | +167.3 | 1405.0 | 4/4 |
+| ADA | 22 | 36.4% | 0.5 | -151.4 | -141.9 | -9.5 | -3330.0 | 3/4 |
+| DEXE | 11 | 63.6% | 2.12 | 97.9 | -47.0 | +144.9 | 1077.0 | 4/4 |
+| BANK | 19 | 31.6% | 0.48 | -95.2 | -134.9 | +39.7 | -1809.0 | 3/4 |
+| BNB | 5 | 60.0% | 4.65 | 194.4 | -135.7 | +330.1 | 972.0 | 3/3 |
+| SUI | 27 | 40.7% | 0.87 | -19.6 | -107.6 | +88.0 | -529.0 | 3/4 |
+| HBAR | 19 | 57.9% | 2.04 | 92.9 | -119.9 | +212.8 | 1766.0 | 3/4 |
+| LTC | 22 | 36.4% | 0.38 | -174.4 | -117.1 | -57.3 | -3836.0 | 3/4 |
+| BCH | 21 | 42.9% | 0.81 | -28.0 | -116.3 | +88.3 | -587.0 | 4/4 |
+| DOT | 30 | 43.3% | 0.51 | -169.0 | -122.2 | -46.8 | -5070.0 | 2/4 |
+| 1000PEPE | 23 | 52.2% | 1.99 | 106.5 | -136.5 | +243.0 | 2450.0 | 4/4 |
 
 ---
 *Note: This report is dynamically updated by the automated daily GitHub Action using `collect.py`.*
-
-
-## 2026-10-07 Integrity & Profitability Upgrade
-
-The audit is now explicitly centered on the **production SMC_MTF arm** versus its matched-random baseline. The collector no longer summarizes the 15M-only SMC arm while labeling the result as SMC_MTF.
-
-### Production safety contract
-
-- Canonical risk cap: **Rs.700**, inclusive of fees and slippage.
-- Canonical max cost gate: **0.75R** unless deliberately overridden by deployment environment.
-- Canonical TP ladder: **1.5R / 2R / 3R**.
-- Live and backtest pass the same per-bar 5M quality value into the shared decision function.
-- The optional 5M quality gate is tested out of sample rather than silently enabled in production.
-- Research pooling no longer forces a separate `require_retest=True` configuration.
-
-### Profitability gate
-
-The latest stored snapshot has **-Rs.43,258 pooled net P&L**, but that snapshot is from the pre-correction collector and is not a valid current SMC_MTF estimate. The positive matched-random gap (+Rs.54.9/trade) therefore must not be treated as proof of a profitable strategy.
-
-A production promotion requires all of these together: positive OOS net P&L, profit factor above 1, sufficient OOS trades, walk-forward stability, non-fragile sensitivity, and live/backtest parity checks.
-
-### Research direction
-
-The OOS sensitivity suite now includes the optional 5M quality gate and liquidity-sweep requirement alongside the existing entry/stop geometry tests. These experiments are evidence-building only; a historical improvement does not automatically become a live rule.
-
----
-*Integrity update authored 2026-10-07. Automated metric refresh remains owned by `collect.py`.*
