@@ -26,23 +26,35 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 
 # ── constants, read from risk.py's environment contract, not from risk.py ──
-CAPITAL_INR = 10000.0
-MAX_RISK_INR = 700.0
-USDT_INR = 88.0
+def _env_float(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
 
-FEE_PER_LEG = 0.0005
-SLIPPAGE_PER_LEG = 0.0002
-FUNDING_PER_8H = 0.0001
-FUNDING_INTERVAL_HOURS = 8.0
-MIN_NOTIONAL_INR = 200.0
+
+CAPITAL_INR = _env_float("CAPITAL_INR", 10000.0)
+MAX_RISK_INR = _env_float("MAX_RISK_INR", 700.0)
+USDT_INR = _env_float("USDT_INR", 88.0)
+
+FEE_PER_LEG = _env_float("FEE_PER_LEG", 0.0005)
+SLIPPAGE_PER_LEG = _env_float("SLIPPAGE_PER_LEG", 0.0002)
+FUNDING_PER_8H = _env_float("FUNDING_PER_8H", 0.0001)
+FUNDING_INTERVAL_HOURS = _env_float("FUNDING_INTERVAL_HOURS", 8.0)
+MIN_NOTIONAL_INR = _env_float("MIN_NOTIONAL_INR", 200.0)
 
 LEVERAGE_FRACTION = 0.20
 MAX_LEVERAGE = {"BTC": 100, "ETH": 100, "DEXE": 25, "BANK": 20}
 DEFAULT_MAX_LEVERAGE = 20
 
-TP_R_LADDER = [1.0, 2.0, 3.0]
+TP_R_LADDER = [
+    _env_float("TP1_R", 1.5),
+    _env_float("TP2_R", 2.0),
+    _env_float("TP3_R", 3.0),
+]
 TP_SPLIT = [0.30, 0.30, 0.40]
 TF_MINUTES = 5
 

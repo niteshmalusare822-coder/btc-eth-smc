@@ -19,7 +19,7 @@ for n, sym in enumerate(SYMBOLS, 1):
         if f is None:
             print("[%d/%d] %s LOAD FAIL" % (n, len(SYMBOLS), sym), flush=True)
             continue
-        rep = B.full_report(sym, f["5m"], f["15m"], f["1h"], params={**m.PARAMS, "require_retest": True})
+        rep = B.full_report(sym, f["5m"], f["15m"], f["1h"], params=dict(m.PARAMS))
         oos = {a["arm"]: a for a in rep["out_of_sample"]}
         for arm in pool:
             a = oos.get(arm)
@@ -59,7 +59,7 @@ if s and r:
     print("\nedge over matched random: %+.2f INR/trade on %d trades" % (es - er, ns))
     print("VERDICT:", "SMC_MTF BEATS random" if es > er else "SMC_MTF LOSES to random")
     print("NOTE: a positive gap on <100 trades is still not proof.")
-    print("CONFIG: require_retest=True")
+    print("CONFIG: canonical mtf.PARAMS (no research-only retest override)")
 
 json.dump({"rows": rows, "pool": pool}, open("/tmp/pooled.json", "w"), default=str)
 print("\ntotal %ds" % (time.time() - t0))

@@ -277,7 +277,7 @@ async function loadViability() {
       <p>${v.statement || "no verdict returned"}</p></div>`;
   } catch (e) {
     el.innerHTML = `<div class="verdict wait"><b>UNMEASURED</b>
-      <p>Could not reach the report endpoint (${e.name === "AbortError" ? "timed out after 120s" : e.message}). Last recorded result: pooled OOS, 25 symbols, 374 trades, NO EDGE vs matched random.</p></div>`;
+      <p>Could not reach the report endpoint (${e.name === "AbortError" ? "timed out after 120s" : e.message}). The latest stored audit result remains the source of truth until the report endpoint is available.</p></div>`;
   }
 }
 

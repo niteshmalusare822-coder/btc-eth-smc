@@ -1,7 +1,7 @@
 # SMC MTF Strategy: Deep-Dive Audit & Production Enhancements (Auto-Updated)
 
 **Author:** Elite Quant Algorithmic Trader | SMC Specialist  
-**Date:** 2026-10-02 (Auto-Generated via collect.py)  
+**Date:** 2026-10-07 (engineering update; next collect run refreshes metrics)  
 **Objective:** Maximize win rate, reduce false positives, optimize profit factors based on live/pooled OOS data.
 
 ## Executive Summary & Latest Pooled Metrics
@@ -39,3 +39,30 @@
 
 ---
 *Note: This report is dynamically updated by the automated daily GitHub Action using `collect.py`.*
+
+
+## 2026-10-07 Integrity & Profitability Upgrade
+
+The audit is now explicitly centered on the **production SMC_MTF arm** versus its matched-random baseline. The collector no longer summarizes the 15M-only SMC arm while labeling the result as SMC_MTF.
+
+### Production safety contract
+
+- Canonical risk cap: **Rs.700**, inclusive of fees and slippage.
+- Canonical max cost gate: **0.75R** unless deliberately overridden by deployment environment.
+- Canonical TP ladder: **1.5R / 2R / 3R**.
+- Live and backtest pass the same per-bar 5M quality value into the shared decision function.
+- The optional 5M quality gate is tested out of sample rather than silently enabled in production.
+- Research pooling no longer forces a separate `require_retest=True` configuration.
+
+### Profitability gate
+
+The latest stored pooled result is still **not profitable**: pooled net P&L is **-Rs.43,258**. The positive matched-random gap (+Rs.54.9/trade) therefore must not be treated as proof of a profitable strategy.
+
+A production promotion requires all of these together: positive OOS net P&L, profit factor above 1, sufficient OOS trades, walk-forward stability, non-fragile sensitivity, and live/backtest parity checks.
+
+### Research direction
+
+The OOS sensitivity suite now includes the optional 5M quality gate and liquidity-sweep requirement alongside the existing entry/stop geometry tests. These experiments are evidence-building only; a historical improvement does not automatically become a live rule.
+
+---
+*Integrity update authored 2026-10-07. Automated metric refresh remains owned by `collect.py`.*

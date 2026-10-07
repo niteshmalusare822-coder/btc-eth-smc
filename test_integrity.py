@@ -252,13 +252,37 @@ def test_live_backtest_decision_parity(frames):
     assert checked > 20
 
 
-def test_decide_takes_no_price_arguments():
+def test_decide_keeps_four_required_market_arguments():
     import inspect
-    params = list(inspect.signature(mtf.decide).parameters)
-    assert params == ["bias", "trigger", "setups", "ts"], params
+    params = inspect.signature(mtf.decide).parameters
+    assert list(params)[:4] == ["bias", "trigger", "setups", "ts"]
+    assert "quality" in params
+    assert "p" in params
 
 
 # 13 ── same-source loading is preferred and mixed data is refused by default
+def test_quality_gate_blocks_when_enabled(frames):
+    """An enabled quality gate must block a false per-bar quality value."""
+    df5, df15, df1h = frames
+    ctx = mtf.build_context(df5, df15, df1h)
+    ts_all = mtf._ts(df5["ts"])
+    p = {**mtf.PARAMS, "require_5m_quality_gate": True}
+    for i in range(max(200, len(df5) - 200), len(df5)):
+        if ctx["bias"][i] not in ("BULLISH", "BEARISH"):
+            continue
+        side = "bull" if ctx["bias"][i] == "BULLISH" else "bear"
+        if not mtf.active_setups_at(ctx["setups"], ts_all.iat[i], side):
+            continue
+        action, setup, setup_side, level, code = mtf.decide(
+            ctx["bias"][i], ctx["trigger"][i], ctx["setups"], ts_all.iat[i],
+            quality=False, p=p
+        )
+        assert action == "NO_TRADE"
+        assert code == "WEAK_5M_CONFIRMATION"
+        return
+    pytest.skip("fixture did not produce a live directional setup")
+
+
 def test_mixed_source_refused_by_default(monkeypatch):
     """CoinDCX cannot serve 1h, so the whole venue is abandoned rather than
     stitching 5m from CoinDCX onto 1h from somewhere else."""
@@ -1295,8 +1319,8 @@ def test_confirmation_delays_when_the_zone_is_tradeable(frames):
     assert checked > 0, "no comparable setups found"
 
 
-def test_confirmation_is_on_by_default():
-    """Current research architecture enables structure confirmation by default."""
+def test_structure_confirmation_is_optional_by_default():
+    """Structure confirmation remains an optional tested gate, not a hidden default."""
     assert mtf.PARAMS["require_structure_confirmation"] is False
 
 
@@ -1314,8 +1338,8 @@ def test_order_block_still_comes_from_the_break_bar(frames):
 
 
 # ═══ RETEST STATE MACHINE (research architecture) ══════════════════════
-def test_retest_is_required_by_default():
-    """Current architecture requires a 15M retest before entry."""
+def test_retest_is_optional_by_default():
+    """Retest behavior is explicit and disabled in the canonical baseline."""
     assert mtf.PARAMS["require_retest"] is False
 
 def test_poi_without_retest_is_not_tradeable(frames):

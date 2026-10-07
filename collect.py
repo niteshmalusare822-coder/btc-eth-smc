@@ -15,10 +15,12 @@ import numpy as np
 
 import backtest as B
 import data as D
+import mtf_engine as M
 import research_data as RD  # CoinDCX historical loader
+import risk as Risk
 
-ARM = "SMC"
-MATCHED = "MATCHED_RANDOM_vs_SMC"
+ARM = "SMC_MTF"
+MATCHED = "MATCHED_RANDOM_vs_SMC_MTF"
 
 
 def discover_pairs(limit=60):
@@ -56,7 +58,7 @@ def run_symbol(symbol, bars, cfg):
                         cfg=cfg)
     oos = {m["arm"]: m for m in rep.get("out_of_sample", [])}
     smc, rnd = oos.get(ARM, {}), oos.get(MATCHED, {})
-    log = [t for t in (rep.get("trade_log") or []) if t.get("arm") == "smc"]
+    log = [t for t in (rep.get("trade_log") or []) if t.get("arm") == "smc_mtf"]
 
     return {
         "symbol": symbol,
@@ -145,7 +147,17 @@ def update_markdown_report(pool, rows):
 
 **Author:** Elite Quant Algorithmic Trader | SMC Specialist  
 **Date:** 2026-10-02 (Auto-Generated via collect.py)  
-**Objective:** Maximize win rate, reduce false positives, optimize profit factors based on live/pooled OOS data.
+**Objective:** Measure the production SMC_MTF rules against a matched-random null, then improve only when the improvement survives out-of-sample testing, walk-forward validation, and sensitivity checks.
+
+## Canonical Strategy / Execution Contract
+- **Measured arm:** `SMC_MTF`
+- **Matched null:** `MATCHED_RANDOM_vs_SMC_MTF`
+- **Risk cap:** Rs.{Risk.MAX_RISK_INR:.0f} inclusive of fees and slippage
+- **Backtest max cost gate:** {B.DEFAULT_CFG.get('max_cost_in_r', 0.75):.2f}R
+- **1H bias / 15M setup / 5M trigger:** trigger is informational; 5M quality blocks only when explicitly enabled
+- **Retest requirement:** {bool(M.PARAMS.get('require_retest', False))}
+- **Structure confirmation:** {bool(M.PARAMS.get('require_structure_confirmation', False))}
+- **Entry model:** `{B.DEFAULT_CFG.get('entry_model')}` at the canonical POI edge
 
 ## Executive Summary & Latest Pooled Metrics
 - **Total Symbols Usable:** {pool.get('symbols', 0)}
@@ -158,6 +170,9 @@ def update_markdown_report(pool, rows):
 
 ## Verdict
 > {pool.get('verdict', 'No verdict available')}
+
+## Profitability Gate
+A relative edge is not enough for production. The strategy is **not considered profitable** unless OOS net P&L is positive, profit factor is above 1, the OOS sample is sufficient, walk-forward remains stable, and sensitivity runs do not collapse. A negative pooled net P&L remains a **NO-GO** even when the matched-random edge is positive.
 
 ## Per-Symbol Performance Table (Latest Run)
 | Symbol | Trades | Win% | PF | Expectancy (INR) | Random Mean | Edge | Net PnL (INR) | WF Folds |

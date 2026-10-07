@@ -6,7 +6,7 @@ Replaces sizing.py. The rule this module enforces is the one from the spec:
     Position size comes from the STOP DISTANCE, never from leverage.
     Leverage is a constraint that can only make a position smaller.
 
-The ₹1200 risk cap is inclusive of entry fee, exit fee and slippage on both
+The ₹700 risk cap is inclusive of entry fee, exit fee and slippage on both
 legs, so the solved quantity is:
 
     risk_inr = qty * sl_distance_inr + qty * entry_inr * (fee_rt + 2*slip)
@@ -31,7 +31,7 @@ import numpy as np
 
 # ── Account ────────────────────────────────────────────────────────────────
 CAPITAL_INR = float(os.environ.get("CAPITAL_INR", 10000))
-MAX_RISK_INR = float(os.environ.get("MAX_RISK_INR", 1200))
+MAX_RISK_INR = float(os.environ.get("MAX_RISK_INR", 700))
 USDT_INR = float(os.environ.get("USDT_INR", 88.0))
 
 # What you would LIKE each level to pay. Aspiration, not instruction.
