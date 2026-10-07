@@ -253,6 +253,8 @@ def size_position(symbol, direction, entry, sl,
     gross_loss = qty * sl_dist_inr
     fees = qty * entry_inr * ROUND_TRIP_FEE
     slip = qty * entry_inr * ROUND_TRIP_SLIP
+    # NOTE:
+    # funding is NOT included in this risk cap
     total_risk = gross_loss + fees + slip
 
     # fee expressed against the stop: the number that decides viability
