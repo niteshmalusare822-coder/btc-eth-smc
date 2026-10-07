@@ -162,7 +162,7 @@ function renderTicket(s) {
     <div class="chips">
       ${chip("1H", s.htf_bias_1h, true)}
       ${chip("15M", s.zone && s.zone.has_fvg ? "OB+FVG" : "OB", true)}
-      ${chip("5M", s.trigger_5m, true)}
+      ${chip("5M(info)", s.trigger_5m, true)}
     </div>
     ${warn}
     <table>
