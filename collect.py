@@ -113,17 +113,26 @@ def pooled(rows):
                 "per_trade_inr": round(float(a.mean()), 1),
                 "net_inr": round(float(a.sum()), 0)}
 
-    if abs(z) < 1.96:
+    pooled_net = float(net.sum())
+    win_net = float(net[net > 0].sum()) if len(net) else 0.0
+    loss_net = float(abs(net[net <= 0].sum())) if len(net) else 0.0
+    pooled_pf = (win_net / loss_net) if loss_net > 0 else None
+
+    if pooled_net <= 0:
+        verdict = ("NO-GO — relative edge may be positive, but pooled net P&L is "
+                   "not profitable after costs. Keep the strategy in research "
+                   "and improve/validate the rules before deployment.")
+    elif abs(z) < 1.96:
         verdict = ("NOT DECIDABLE — the pooled edge is inside the noise band. "
                    "More trades, not different rules.")
     elif edge > 0:
-        verdict = ("Pooled edge is positive and outside the noise band. This "
-                   "is worth walk-forward and sensitivity confirmation before "
-                   "anything is called an edge.")
+        verdict = ("POSITIVE AND PROFITABLE SO FAR — pooled net P&L is positive, "
+                   "but walk-forward and sensitivity confirmation are still "
+                   "required before calling this a robust edge.")
     else:
-        verdict = ("Pooled edge is significantly NEGATIVE. The rules lose to a "
-                   "coin flip on matched entries. Stop tuning and reconsider "
-                   "the premise.")
+        verdict = ("NO-GO — pooled edge is significantly negative versus the "
+                   "matched-random baseline. Stop tuning and reconsider the "
+                   "premise.")
 
     return {
         "symbols": len(usable),
@@ -136,7 +145,10 @@ def pooled(rows):
             int(((1.96 + 0.84) * float(np.std(e, ddof=1) if len(e) > 1
                                        else se) / abs(edge)) ** 2)
             if edge else None),
-        "pooled_net_inr": round(float(net.sum()), 0),
+        "pooled_net_inr": round(pooled_net, 0),
+        "pooled_profit_factor": (round(pooled_pf, 2) if pooled_pf is not None else None),
+        "measured_arm": ARM,
+        "matched_null": MATCHED,
         "long": _side(longs), "short": _side(shorts),
         "verdict": verdict,
     }
@@ -146,7 +158,7 @@ def update_markdown_report(pool, rows):
     md_content = f"""# SMC MTF Strategy: Deep-Dive Audit & Production Enhancements (Auto-Updated)
 
 **Author:** Elite Quant Algorithmic Trader | SMC Specialist  
-**Date:** 2026-10-02 (Auto-Generated via collect.py)  
+**Date:** {time.strftime('%Y-%m-%d')} (Auto-Generated via collect.py)  
 **Objective:** Measure the production SMC_MTF rules against a matched-random null, then improve only when the improvement survives out-of-sample testing, walk-forward validation, and sensitivity checks.
 
 ## Canonical Strategy / Execution Contract
@@ -167,12 +179,15 @@ def update_markdown_report(pool, rows):
 - **Sigma (Z-Score):** {pool.get('sigma', 0)}
 - **Significant at 95%:** {pool.get('significant_at_95pct', False)}
 - **Pooled Net PnL (INR):** {pool.get('pooled_net_inr', 0)}
+- **Pooled Profit Factor:** {pool.get('pooled_profit_factor', 'n/a')}
+- **Measured Arm:** {pool.get('measured_arm', ARM)}
+- **Matched Null:** {pool.get('matched_null', MATCHED)}
 
 ## Verdict
 > {pool.get('verdict', 'No verdict available')}
 
 ## Profitability Gate
-A relative edge is not enough for production. The strategy is **not considered profitable** unless OOS net P&L is positive, profit factor is above 1, the OOS sample is sufficient, walk-forward remains stable, and sensitivity runs do not collapse. A negative pooled net P&L remains a **NO-GO** even when the matched-random edge is positive.
+A relative edge is not enough for production. The strategy is **not considered profitable** unless OOS net P&L is positive, pooled/trade-level profit factor is above 1, the OOS sample is sufficient, walk-forward remains stable, and sensitivity runs do not collapse. A negative pooled net P&L is always a **NO-GO** even when the matched-random edge is positive.
 
 ## Per-Symbol Performance Table (Latest Run)
 | Symbol | Trades | Win% | PF | Expectancy (INR) | Random Mean | Edge | Net PnL (INR) | WF Folds |
