@@ -734,6 +734,20 @@ def _position_ticket(state, live_px, status="ACTIVE"):
     "entry_time": str(state.get("entry_ts")),
 
     "source": state.get("source"),
+    "position_size_qty": state.get("position_size_qty"),
+    "notional_inr": state.get("notional_inr"),
+    "margin_inr": state.get("margin_inr"),
+    "risk_inr": state.get("risk_inr"),
+
+    "fees_inr": state.get("fees_inr"),
+    "slippage_inr": state.get("slippage_inr"),
+
+    "leverage_used": state.get("leverage_used"),
+
+    "risk_reward": state.get("risk_reward"),
+
+    "cost_in_r": state.get("cost_in_r"),
+
 
     # FIX
     "position_size_qty": state.get("position_size_qty"),
