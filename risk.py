@@ -337,7 +337,14 @@ def _rupee_targets(direction, entry, qty, usdt_inr, sl_dist,
             if target_index >= 3:
                 break
             if r_multiple < minimum_r[target_index]:
-                continue
+    print(
+        "[TARGET_MIN_R_REJECT]",
+        "price=", px,
+        "r=", round(r_multiple, 2),
+        "required=", minimum_r[target_index]
+    )
+    continue
+
 
             gross_inr = qty * move_px * usdt_inr
             net_inr = gross_inr - cost_inr
