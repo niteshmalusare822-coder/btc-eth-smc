@@ -322,7 +322,14 @@ def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
     # stop costs Rs.700 — breakeven needs a 75% win rate.
     max_cost = float(cfg.get("max_cost_in_r", 0.75))
     if s.cost_in_r > max_cost:
-        return None, "cost above max_cost_in_r limit"
+    print(
+        "[COST_GATE_REJECT]",
+        symbol,
+        "cost=", round(s.cost_in_r, 3),
+        "limit=", max_cost
+    )
+    return None, "cost above max_cost_in_r limit"
+
 
     legs, hit, outcome, ex = simulate(df, side, entry, sl, s.tps, fill_i,
                                       cfg["max_hold"],
