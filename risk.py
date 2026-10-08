@@ -337,13 +337,13 @@ def _rupee_targets(direction, entry, qty, usdt_inr, sl_dist,
             if target_index >= 3:
                 break
             if r_multiple < minimum_r[target_index]:
-    print(
-        "[TARGET_MIN_R_REJECT]",
-        "price=", px,
-        "r=", round(r_multiple, 2),
-        "required=", minimum_r[target_index]
-    )
-    continue
+                print(
+                    "[TARGET_MIN_R_REJECT]",
+                    "price=", px,
+                    "r=", round(r_multiple, 2),
+                    "required=", minimum_r[target_index]
+                )
+                continue
 
 
             gross_inr = qty * move_px * usdt_inr
@@ -393,12 +393,12 @@ def _rupee_targets(direction, entry, qty, usdt_inr, sl_dist,
             elif direction == "SELL" and px < structure_limit:
                 reachable, why = False, "beyond the next liquidity level"
 
-print(
-    "[TARGET_UNREACHABLE]",
-    "price=", px,
-    "structure_limit=", structure_limit
-)
-
+            if not reachable:
+                print(
+                    "[TARGET_UNREACHABLE]",
+                    "price=", px,
+                    "structure_limit=", structure_limit
+                )
 
         if reachable and atr and atr > 0 and move_px > 6 * atr:
             reachable, why = False, f"needs {move_px / atr:.1f} ATR of travel"
