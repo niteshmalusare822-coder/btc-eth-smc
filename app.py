@@ -748,19 +748,6 @@ def _position_ticket(state, live_px, status="ACTIVE"):
 
     "cost_in_r": state.get("cost_in_r"),
 
-
-    # FIX
-    "position_size_qty": state.get("position_size_qty"),
-    "notional_inr": state.get("notional_inr"),
-    "margin_inr": state.get("margin_inr"),
-    "risk_inr": state.get("risk_inr"),
-
-    "fees_inr": state.get("fees_inr"),
-    "slippage_inr": state.get("slippage_inr"),
-
-    "leverage_used": state.get("leverage_used"),
-
-    "risk_reward": state.get("risk_reward"),
 }
 
 
@@ -1491,18 +1478,6 @@ def build_signal(symbol):
 
     "leverage_used": float(s.leverage_used),
 
-    "risk_reward": rr,
-
-    # NEW
-    "position_size_qty": float(s.qty),
-    "notional_inr": float(s.notional_inr),
-    "margin_inr": float(s.margin_inr),
-    "risk_inr": float(s.risk_inr),
-
-    "fees_inr": float(s.fees_inr),
-    "slippage_inr": float(s.slippage_inr),
-
-    "leverage_used": float(s.leverage_used),
     "risk_reward": rr,
 
     "entry_i": int(entry_i),
