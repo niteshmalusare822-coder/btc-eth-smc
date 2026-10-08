@@ -393,6 +393,13 @@ def _rupee_targets(direction, entry, qty, usdt_inr, sl_dist,
             elif direction == "SELL" and px < structure_limit:
                 reachable, why = False, "beyond the next liquidity level"
 
+print(
+    "[TARGET_UNREACHABLE]",
+    "price=", px,
+    "structure_limit=", structure_limit
+)
+
+
         if reachable and atr and atr > 0 and move_px > 6 * atr:
             reachable, why = False, f"needs {move_px / atr:.1f} ATR of travel"
 
