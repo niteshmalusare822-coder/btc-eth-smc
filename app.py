@@ -708,24 +708,47 @@ def _position_ticket(state, live_px, status="ACTIVE"):
     action = "BUY" if side == "bull" else "SELL"
     tps = list(state.get("tps") or []) + [None, None, None]
     return {
-        "symbol": state["symbol"],
-        "action": action,
-        "blocker": "ACTIVE_POSITION",
-        "reason": f"{action} position active; waiting for TP/SL before next {state['symbol']} setup",
-        "live_price": _f(live_px),
-        "entry": _f(state["entry"]),
-        "planned_entry": _f(state["entry"]),
-        "sl": _f(state["sl"]),
-        "tp1": tps[0],
-        "tp2": tps[1],
-        "tp3": tps[2],
-        "tradeable": True,
-        "setup_status": status,
-        "order_status": "ACTIVE",
-        "position_active": True,
-        "entry_time": str(state.get("entry_ts")),
-        "source": state.get("source"),
-    }
+    "symbol": state["symbol"],
+    "action": action,
+    "blocker": "ACTIVE_POSITION",
+
+    "reason": f"{action} position active; waiting for TP/SL before next {state['symbol']} setup",
+
+    "live_price": _f(live_px),
+
+    "entry": _f(state["entry"]),
+    "planned_entry": _f(state["entry"]),
+
+    "sl": _f(state["sl"]),
+
+    "tp1": tps[0],
+    "tp2": tps[1],
+    "tp3": tps[2],
+
+    "tradeable": True,
+
+    "setup_status": status,
+    "order_status": "ACTIVE",
+    "position_active": True,
+
+    "entry_time": str(state.get("entry_ts")),
+
+    "source": state.get("source"),
+
+    # FIX
+    "position_size_qty": state.get("position_size_qty"),
+    "notional_inr": state.get("notional_inr"),
+    "margin_inr": state.get("margin_inr"),
+    "risk_inr": state.get("risk_inr"),
+
+    "fees_inr": state.get("fees_inr"),
+    "slippage_inr": state.get("slippage_inr"),
+
+    "leverage_used": state.get("leverage_used"),
+
+    "risk_reward": state.get("risk_reward"),
+}
+
 
 
 def _manage_live_position(symbol, df5, live_px):
@@ -1437,16 +1460,42 @@ def build_signal(symbol):
                 tps.append(None)
         entry_i = touch_i if touch_i is not None else max(len(df5) - 1, 0)
         state = {
-            "symbol": symbol,
-            "side": side,
-            "entry": float(level),
-            "sl": float(sl),
-            "tps": tps,
-            "cost_in_r": float(s.cost_in_r),
-            "entry_i": int(entry_i),
-            "entry_ts": str(touch_ts or ts),
-            "source": meta.get("source"),
-        }
+    "symbol": symbol,
+    "side": side,
+    "entry": float(level),
+    "sl": float(sl),
+    "tps": tps,
+
+    "cost_in_r": float(s.cost_in_r),
+    "position_size_qty": float(s.qty),
+    "notional_inr": float(s.notional_inr),
+    "margin_inr": float(s.margin_inr),
+    "risk_inr": float(s.risk_inr),
+
+    "fees_inr": float(s.fees_inr),
+    "slippage_inr": float(s.slippage_inr),
+
+    "leverage_used": float(s.leverage_used),
+
+    "risk_reward": rr,
+
+    # NEW
+    "position_size_qty": float(s.qty),
+    "notional_inr": float(s.notional_inr),
+    "margin_inr": float(s.margin_inr),
+    "risk_inr": float(s.risk_inr),
+
+    "fees_inr": float(s.fees_inr),
+    "slippage_inr": float(s.slippage_inr),
+
+    "leverage_used": float(s.leverage_used),
+    "risk_reward": rr,
+
+    "entry_i": int(entry_i),
+    "entry_ts": str(touch_ts or ts),
+    "source": meta.get("source"),
+}
+
         print(
             "[POSITION_CREATED]",
             symbol,
