@@ -7,7 +7,7 @@
  * Styles are injected from here, so style.css does not need touching either.
  *
  * NOTE on the timeframe dropdown: the engine is now fixed multi-timeframe
- * (1H bias, 15M setup, 5M entry). A single-timeframe selector no longer means
+ * (4H bias, 15M setup, 5M entry). A single-timeframe selector no longer means
  * anything, so it is disabled on load rather than silently ignored.
  *
  * NOTE on live price: /api/live-prices is polled separately and fast (every
@@ -92,7 +92,7 @@ function chip(label, value, on) {
 /* A NO_TRADE renders with its reason attached. Which timeframe disagreed is
    the useful part — a blank card tells you nothing. */
 function renderFlat(s) {
-  const bias = s.htf_bias_1h || "—";
+  const bias = s.htf_bias_4h || "—";
   const trig = s.trigger_5m || "none";
   const cancelled = s.blocker === "FORWARD_ENTRY_NEAR_MISS" ||
     s.blocker === "FORWARD_ENTRY_STALE";
@@ -109,7 +109,7 @@ function renderFlat(s) {
     <span class="act ${statusClass}">${status}</span>
     <div class="px">${px(s.price)}</div>
     <div class="chips">
-      ${chip("1H", bias, bias === "BULLISH" || bias === "BEARISH")}
+      ${chip("4H", bias, bias === "BULLISH" || bias === "BEARISH")}
       ${chip("15M", s.setup_15m ? "setup" : "none", !!s.setup_15m)}
       ${chip("5M", trig, trig !== "none" && trig !== "")}
     </div>
@@ -128,15 +128,15 @@ function tpRow(tp) {
 }
 
 function renderSetup(s) {
-  const bullish = s.htf_bias_1h === "BULLISH";
-  const side = bullish ? "BUY" : s.htf_bias_1h === "BEARISH" ? "SELL" : "SETUP";
+  const bullish = s.htf_bias_4h === "BULLISH";
+  const side = bullish ? "BUY" : s.htf_bias_4h === "BEARISH" ? "SELL" : "SETUP";
   const dir = bullish ? "buy" : side === "SELL" ? "sell" : "flat";
   const zoneLabel = s.zone?.has_fvg ? "OB + FVG" : "OB/FVG";
   return `<div class="sig">
     <span class="act setup ${dir}">${side} SETUP</span>
     <div class="px">${px(s.price)}</div>
     <div class="chips">
-      ${chip("1H", s.htf_bias_1h || "—", bullish || s.htf_bias_1h === "BEARISH")}
+      ${chip("4H", s.htf_bias_4h || "—", bullish || s.htf_bias_4h === "BEARISH")}
       ${chip("15M", zoneLabel, !!s.setup_15m)}
       ${chip("5M", s.trigger_5m || "informational", false)}
     </div>
@@ -160,7 +160,7 @@ function renderTicket(s) {
     <span class="act ${dir}">${s.action}</span>
     <div class="px">${px(s.price)}</div>
     <div class="chips">
-      ${chip("1H", s.htf_bias_1h, true)}
+      ${chip("4H", s.htf_bias_4h, true)}
       ${chip("15M", s.zone && s.zone.has_fvg ? "OB+FVG" : "OB", true)}
       ${chip("5M(info)", s.trigger_5m, true)}
     </div>
@@ -236,7 +236,7 @@ async function loadSignals() {
     const n = d.actionable ?? 0;
     const setupCount = (d.results || []).filter(s =>
       s.action === "WATCHING" && s.setup_15m &&
-      (s.htf_bias_1h === "BULLISH" || s.htf_bias_1h === "BEARISH")
+      (s.htf_bias_4h === "BULLISH" || s.htf_bias_4h === "BEARISH")
     ).length;
     setStatus(`🟢 Live · ${n} actionable · ${setupCount} pending setups · ${new Date().toLocaleTimeString("en-IN")}`,
       n > 0 || setupCount > 0 ? "#2ea043" : "#8b949e");
@@ -294,14 +294,14 @@ function armRow(m) {
 }
 
 /* Called by the button in index.html. The timeframe argument is accepted for
-   backward compatibility and ignored: the engine is fixed 1H/15M/5M. */
+   backward compatibility and ignored: the engine is fixed 4H/15M/5M. */
 document.addEventListener("DOMContentLoaded", () => {
     injectCss();
 
     // the engine is fixed multi-timeframe now, so a single-TF selector is a lie
     const tf = document.getElementById("bt-tf");
     if (tf) {
-        tf.innerHTML = `<option>1H bias · 15M setup · 5M entry</option>`;
+        tf.innerHTML = `<option>4H bias · 15M setup · 5M entry</option>`;
         tf.disabled = true;
     }
 
