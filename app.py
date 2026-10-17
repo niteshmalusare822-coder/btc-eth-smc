@@ -1051,7 +1051,7 @@ def build_signal(symbol):
                 "reason": meta.get("error", "no data"),
                 "data_quality": meta}
 
-    df5, df15, df1h = frames["5m"], frames["15m"], frames["4h"]
+    df5, df15, df4h = frames["5m"], frames["15m"], frames["4h"]
     if len(df5) < 200:
         return {"symbol": symbol, "action": "NO_TRADE", "blocker": "NO_DATA",
                 "reason": f"only {len(df5)} 5m bars, not enough history",
@@ -1082,7 +1082,7 @@ def build_signal(symbol):
     base = {
         "symbol": symbol, "source": meta.get("source"), "price": _f(price),
         "last_closed": format_ist_time(ts),
-        "htf_bias_1h": bias,
+        "htf_bias_4h": bias,
         "setup_15m": bool(mtf.active_setups_at(
             ctx["setups"], ts, "bull" if bias == "BULLISH" else
             "bear" if bias == "BEARISH" else None)),
@@ -1456,7 +1456,7 @@ def build_signal(symbol):
         tps = []
         for t in s.tps[:3]:
             try:
-                tps.append(float(t.get("price")))
+                tps.append(dict(t))
             except (TypeError, ValueError):
                 tps.append(None)
         entry_i = touch_i if touch_i is not None else max(len(df5) - 1, 0)
