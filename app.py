@@ -762,7 +762,19 @@ def _manage_live_position(symbol, df5, live_px):
     side = state["side"]
     entry = float(state["entry"])
     sl = float(state["sl"])
-    tps = [float(x) for x in (state.get("tps") or []) if x is not None]
+    tps = []
+
+for tp in (state.get("tps") or []):
+    if tp is None:
+        continue
+
+    if isinstance(tp, dict):
+        price = tp.get("price")
+        if price is not None:
+            tps.append(float(price))
+    else:
+        tps.append(float(tp))
+
     cost_r = float(state.get("cost_in_r", 0.0) or 0.0)
     entry_i = int(state.get("entry_i", max(len(df5) - 1, 0)))
     start = min(entry_i + 1, max(len(df5) - 1, 0))
