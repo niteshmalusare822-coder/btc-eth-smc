@@ -1059,7 +1059,7 @@ def build_signal(symbol):
 
     # calibration is a trailing rolling window, so live and backtest compute
     # the identical threshold on the identical candles
-    ctx = mtf.build_context(df5, df15, df1h)
+    ctx = mtf.build_context(df5, df15, df4h)
 
     # data.load_mtf already dropped the forming candle, so the final row IS the
     # last closed bar
@@ -1133,7 +1133,7 @@ def build_signal(symbol):
     # newer POI until TP3 or SL closes it.
     active_ticket, _closed_reason = _manage_live_position(symbol, df5, live_px)
     if active_ticket is not None:
-        active_ticket["htf_bias_1h"] = bias
+        active_ticket["htf_bias_4h"] = bias
         active_ticket["last_closed"] = format_ist_time(ts)
         return active_ticket
 
