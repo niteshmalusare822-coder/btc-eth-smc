@@ -13,7 +13,7 @@ LIVE_BARS_5M = int(
 )
 
 MAX_COST_IN_R = float(
-    os.environ.get("MAX_COST_IN_R", 0.15)
+    os.environ.get("MAX_COST_IN_R", 0.75)
 )
 
 
