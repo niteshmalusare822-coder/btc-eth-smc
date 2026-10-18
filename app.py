@@ -15,6 +15,14 @@ R:R, fees, slippage, 4H bias, 15M setup, 5M trigger and the reason.
 A NO_TRADE is returned with the reason, not as an empty payload. Knowing which
 timeframe disagreed is the useful part.
 """
+import os
+import threading
+import time
+import traceback
+
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+
 import data as D
 import diagnostics as DG
 import mtf_engine as mtf
@@ -29,6 +37,7 @@ from services.report_service import (
     build_entry_quality,
     probe_data,
 )
+
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
