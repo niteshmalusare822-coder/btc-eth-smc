@@ -10,7 +10,7 @@ GET /api/report/<symbol>              3-arm measurement: RANDOM vs SMC vs SMC_MT
 
 Every signal returns the complete ticket the spec asked for: entry, SL,
 TP1/2/3, position size, allowed leverage, risk in rupees, potential profit,
-R:R, fees, slippage, 1H bias, 15M setup, 5M trigger and the reason.
+R:R, fees, slippage, 4H bias, 15M setup, 5M trigger and the reason.
 
 A NO_TRADE is returned with the reason, not as an empty payload. Knowing which
 timeframe disagreed is the useful part.
@@ -83,12 +83,12 @@ def build_signal(symbol):
                 "reason": meta.get("error", "no data"), "data": meta}
     source = meta.get("source")
 
-    df5, df15, df1h = frames["5m"], frames["15m"], frames["1h"]
+    df5, df15, df4h = frames["5m"], frames["15m"], frames["4h"]
     # calib_end=None is correct here and ONLY here: in a live scan every bar
     # in the frame is already in the past, so there is no future to leak.
     # no calib_end: calibration is a trailing rolling window, identical to
     # what the backtest computes on the same candles
-    ctx = mtf.build_context(df5, df15, df1h)
+    ctx = mtf.build_context(df5, df15, df4h)
 
     # FIX A: data.load_mtf already dropped the forming candle, so the final
     # row IS the last closed bar. Using len-2 here skipped it a second time
@@ -108,7 +108,7 @@ def build_signal(symbol):
     base = {
         "symbol": symbol, "source": source, "price": _f(price),
         "last_closed": str(ts),
-        "htf_bias_1h": bias,
+        "htf_bias_4h": bias,
         "setup_15m": bool(mtf.active_setups_at(
             ctx["setups"], ts, "bull" if bias == "BULLISH" else
             "bear" if bias == "BEARISH" else None)),
@@ -157,7 +157,7 @@ def build_signal(symbol):
         "zone": {"top": _f(setup.zone_top), "bottom": _f(setup.zone_bottom),
                  "has_fvg": setup.has_fvg, "swept": setup.swept,
                  "imbalance": setup.imbalance, "entry_mode": setup.entry_mode},
-        "reason": (f"1H {bias} + 15M {'OB+FVG' if setup.has_fvg else 'OB'} after "
+        "reason": (f"4H {bias} + 15M {'OB+FVG' if setup.has_fvg else 'OB'} after "
                    f"liquidity sweep + 5M {trig} shift, entry at OTE"),
     })
     return base
@@ -169,7 +169,7 @@ def build_report(symbol, bars=None):
     if frames is None:
         return {"symbol": symbol, "error": meta.get("error", "no data"),
                 "data": meta}
-    rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["1h"])
+    rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["4h"])
     rep["source"] = meta.get("source")
     rep["data_quality"] = meta    # FIX 13
     return rep
@@ -181,7 +181,7 @@ def build_trade_log(symbol, limit=150, bars=None):
     frames, meta = D.load_mtf(symbol, D.clamp_bars(bars or REPORT_BARS_5M))
     if frames is None:
         return {"symbol": symbol, "error": meta.get("error", "no data")}
-    rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["1h"])
+    rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["4h"])
     return {"symbol": symbol, "source": meta.get("source"),
             "total": rep.get("trade_log_total", 0),
             "trades": (rep.get("trade_log") or [])[:limit]}
@@ -281,7 +281,7 @@ def probe_data(symbol, bars):
     per_tf = {}
     need = D.required_bars(bars)
 
-    for tf in ("5m", "15m", "1h"):
+    for tf in ("5m", "15m", "4h"):
         t1 = time.time()
         df, meta = D.fetch_ohlcv_history("coindcx", symbol, tf, need[tf])
         if df is None:
@@ -334,13 +334,13 @@ def build_diagnostic(symbol, bars):
     frames, meta = D.load_mtf(symbol, D.clamp_bars(bars))
     if frames is None:
         return {"symbol": symbol, "error": meta.get("error", "no data")}
-    rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["1h"])
+    rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["4h"])
     taken = [t for t in (rep.get("trade_log") or []) if t["arm"] == "smc_mtf"]
     oos = {m["arm"]: m for m in rep["out_of_sample"]}
     smc_trades = [t for t in (rep.get("trade_log") or []) if t["arm"] == "smc"]
 
     out = DG.missed_move_report(symbol, frames["5m"], frames["15m"],
-                                frames["1h"], taken_trades=taken)
+                                frames["4h"], taken_trades=taken)
     out["source"] = meta.get("source")
     out["coverage_days"] = meta.get("coverage_days")
     out["per_asset"] = {
@@ -413,7 +413,7 @@ def build_entry_quality(symbol, bars):
     frames, meta = D.load_mtf(symbol, D.clamp_bars(bars))
     if frames is None:
         return {"symbol": symbol, "error": meta.get("error", "no data")}
-    out = EQ.full_diagnosis(symbol, frames["5m"], frames["15m"], frames["1h"])
+    out = EQ.full_diagnosis(symbol, frames["5m"], frames["15m"], frames["4h"])
     out["source"] = meta.get("source")
     out["coverage_days"] = meta.get("coverage_days")
     return out
