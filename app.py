@@ -774,7 +774,7 @@ for tp in (state.get("tps") or []):
             tps.append(float(price))
     else:
         tps.append(float(tp))
-
+       
     cost_r = float(state.get("cost_in_r", 0.0) or 0.0)
     entry_i = int(state.get("entry_i", max(len(df5) - 1, 0)))
     start = min(entry_i + 1, max(len(df5) - 1, 0))
