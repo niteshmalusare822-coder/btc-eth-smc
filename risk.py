@@ -270,22 +270,6 @@ def size_position(symbol, direction, entry, sl,
     structure_limit=structure_limit,
     structure_targets=structure_targets,
 )
-
-reachable = [
-    t for t in tps
-    if t.get("reachable")
-]
-
-best_tp = max(
-    (t["net_inr"] for t in reachable),
-    default=-999999
-)
-
-if best_tp <= 0:
-    return Sizing(
-        False,
-        "all reachable targets are net negative after costs"
-    )
                       
     return Sizing(
         ok=True,
