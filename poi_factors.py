@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Optional
+import math
 
 import numpy as np
 import pandas as pd
@@ -318,49 +319,44 @@ class Zone:
             return (wt + wb) / 2.0
         raise ValueError(f"unknown entry mode {mode!r}")
 
-    ```python
-import math
+    def stop_at(self, buffer_frac: float = 0.0) -> float:
+        """Place SL beyond the wick and enforce a minimum stop distance."""
 
+        if not math.isfinite(buffer_frac) or buffer_frac < 0:
+            raise ValueError("buffer_frac must be finite and non-negative")
 
-def stop_at(self, buffer_frac: float = 0.0) -> float:
-    """Place SL beyond the wick and enforce a minimum stop distance."""
+        if self.side not in ("bull", "bear"):
+            raise ValueError(f"Invalid setup side: {self.side}")
 
-    if not math.isfinite(buffer_frac) or buffer_frac < 0:
-        raise ValueError("buffer_frac must be finite and non-negative")
+        wt = self.wick_top if self.wick_top is not None else self.top
+        wb = self.wick_bottom if self.wick_bottom is not None else self.bottom
 
-    if self.side not in ("bull", "bear"):
-        raise ValueError(f"Invalid setup side: {self.side}")
+        if not math.isfinite(wt) or not math.isfinite(wb) or wt < wb:
+            raise ValueError("Invalid wick boundaries")
 
-    wt = self.wick_top if self.wick_top is not None else self.top
-    wb = self.wick_bottom if self.wick_bottom is not None else self.bottom
+        entry = float(self.entry_at("zone_edge"))
 
-    if not math.isfinite(wt) or not math.isfinite(wb) or wt < wb:
-        raise ValueError("Invalid wick boundaries")
+        if not math.isfinite(entry) or entry <= 0:
+            raise ValueError("Entry must be finite and greater than zero")
 
-    entry = float(self.entry_at("zone_edge"))
+        pad = (wt - wb) * buffer_frac
 
-    if not math.isfinite(entry) or entry <= 0:
-        raise ValueError("Entry must be finite and greater than zero")
+        raw_stop = (
+            wb - pad
+            if self.side == "bull"
+            else wt + pad
+        )
 
-    pad = (wt - wb) * buffer_frac
+        min_stop_distance = entry * 0.0015  # 0.15%
 
-    raw_stop = (
-        wb - pad
-        if self.side == "bull"
-        else wt + pad
-    )
+        if self.side == "bull":
+            # Keep SL beyond the lower wick and at least 0.15% from entry.
+            stop = min(raw_stop, entry - min_stop_distance)
+        else:
+            # Keep SL beyond the upper wick and at least 0.15% from entry.
+            stop = max(raw_stop, entry + min_stop_distance)
 
-    min_stop_distance = entry * 0.0015  # 0.15%
-
-    if self.side == "bull":
-        # Keep SL beyond the lower wick and at least 0.15% from entry.
-        stop = min(raw_stop, entry - min_stop_distance)
-    else:
-        # Keep SL beyond the upper wick and at least 0.15% from entry.
-        stop = max(raw_stop, entry + min_stop_distance)
-
-    return float(stop)
-```
+        return float(stop)
 
     def ote(self, low: float = 0.618, high: float = 0.79) -> tuple[float, float]:
         """OTE band inside the zone, measured from the entry-side edge."""
