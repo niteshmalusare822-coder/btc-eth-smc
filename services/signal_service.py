@@ -148,6 +148,18 @@ def build_signal(symbol):
         default=0,
     )
 
+    positive_targets = [
+    t for t in reachable
+    if t["net_inr"] > 0
+    ]    
+
+    if not positive_targets:
+        base["action"] = "NO_TRADE"
+        base["reason"] = (
+        "all reachable targets are net negative after costs"
+        )
+        return base
+
     rr = (
         round(potential / s.risk_inr, 2)
         if s.risk_inr > 0
