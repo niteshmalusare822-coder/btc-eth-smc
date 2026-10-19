@@ -318,12 +318,49 @@ class Zone:
             return (wt + wb) / 2.0
         raise ValueError(f"unknown entry mode {mode!r}")
 
-    def stop_at(self, buffer_frac: float = 0.0) -> float:
-        """Beyond the wick, always. Never the body."""
-        wt = self.wick_top if self.wick_top is not None else self.top
-        wb = self.wick_bottom if self.wick_bottom is not None else self.bottom
-        pad = (wt - wb) * buffer_frac
-        return wb - pad if self.side == "bull" else wt + pad
+    ```python
+import math
+
+
+def stop_at(self, buffer_frac: float = 0.0) -> float:
+    """Place SL beyond the wick and enforce a minimum stop distance."""
+
+    if not math.isfinite(buffer_frac) or buffer_frac < 0:
+        raise ValueError("buffer_frac must be finite and non-negative")
+
+    if self.side not in ("bull", "bear"):
+        raise ValueError(f"Invalid setup side: {self.side}")
+
+    wt = self.wick_top if self.wick_top is not None else self.top
+    wb = self.wick_bottom if self.wick_bottom is not None else self.bottom
+
+    if not math.isfinite(wt) or not math.isfinite(wb) or wt < wb:
+        raise ValueError("Invalid wick boundaries")
+
+    entry = float(self.entry_at("zone_edge"))
+
+    if not math.isfinite(entry) or entry <= 0:
+        raise ValueError("Entry must be finite and greater than zero")
+
+    pad = (wt - wb) * buffer_frac
+
+    raw_stop = (
+        wb - pad
+        if self.side == "bull"
+        else wt + pad
+    )
+
+    min_stop_distance = entry * 0.0015  # 0.15%
+
+    if self.side == "bull":
+        # Keep SL beyond the lower wick and at least 0.15% from entry.
+        stop = min(raw_stop, entry - min_stop_distance)
+    else:
+        # Keep SL beyond the upper wick and at least 0.15% from entry.
+        stop = max(raw_stop, entry + min_stop_distance)
+
+    return float(stop)
+```
 
     def ote(self, low: float = 0.618, high: float = 0.79) -> tuple[float, float]:
         """OTE band inside the zone, measured from the entry-side edge."""
