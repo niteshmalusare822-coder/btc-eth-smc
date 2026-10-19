@@ -154,6 +154,18 @@ def build_signal(symbol):
         else None
     )
 
+    positive_targets = [
+    t for t in reachable
+    if t["net_inr"] > 0
+    ]
+
+    if not positive_targets:
+        base["action"] = "NO_TRADE"
+        base["reason"] = (
+            "all reachable targets are net negative after fees/slippage"
+    )
+    return base
+    
     base.update(
         {
             "action": action,
