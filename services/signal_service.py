@@ -93,7 +93,7 @@ def build_signal(symbol):
         "source": source,
         "price": _f(price),
         "last_closed": str(ts),
-        "latest_df5_ts": str(df5["ts"].iat[-1]),
+        #" latest_df5_ts": str(df5["ts"].iat[-1]),
 
         "htf_bias_4h": bias,
         "setup_15m": bool(
