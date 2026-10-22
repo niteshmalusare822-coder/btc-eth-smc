@@ -106,7 +106,7 @@ PARAMS = {
     "fvg_min_size_atr": 0.0,     # optional floor on FVG height
 
     # ── 5M ENTRY QUALITY GATE (blocking, unlike trigger_series) ────────
-    "require_5m_quality_gate": False,
+    "require_5m_quality_gate": True,
     "early_poi": True,
     "volume_expansion_min": 1.2,   # entry bar volume must exceed MA20 * this
     "close_ratio_min": 0.5,        # how close to an extreme the bar must close
@@ -955,7 +955,7 @@ def _evaluate(bias, trigger, setups, ts, quality=True, p=None):
     # 5M trigger is informational. The optional quality gate is a real
     # blocking condition when explicitly enabled, in this shared decision
     # layer so live and backtest cannot disagree.
-    if p.get("require_5m_quality_gate", False) and not bool(quality):
+    if p.get("require_5m_quality_gate", True) and not bool(quality):
         return (
             "NO_TRADE",
             None,
@@ -1047,7 +1047,7 @@ def gate_state(bias, trigger, setups, ts, quality=True, p=None):
 
         "quality_5m_role": (
             "BLOCKING"
-            if p.get("require_5m_quality_gate", False)
+            if p.get("require_5m_quality_gate", True)
             else "INFORMATION_ONLY"
         ),
 
