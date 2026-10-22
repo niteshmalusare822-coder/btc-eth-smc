@@ -268,10 +268,15 @@ denom = sl_dist_inr + cost_per_unit
     qty = max_risk_inr / denom
 
     notional_inr = qty * entry_inr
-    if notional_inr < MIN_NOTIONAL_INR:
-        return Sizing(False, f"notional Rs.{notional_inr:.0f} below configured "
-                             f"minimum Rs.{MIN_NOTIONAL_INR:.0f} "
-                             f"(MIN_NOTIONAL_INR)")
+    # ── NEW: Dynamic Minimum Notional Check ────────────────────────────────
+min_notional = cfg["min_notional_inr"]
+if notional_inr < min_notional:
+    return Sizing(
+        False,
+        f"notional Rs.{notional_inr:.0f} below symbol minimum Rs.{min_notional:.0f} after leverage cap"
+    )
+
+
 
     lev_allowed = allowed_leverage(symbol)
     lev_max = MAX_LEVERAGE_BY_SYMBOL.get(symbol, DEFAULT_MAX_LEVERAGE)
