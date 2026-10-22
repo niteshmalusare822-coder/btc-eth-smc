@@ -17,12 +17,12 @@
 ## Executive Summary & Latest Pooled Metrics
 - **Total Symbols Usable:** 17
 - **Total Trades Pooled:** 228
-- **Pooled Edge (INR):** 29.4
-- **Standard Error:** 9.8
-- **Sigma (Z-Score):** 3.0
+- **Pooled Edge (INR):** 43.7
+- **Standard Error:** 9.9
+- **Sigma (Z-Score):** 4.41
 - **Significant at 95%:** True
-- **Pooled Net PnL (INR):** -20375.0
-- **Pooled Profit Factor:** 0.7
+- **Pooled Net PnL (INR):** -16007.0
+- **Pooled Profit Factor:** 0.76
 - **Measured Arm:** SMC_MTF
 - **Matched Null:** MATCHED_RANDOM_vs_SMC_MTF
 
@@ -35,8 +35,8 @@ A relative edge is not enough for production. The strategy is **not considered p
 ## Per-Symbol Performance Table (Latest Run)
 | Symbol | Trades | Win% | PF | Expectancy (INR) | Random Mean | Edge | Net PnL (INR) | WF Folds |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| BTC | 27 | 33.3% | 0.64 | -171.7 | -425.9 | +254.2 | -4636.0 | 4/4 |
-| ETH | 35 | 45.7% | 0.71 | -140.2 | -388.2 | +248.0 | -4906.0 | 3/4 |
+| BTC | 28 | 35.7% | 0.68 | -148.5 | -420.7 | +272.2 | -4159.0 | 4/4 |
+| ETH | 34 | 47.1% | 0.74 | -127.2 | -375.3 | +248.1 | -4326.0 | 3/4 |
 | SOL | 10 | 40.0% | 0.25 | -160.2 | -66.8 | -93.4 | -1602.0 | 1/4 |
 | XRP | 9 | 33.3% | 0.25 | -240.2 | -143.4 | -96.8 | -2162.0 | 0/3 |
 | AVAX | 13 | 53.8% | 0.72 | -74.1 | -89.1 | +15.0 | -963.0 | 3/4 |
@@ -51,7 +51,7 @@ A relative edge is not enough for production. The strategy is **not considered p
 | LTC | 8 | 62.5% | 0.34 | -125.5 | -64.3 | -61.2 | -1004.0 | 0/4 |
 | BCH | 9 | 22.2% | 0.17 | -180.1 | -102.1 | -78.0 | -1621.0 | 2/4 |
 | DOT | 19 | 42.1% | 0.82 | -71.6 | -124.3 | +52.7 | -1361.0 | 2/4 |
-| 1000PEPE | 22 | 45.5% | 0.65 | -96.0 | -116.1 | +20.1 | -2112.0 | 3/4 |
+| 1000PEPE | 22 | 50.0% | 1.25 | 54.5 | -121.6 | +176.1 | 1199.0 | 4/4 |
 
 ---
 *Note: This report is dynamically updated by the automated daily GitHub Action using `collect.py`.*
