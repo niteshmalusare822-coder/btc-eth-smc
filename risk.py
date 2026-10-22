@@ -112,6 +112,46 @@ FUNDING_INTERVAL_HOURS = float(os.environ.get("FUNDING_INTERVAL_HOURS", 8))
 # and every rejection says which number it failed.
 MIN_NOTIONAL_INR = float(os.environ.get("MIN_NOTIONAL_INR", 200))
 
+# ── NEW: Dynamic Symbol Costs (कॉइन-नुसार अचूक फी आणि स्लिपेज) ──────────────
+SYMBOL_COST_CONFIG = {
+    "DEFAULT": {
+        "maker": 0.0005,      # 0.05%
+        "taker": 0.0005,      # 0.05%
+        "slippage": 0.0002,   # 0.02%
+        "min_notional_inr": 200
+    },
+    "BTC": {
+        "maker": 0.0002,      # 0.02%
+        "taker": 0.0004,      # 0.04%
+        "slippage": 0.0001,   # 0.01%
+        "min_notional_inr": 500
+    },
+    "ETH": {
+        "maker": 0.0002,
+        "taker": 0.0004,
+        "slippage": 0.0001,
+        "min_notional_inr": 500
+    },
+    "DEXE": {
+        "maker": 0.0005,
+        "taker": 0.0006,
+        "slippage": 0.0005,   # 0.05% Slippage
+        "min_notional_inr": 500
+    },
+    "DOGE": {
+        "maker": 0.0005,
+        "taker": 0.0005,
+        "slippage": 0.0003,
+        "min_notional_inr": 300
+    }
+}
+
+def get_symbol_config(symbol: str) -> dict:
+    """कॉइनच्या नावावरून त्याची अचूक फी आणि स्लिपेज सेटिंग्स परत करते."""
+    base_symbol = symbol.split('/')[0].upper().replace("1000", "").replace("USDT", "").strip()
+    return SYMBOL_COST_CONFIG.get(base_symbol, SYMBOL_COST_CONFIG["DEFAULT"])
+
+
 def round_trip_fee(entry_maker=None, exit_maker=False):
     """Fee for one full round trip, as a fraction of notional.
 
@@ -208,11 +248,20 @@ def size_position(symbol, direction, entry, sl,
         return Sizing(False, "stop is on the wrong side of the entry")
 
     sl_dist_inr = sl_dist * usdt_inr
-    entry_inr = entry * usdt_inr
+entry_inr = entry * usdt_inr
 
-    # cost per unit of quantity, charged on both legs
-    cost_per_unit = entry_inr * ROUND_TRIP_COST
-    denom = sl_dist_inr + cost_per_unit
+# ── NEW: Dynamic Symbol Costs लागू करूया ──────────────────────────────
+cfg = get_symbol_config(symbol)
+entry_fee = cfg["maker"] if ENTRY_IS_MAKER else cfg["taker"]
+exit_fee = cfg["taker"]
+
+dynamic_round_trip_fee = entry_fee + exit_fee
+dynamic_round_trip_slip = cfg["slippage"] * 2
+dynamic_round_trip_cost = dynamic_round_trip_fee + dynamic_round_trip_slip
+
+cost_per_unit = entry_inr * dynamic_round_trip_cost
+denom = sl_dist_inr + cost_per_unit
+
     if denom <= 0:
         return Sizing(False, "degenerate risk")
 
