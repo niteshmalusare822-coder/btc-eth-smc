@@ -213,7 +213,6 @@ class Sizing:
         d = asdict(self)
         return {k: (round(v, 8) if isinstance(v, float) else v) for k, v in d.items()}
 
-
 def size_position(symbol, direction, entry, sl,
                   capital_inr=None, max_risk_inr=None, usdt_inr=None,
                   atr=None, structure_limit=None, structure_targets=None):
@@ -248,35 +247,29 @@ def size_position(symbol, direction, entry, sl,
         return Sizing(False, "stop is on the wrong side of the entry")
 
     sl_dist_inr = sl_dist * usdt_inr
-entry_inr = entry * usdt_inr
+    entry_inr = entry * usdt_inr
 
-# ── NEW: Dynamic Symbol Costs लागू करूया ──────────────────────────────
-cfg = get_symbol_config(symbol)
-entry_fee = cfg["maker"] if ENTRY_IS_MAKER else cfg["taker"]
-exit_fee = cfg["taker"]
+    # ── NEW: Dynamic Symbol Costs लागू करूया ──────────────────────────────
+    cfg = get_symbol_config(symbol)
+    entry_fee = cfg["maker"] if ENTRY_IS_MAKER else cfg["taker"]
+    exit_fee = cfg["taker"]
+    
+    dynamic_round_trip_fee = entry_fee + exit_fee
+    dynamic_round_trip_slip = cfg["slippage"] * 2
+    dynamic_round_trip_cost = dynamic_round_trip_fee + dynamic_round_trip_slip
 
-dynamic_round_trip_fee = entry_fee + exit_fee
-dynamic_round_trip_slip = cfg["slippage"] * 2
-dynamic_round_trip_cost = dynamic_round_trip_fee + dynamic_round_trip_slip
-
-cost_per_unit = entry_inr * dynamic_round_trip_cost
-denom = sl_dist_inr + cost_per_unit
-
+    cost_per_unit = entry_inr * dynamic_round_trip_cost
+    denom = sl_dist_inr + cost_per_unit
     if denom <= 0:
         return Sizing(False, "degenerate risk")
 
     qty = max_risk_inr / denom
-
     notional_inr = qty * entry_inr
-    # ── NEW: Dynamic Minimum Notional Check ────────────────────────────────
-min_notional = cfg["min_notional_inr"]
-if notional_inr < min_notional:
-    return Sizing(
-        False,
-        f"notional Rs.{notional_inr:.0f} below symbol minimum Rs.{min_notional:.0f} after leverage cap"
-    )
-
-
+    
+    # ── NEW: Dynamic Minimum Notional Check (पहिली तपासणी) ───────────────
+    min_notional = cfg["min_notional_inr"]
+    if notional_inr < min_notional:
+        return Sizing(False, f"notional Rs.{notional_inr:.0f} below symbol minimum Rs.{min_notional:.0f}")
 
     lev_allowed = allowed_leverage(symbol)
     lev_max = MAX_LEVERAGE_BY_SYMBOL.get(symbol, DEFAULT_MAX_LEVERAGE)
@@ -290,40 +283,34 @@ if notional_inr < min_notional:
         capped = True
 
         # Re-check the venue minimum AFTER leverage has capped the position.
-        # Previously the minimum was checked only before this shrink, so a
-        # leverage-capped order could pass MIN_NOTIONAL_INR and then be below
-        # the venue minimum when actually submitted.
-        if notional_inr < MIN_NOTIONAL_INR:
+        if notional_inr < min_notional:
             return Sizing(
                 False,
-                f"notional Rs.{notional_inr:.0f} below configured minimum "
-                f"Rs.{MIN_NOTIONAL_INR:.0f} after leverage cap "
-                f"(MIN_NOTIONAL_INR)"
+                f"notional Rs.{notional_inr:.0f} below symbol minimum Rs.{min_notional:.0f} after leverage cap"
             )
 
     lev_used = round(notional_inr / capital_inr, 2) if capital_inr > 0 else 0.0
     margin_inr = notional_inr / lev_allowed if lev_allowed > 0 else notional_inr
 
+    # ── NEW: Final Risk Calculation with Dynamic Fees ────────────────────
     gross_loss = qty * sl_dist_inr
-    fees = qty * entry_inr * ROUND_TRIP_FEE
-    slip = qty * entry_inr * ROUND_TRIP_SLIP
-    # NOTE:
-    # funding is NOT included in this risk cap
+    fees = qty * entry_inr * dynamic_round_trip_fee
+    slip = qty * entry_inr * dynamic_round_trip_slip
     total_risk = gross_loss + fees + slip
 
     # fee expressed against the stop: the number that decides viability
-    cost_in_r = (entry_inr * ROUND_TRIP_COST) / sl_dist_inr
+    cost_in_r = (entry_inr * dynamic_round_trip_cost) / sl_dist_inr
 
     tps = _rupee_targets(
-    direction,
-    entry,
-    qty,
-    usdt_inr,
-    sl_dist,
-    atr=atr,
-    structure_limit=structure_limit,
-    structure_targets=structure_targets,
-)
+        direction,
+        entry,
+        qty,
+        usdt_inr,
+        sl_dist,
+        atr=atr,
+        structure_limit=structure_limit,
+        structure_targets=structure_targets,
+    )
                       
     return Sizing(
         ok=True,
