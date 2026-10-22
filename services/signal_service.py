@@ -86,7 +86,9 @@ def build_signal(symbol):
         ctx["trigger"][i],
         ctx["setups"],
         ts,
+        quality=ctx["quality"][i],  # <--- ही एकच ओळ नवीन जोडली आहे
     )
+
 
     base = {
         "symbol": symbol,
