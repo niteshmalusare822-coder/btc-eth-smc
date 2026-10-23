@@ -49,7 +49,7 @@ PARAMS = {
     "swing_left": 1,
     "swing_right": 1,
     "body_pct": 0.85,        # calibration quantile, not a hand-picked constant
-    "max_age": 96,           # bars a 15M zone stays valid
+    "max_age": 24,           # bars a 15M zone stays valid (6 hours only)
     "sweep_window": 24,      # bars allowed between the sweep and the BOS
     "require_liquidity_sweep": False,  # sweep is quality/context, not a mandatory POI gate
     # OB entry model from the source material: "wick", "body" or "50".
