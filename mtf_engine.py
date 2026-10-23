@@ -54,7 +54,7 @@ PARAMS = {
     "require_liquidity_sweep": False,  # sweep is quality/context, not a mandatory POI gate
     # OB entry model from the source material: "wick", "body" or "50".
     # OTE is a different school's entry and is no longer used for order blocks.
-    "ob_entry_mode": "zone_edge",   # BUY=zone bottom, SELL=zone top
+    "ob_entry_mode": "50",  # "zone_edge" ऐवजी "50" करा
     "require_ob_sweep": False,        # the OB candle must take prior liquidity
     "require_ob_imbalance": False,    # a gap must sit next to the OB
     "imbalance_window": 3,
