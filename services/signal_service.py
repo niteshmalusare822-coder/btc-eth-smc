@@ -86,20 +86,15 @@ def build_signal(symbol):
         ctx["trigger"][i],
         ctx["setups"],
         ts,
-        quality=ctx["quality"][i],  # <--- ही एकच ओळ नवीन जोडली आहे
+        quality=ctx["quality"][i],
     )
-
 
     base = {
         "symbol": symbol,
         "source": source,
         "price": _f(price),
         "last_closed": str(ts),
-        "signal_generated_at": str(ts),  # <--- ही एक ओळ इथे जोडा
-        "htf_bias_4h": bias,
-        # ... (बाकीचा कोड तसाच राहू द्या)
-    }
-
+        "signal_generated_at": str(ts),
         "htf_bias_4h": bias,
         "setup_15m": bool(
             mtf.active_setups_at(
