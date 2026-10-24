@@ -95,8 +95,10 @@ def build_signal(symbol):
         "source": source,
         "price": _f(price),
         "last_closed": str(ts),
-        "signal_generated_at": str(ts),
-        #" latest_df5_ts": str(df5["ts"].iat[-1]),
+        "signal_generated_at": str(ts),  # <--- ही एक ओळ इथे जोडा
+        "htf_bias_4h": bias,
+        # ... (बाकीचा कोड तसाच राहू द्या)
+    }
 
         "htf_bias_4h": bias,
         "setup_15m": bool(
