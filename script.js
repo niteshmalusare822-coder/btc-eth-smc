@@ -94,8 +94,7 @@ function chip(label, value, on) {
 function renderFlat(s) {
   const bias = s.htf_bias_4h || "—";
   const trig = s.trigger_5m || "none";
-  const cancelled = s.blocker === "FORWARD_ENTRY_NEAR_MISS" ||
-    s.blocker === "FORWARD_ENTRY_STALE";
+  const cancelled = s.blocker === "FORWARD_ENTRY_NEAR_MISS" || s.blocker === "FORWARD_ENTRY_STALE";
   const status = cancelled
     ? ((bias === "BULLISH" ? "BUY" : bias === "BEARISH" ? "SELL" : "ENTRY") + " CANCELLED")
     : s.action === "WATCHING" ? "WATCHING"
@@ -105,6 +104,13 @@ function renderFlat(s) {
     : s.action === "WATCHING" ? "watching"
     : s.action === "ENTRY_READY" ? "ready"
     : "flat";
+
+  // --- NEW: Signal Time Logic ---
+  const timeStr = s.signal_generated_at
+    ? new Date(s.signal_generated_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }) + " IST"
+    : (s.last_closed ? new Date(s.last_closed).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }) + " IST" : "");
+  // ------------------------------
+
   return `<div class="sig">
     <span class="act ${statusClass}">${status}</span>
     <div class="px">${px(s.price)}</div>
@@ -114,10 +120,9 @@ function renderFlat(s) {
       ${chip("5M", trig, trig !== "none" && trig !== "")}
     </div>
     <div class="why">${s.reason || s.error || "no alignment"}</div>
-    <div class="src">${s.source || ""}</div>
+    <div class="src">${s.source || ""} · ⏱️ ${timeStr}</div>
   </div>`;
 }
-
 function tpRow(tp) {
   if (!tp) return "";
   const dead = tp.reachable ? "" : "dead";
@@ -132,6 +137,13 @@ function renderSetup(s) {
   const side = bullish ? "BUY" : s.htf_bias_4h === "BEARISH" ? "SELL" : "SETUP";
   const dir = bullish ? "buy" : side === "SELL" ? "sell" : "flat";
   const zoneLabel = s.zone?.has_fvg ? "OB + FVG" : "OB/FVG";
+
+  // --- NEW: Signal Time Logic ---
+  const timeStr = s.signal_generated_at
+    ? new Date(s.signal_generated_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }) + " IST"
+    : (s.last_closed ? new Date(s.last_closed).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }) + " IST" : "");
+  // ------------------------------
+
   return `<div class="sig">
     <span class="act setup ${dir}">${side} SETUP</span>
     <div class="px">${px(s.price)}</div>
@@ -145,16 +157,19 @@ function renderSetup(s) {
       ${s.sl != null ? `<tr class="sl"><td>SL</td><td>${px(s.sl)}</td><td colspan="2">planned stop</td></tr>` : ""}
     </table>
     <div class="why">${s.reason || "valid 15M setup; waiting for exact entry touch"}</div>
-    <div class="src">${s.order_status || "PENDING_LIMIT"} · no price chasing · ${s.source || ""}</div>
+    <div class="src">${s.order_status || "PENDING_LIMIT"} · no price chasing · ${s.source || ""} · ⏱️ ${timeStr}</div>
   </div>`;
 }
-
 function renderTicket(s) {
   const dir = s.action === "BUY" ? "buy" : "sell";
-    const warn = s.tradeable ? "" :
-`<div class="warn">Fee is ${(s.cost_in_r * 100).toFixed(0)}% of the stop distance — above the ${s.max_cost_pct ?? '?'}% limit. Flagged not tradeable.</div>`;
+  const warn = s.tradeable ? "" :
+    `<div class="warn">Fee is ${(s.cost_in_r * 100).toFixed(0)}% of the stop distance — above the ${s.max_cost_pct ?? '?'}% limit. Flagged not tradeable.</div>`;
 
-
+  // --- NEW: Signal Time Logic ---
+  const timeStr = s.signal_generated_at
+    ? new Date(s.signal_generated_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }) + " IST"
+    : (s.last_closed ? new Date(s.last_closed).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }) + " IST" : "");
+  // ------------------------------
 
   return `<div class="sig">
     <span class="act ${dir}">${s.action}</span>
@@ -186,10 +201,10 @@ function renderTicket(s) {
       <div><label>Slippage</label><b>${inr(s.slippage_inr)}</b></div>
     </div>
     <div class="why">${s.reason || ""}</div>
-    <div class="src">${s.source || ""} · ${s.last_closed ? new Date(s.last_closed).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "medium" }) : ""} IST</div>
+    <!-- UPDATED LINE BELOW -->
+    <div class="src">${s.source || ""} · ⏱️ <b>Signal Time:</b> ${timeStr}</div>
   </div>`;
 }
-
 async function loadLivePrices() {
   try {
     const r = await fetch(`${API}/api/live-prices`, { cache: "no-store" });
