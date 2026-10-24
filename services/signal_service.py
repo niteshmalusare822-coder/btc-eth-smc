@@ -89,6 +89,24 @@ def build_signal(symbol):
         quality=ctx["quality"][i],
     )
 
+    # ============================================================
+    # RULE 1: MOMENTUM ENTRY OVERRIDE (गाडी पकडण्यासाठी)
+    # जर प्राईस Limit Zone च्या पुढे गेली असेल, तर Market Price ला एन्ट्री घ्या
+    # ============================================================
+    entry_type = "limit"  # Default: Limit Order at 50% zone
+    entry_price = level   # Default entry price
+    
+    if action in ["BUY", "SELL"] and setup is not None:
+        if action == "BUY" and price > level:
+            # BUY मध्ये प्राईस वर गेली आहे - Market Order ने एन्ट्री
+            entry_price = price
+            entry_type = "market (momentum)"
+        elif action == "SELL" and price < level:
+            # SELL मध्ये प्राईस खाली गेली आहे - Market Order ने एन्ट्री
+            entry_price = price
+            entry_type = "market (momentum)"
+    # ============================================================
+
     base = {
         "symbol": symbol,
         "source": source,
@@ -118,19 +136,17 @@ def build_signal(symbol):
 
     sl = setup.stop_level
 
-    limit = (
-        level + (6 * atr)
-        if side == "bull"
-        else level - (6 * atr)
-    )
-
     s = R.size_position(
         symbol,
         action,
-        level,
+        entry_price,  # <-- बदल: level ऐवजी entry_price वापरा
         sl,
         atr=atr,
-        structure_limit=limit,
+        structure_limit=(
+            entry_price + (6 * atr)
+            if side == "bull"
+            else entry_price - (6 * atr)
+        ),
     )
 
     if not s.ok:
@@ -156,10 +172,23 @@ def build_signal(symbol):
         else None
     )
     
+    # ============================================================
+    # RULE 2: R:R SAFETY LOCK (पैसे वाचवण्यासाठी)
+    # जर Momentum Entry मुळे R:R 1.0 च्या खाली गेला, तर ट्रेड SKIP करा
+    # ============================================================
+    if rr is not None and rr < 1.0:
+        base["action"] = "NO_TRADE"
+        base["reason"] = (
+            f"Price moved too far. R:R dropped to {rr}. "
+            f"Entry type: {entry_type}. Skipped to protect capital."
+        )
+        return base
+    # ============================================================
+
     base.update(
         {
             "action": action,
-            "entry": _f(level),
+            "entry": _f(entry_price),  # <-- बदल: entry_price वापरा
             "sl": _f(sl),
 
             "tp1": s.tps[0] if len(s.tps) > 0 else None,
@@ -184,11 +213,14 @@ def build_signal(symbol):
             "sl_distance_pct": _f(s.sl_distance_pct),
             "cost_in_r": _f(s.cost_in_r),
 
-            "order_type":
-                "resting limit — fills on a later candle, or not at all",
+            "order_type": (
+                "resting limit — fills on a later candle, or not at all"
+                if entry_type == "limit"
+                else "market momentum — fills immediately at current price"
+            ),
 
             "distance_to_entry_pct": _f(
-                (level - price) / price * 100
+                (entry_price - price) / price * 100
             ),
 
             "tradeable": bool(
@@ -209,7 +241,7 @@ def build_signal(symbol):
                 f"{'OB+FVG' if setup.has_fvg else 'OB'} "
                 f"after liquidity sweep + "
                 f"5M {trig} shift, "
-                f"entry at OTE"
+                f"entry at OTE ({entry_type})"
             ),
         }
     )
