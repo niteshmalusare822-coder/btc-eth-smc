@@ -5,15 +5,18 @@ collect.py — pool trades across many symbols to reach a decidable sample.
 
 from __future__ import annotations
 
+import os
 import argparse
 import json
 import sys
 import time
 import traceback
-
+from datetime import datetime, timedelta, timezone  # <--- ही एक ओळ इथे ॲड करा
 import numpy as np
 
 import backtest as B
+# ... (बाकीचे imports तसेच राहू द्या)
+
 import data as D
 import mtf_engine as M
 import research_data as RD  # CoinDCX historical loader
@@ -209,6 +212,20 @@ A relative edge is not enough for production. The strategy is **not considered p
 
 
 def main():
+    def main():
+    # --- DAILY AUTO-DELETE LOGIC (10:00 AM IST) ---
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(IST)
+    
+    # जर सकाळी १०:०० ते १०:१५ च्या दरम्यान असेल, तर जुना रिपोर्ट डिलीट करा
+    if now_ist.hour == 10 and now_ist.minute < 15:
+        files_to_clear = ["AUDIT_ENHANCEMENTS.md", "collect_results.json"]
+        for file in files_to_clear:
+            if os.path.exists(file):
+                os.remove(file)
+        print("🧹 10:00 AM IST: जुना रिपोर्ट डिलीट केला! Fresh report सुरू होत आहे...")
+    # ------------------------------------------------
+    
     p = argparse.ArgumentParser()
     p.add_argument("--symbols", help="comma separated, e.g. BTC,ETH,SOL")
     p.add_argument("--from-file")
