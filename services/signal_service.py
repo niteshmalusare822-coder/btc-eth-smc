@@ -149,9 +149,14 @@ def build_signal(symbol):
         "reason": why,
     }
 
-    if action == "NO_TRADE" or setup is None:
+        if action == "NO_TRADE" or setup is None:
         base["action"] = "NO_TRADE"
+        # जुना सेटअप डॅशबोर्डवर दिसू नये म्हणून टाइमस्टॅम्प क्लिअर करा
+        base["last_closed"] = str(datetime.now(timezone.utc))
+        base["signal_generated_at"] = str(datetime.now(timezone.utc))
+        base["reason"] = why if why else "No fresh setup found in last 30 minutes"
         return base
+
 
     sl = setup.stop_level
 
