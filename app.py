@@ -4,6 +4,8 @@ app.py — the only process that runs on Render.
 
 GET /api/health
 GET /api/config                       account, costs, leverage, parameters
+GET /api/live-prices                  CoinDCX websocket prices, REST fallback
+GET /api/live-status                  websocket health
 GET /api/signal/<symbol>              BUY / SELL / NO_TRADE / MANAGE + full ticket
 GET /api/signals                      all symbols
 GET /api/report/<symbol>              3-arm measurement: RANDOM vs SMC vs SMC_MTF
@@ -14,12 +16,23 @@ R:R, fees, slippage, 4H bias, 15M setup, 5M trigger and the reason.
 
 A NO_TRADE is returned with the reason, not as an empty payload. Knowing which
 timeframe disagreed is the useful part.
+
+LIVE PRICE
+----------
+A background thread listens to the CoinDCX futures trades websocket and keeps
+the last traded price per symbol in LIVE_PRICE. /api/live-prices serves it.
+Any symbol with no fresh websocket price falls back to the CoinDCX public REST
+endpoint. Signal logic in services/ is not touched; /api/signal and
+/api/signals only gain an extra `live_price` field.
 """
+import json
 import os
 import threading
 import time
 import traceback
 
+import requests
+import socketio
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
@@ -64,6 +77,189 @@ def cached(key, ttl, fn):
         _cache[key] = (now, val)
     return val, False
 
+
+# ---------------------------------------------------------------------------
+# LIVE PRICE  (CoinDCX websocket + REST fallback)
+# ---------------------------------------------------------------------------
+PAIR_WS = {s: f"B-{s}_USDT" for s in SYMBOLS}
+
+LIVE_PRICE = {}        # symbol -> {"price": float, "updated_at": epoch}
+LIVE_1M_BARS = {}      # symbol -> [{"ts","open","high","low","close","volume"}]
+LIVE_WS_LOCK = threading.Lock()
+LIVE_WS_STARTED = False
+LIVE_WS_CONNECTED = False
+LIVE_WS_LAST_ERROR = None
+
+# a websocket price older than this is stale; REST is used for that symbol
+LIVE_PRICE_MAX_AGE = float(os.environ.get("LIVE_PRICE_MAX_AGE", 10))
+COINDCX_REST_PRICES_URL = (
+    "https://public.coindcx.com/market_data/v3/current_prices/futures/rt"
+)
+
+
+def _f(x):
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if v == v and v not in (float("inf"), float("-inf")) else None
+
+
+def _live_ws_worker():
+    global LIVE_WS_LAST_ERROR, LIVE_WS_CONNECTED
+    sio = socketio.Client(logger=False, engineio_logger=False)
+
+    @sio.event
+    def connect():
+        global LIVE_WS_CONNECTED
+        LIVE_WS_CONNECTED = True
+        print(">>> LIVE_WS connected, joining channels", flush=True)
+        for pair in PAIR_WS.values():
+            sio.emit("join", {"channelName": f"{pair}@trades-futures"})
+
+    @sio.event
+    def disconnect():
+        global LIVE_WS_CONNECTED
+        LIVE_WS_CONNECTED = False
+        print(">>> LIVE_WS disconnected", flush=True)
+
+    @sio.on("new-trade")
+    def on_new_trade(response):
+        try:
+            payload = json.loads(response["data"])
+        except Exception as e:
+            print(">>> TRADE PARSE ERROR:", repr(e), flush=True)
+            return
+
+        raw = payload.get("data", payload) if isinstance(payload, dict) else payload
+        trade = raw[0] if isinstance(raw, list) and raw else raw
+
+        if not isinstance(trade, dict):
+            return
+
+        pair = (
+            trade.get("s")
+            or trade.get("pair")
+            or trade.get("symbol")
+            or trade.get("market")
+        )
+
+        sym = next((s for s, p in PAIR_WS.items() if p == pair), None)
+
+        if sym is None:
+            print(">>> TRADE SYM MISMATCH:", repr(pair), flush=True)
+            return
+
+        try:
+            price = float(
+                trade.get("p")
+                or trade.get("price")
+                or trade.get("last_price")
+            )
+        except (TypeError, ValueError):
+            print(">>> TRADE PRICE ERROR:", repr(trade), flush=True)
+            return
+
+        now = time.time()
+
+        with LIVE_WS_LOCK:
+            # ----------------------------------------------------------
+            # LIVE PRICE
+            # ----------------------------------------------------------
+            LIVE_PRICE[sym] = {"price": price, "updated_at": now}
+
+            # ----------------------------------------------------------
+            # DEVELOPING 1M CANDLE
+            # ----------------------------------------------------------
+            minute_start = int(now // 60) * 60
+
+            bars = LIVE_1M_BARS.setdefault(sym, [])
+
+            if not bars or bars[-1]["ts"] != minute_start:
+                bars.append({
+                    "ts": minute_start,
+                    "open": price,
+                    "high": price,
+                    "low": price,
+                    "close": price,
+                    "volume": 0.0,
+                })
+            else:
+                candle = bars[-1]
+                candle["high"] = max(candle["high"], price)
+                candle["low"] = min(candle["low"], price)
+                candle["close"] = price
+
+            # Keep only recent 1M candles.
+            if len(bars) > 20:
+                del bars[:-20]
+
+    print(">>> LIVE_WS worker thread starting", flush=True)
+    while True:
+        try:
+            print(">>> LIVE_WS attempting connection...", flush=True)
+            sio.connect("wss://stream.coindcx.com", transports=["websocket"])
+            sio.wait()
+        except Exception as e:
+            LIVE_WS_LAST_ERROR = repr(e)
+            print(f">>> LIVE_WS ERROR: {e!r}", flush=True)
+            time.sleep(5)
+
+
+def start_live_ws_once():
+    global LIVE_WS_STARTED
+    with LIVE_WS_LOCK:
+        if LIVE_WS_STARTED:
+            return
+        LIVE_WS_STARTED = True
+    threading.Thread(target=_live_ws_worker, daemon=True).start()
+
+
+def post_worker_init(worker):
+    """gunicorn hook, kept so a gunicorn.conf.py that imports it still works."""
+    start_live_ws_once()
+
+
+def live_price_fresh(symbol, max_age=LIVE_PRICE_MAX_AGE):
+    with LIVE_WS_LOCK:
+        entry = LIVE_PRICE.get(symbol)
+    if not entry:
+        return None
+    if time.time() - entry["updated_at"] > max_age:
+        return None
+    return entry["price"]
+
+
+def _coindcx_rest_prices():
+    """One CoinDCX public REST call for every futures pair.
+
+    Shape: {"ts": ms, "prices": {"B-BTC_USDT": {"ls": last, ...}}}
+    "ls" is the last traded price.
+    """
+    r = requests.get(COINDCX_REST_PRICES_URL, timeout=5)
+    r.raise_for_status()
+    body = r.json()
+    table = body.get("prices") or {}
+    out = {}
+    for sym, pair in PAIR_WS.items():
+        row = table.get(pair)
+        if not isinstance(row, dict):
+            continue
+        px = _f(row.get("ls"))
+        if px is not None and px > 0:
+            out[sym] = px
+    return {"prices": out, "ts": body.get("ts")}
+
+
+def _with_live_price(res, symbol):
+    """Copy a cached ticket and attach the freshest live price, if any."""
+    res = dict(res)
+    fresh = live_price_fresh(symbol)
+    if fresh is not None:
+        res["live_price"] = fresh
+    return res
+
+
 # ---------------------------------------------------------------------------
 @app.route("/api/health")
 def health():
@@ -84,6 +280,64 @@ def config():
                                  for s in SYMBOLS}})
 
 
+@app.route("/api/live-status")
+def live_status():
+    now = time.time()
+    with LIVE_WS_LOCK:
+        ages = {s: round(now - v["updated_at"], 1)
+                for s, v in LIVE_PRICE.items()}
+    return jsonify({"started": LIVE_WS_STARTED,
+                    "connected": LIVE_WS_CONNECTED,
+                    "symbols_with_price": len(ages),
+                    "age_sec": ages,
+                    "last_error": LIVE_WS_LAST_ERROR})
+
+
+@app.route("/api/live-prices")
+def live_prices():
+    """WebSocket price first. Any symbol with no fresh WS price (missing or
+    older than LIVE_PRICE_MAX_AGE seconds) is filled from CoinDCX REST."""
+    start_live_ws_once()
+    now = time.time()
+    out = {}
+
+    with LIVE_WS_LOCK:
+        for s, v in LIVE_PRICE.items():
+            age = now - v["updated_at"]
+            if age <= LIVE_PRICE_MAX_AGE:
+                out[s] = {"live_price": _f(v["price"]),
+                          "age_sec": round(age, 1),
+                          "source": "ws"}
+
+    ws_count = len(out)
+    rest_error = None
+    need_rest = [s for s in SYMBOLS if s not in out]
+
+    if need_rest:
+        try:
+            rest, _ = cached(("coindcx_rest_prices",), 2,
+                             _coindcx_rest_prices)
+            rest_age = 0.0
+            if rest.get("ts"):
+                rest_age = max(0.0, now - float(rest["ts"]) / 1000.0)
+            for s in need_rest:
+                px = rest["prices"].get(s)
+                if px is not None:
+                    out[s] = {"live_price": _f(px),
+                              "age_sec": round(rest_age, 1),
+                              "source": "rest"}
+        except Exception as e:
+            rest_error = repr(e)
+            print(f">>> LIVE_PRICES REST ERROR: {rest_error}", flush=True)
+
+    return jsonify({"prices": out,
+                    "ws_symbols": ws_count,
+                    "rest_symbols": len(out) - ws_count,
+                    "missing": [s for s in SYMBOLS if s not in out],
+                    "rest_error": rest_error,
+                    "time": int(time.time())})
+
+
 @app.route("/api/signal/<symbol>")
 def signal_one(symbol):
     symbol = symbol.upper()
@@ -91,7 +345,7 @@ def signal_one(symbol):
         return jsonify({"error": f"symbol must be one of {SYMBOLS}"}), 400
     try:
         res, hit = cached(("sig", symbol), SIGNAL_TTL, lambda: build_signal(symbol))
-        return jsonify({**res, "from_cache": hit})
+        return jsonify({**_with_live_price(res, symbol), "from_cache": hit})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"symbol": symbol, "action": "NO_TRADE", "error": str(e)}), 500
@@ -103,7 +357,7 @@ def signals():
     for s in SYMBOLS:
         try:
             res, _ = cached(("sig", s), SIGNAL_TTL, lambda s=s: build_signal(s))
-            out.append(res)
+            out.append(_with_live_price(res, s))
         except Exception as e:
             traceback.print_exc()
             out.append({"symbol": s, "action": "NO_TRADE", "error": str(e)})
@@ -138,8 +392,6 @@ def report(symbol):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 
 
 @app.route("/api/diagnostic/<symbol>")
@@ -199,6 +451,7 @@ def portfolio():
         },
     })
 
+
 @app.route("/api/entry-quality/<symbol>")
 def entry_quality(symbol):
     """Root-cause diagnostics: entry vs exit failure, gate value, position
@@ -254,6 +507,7 @@ def trades(symbol):
 def root():
     return jsonify({"service": "smc-mtf-scanner",
                     "endpoints": ["/api/health", "/api/config",
+                                  "/api/live-prices", "/api/live-status",
                                   "/api/signal/<symbol>", "/api/signals",
                                   "/api/report/<symbol>",
                                   "/api/trades/<symbol>",
@@ -261,6 +515,11 @@ def root():
                                   "/api/diagnostic/<symbol>",
                                   "/api/portfolio",
                                   "/api/entry-quality/<symbol>"]})
+
+
+# Start the websocket thread as soon as the app is imported by gunicorn.
+# start_live_ws_once() is guarded, so calling it again is harmless.
+start_live_ws_once()
 
 
 if __name__ == "__main__":
