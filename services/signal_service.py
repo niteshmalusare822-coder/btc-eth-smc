@@ -93,16 +93,22 @@ def build_signal(symbol):
     # ============================================================
     # STRICT 30-MINUTE TIME FILTER (जुने सिग्नल्स रोखण्यासाठी)
     # ============================================================
-    # Render सर्व्हर UTC टाइमझोनमध्ये असतो, म्हणून आपण UTC ने तुलना करू
+        # STRICT 30-MINUTE TIME FILTER (सेटअपच्या वेळेची तपासणी)
     now_utc = datetime.now(timezone.utc)
     
-    # ts ला timezone-aware बनवा (जर ते naive असेल तर UTC माना)
-    if ts.tzinfo is None:
-        ts_aware = ts.replace(tzinfo=timezone.utc)
+    # सेटअपची वेळ तपासा (setup object मधून)
+    if hasattr(setup, 'ts'):
+        setup_ts = setup.ts
     else:
-        ts_aware = ts
+        setup_ts = ts  # fallback to current candle time
+    
+    if setup_ts.tzinfo is None:
+        setup_ts_aware = setup_ts.replace(tzinfo=timezone.utc)
+    else:
+        setup_ts_aware = setup_ts
         
-    age_minutes = (now_utc - ts_aware).total_seconds() / 60
+    age_minutes = (now_utc - setup_ts_aware).total_seconds() / 60
+
     
     # जर सिग्नल ३० मिनिटांपेक्षा जुना असेल, तर जबरदस्तीने NO_TRADE करा
     if age_minutes > 30 and action in ["BUY", "SELL"]:
