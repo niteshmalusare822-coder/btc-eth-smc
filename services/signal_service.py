@@ -118,19 +118,18 @@ def build_signal(symbol):
     # ============================================================
 
     # ============================================================
-    # RULE 1: MOMENTUM ENTRY OVERRIDE (गाडी पकडण्यासाठी)
-    # ============================================================
-    entry_type = "limit"  # Default: Limit Order at 50% zone
-    entry_price = level   # Default entry price
     
-    if action in ["BUY", "SELL"] and setup is not None:
-        if action == "BUY" and price > level:
-            entry_price = price
-            entry_type = "market (momentum)"
-        elif action == "SELL" and price < level:
-            entry_price = price
-            entry_type = "market (momentum)"
+        # ============================================================
+    # PROACTIVE LOGIC: फक्त Limit Order (गाडीच्या मागे धावू नका)
     # ============================================================
+    entry_type = "limit"
+    entry_price = level
+    
+    # बॉट आता नेहमी Zone च्या 50% ला Limit Order लावेल.
+    # जर प्राईस खूप दूर गेली असेल, तर खालील R:R Safety Lock 
+    # ती ऑर्डर आपोआप रद्द (NO_TRADE) करेल.
+    # ============================================================
+
 
     base = {
         "symbol": symbol,
