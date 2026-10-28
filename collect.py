@@ -158,7 +158,7 @@ def pooled(rows):
 
 
 def update_markdown_report(pool, rows):
-    md_content = f"""# SMC MTF Strategy: Deep-Dive Audit & Production Enhancements (Auto-Updated)
+    md_content = f"""# 📅 Daily SMC MTF Audit Report (Auto-Reset at 10:00 AM IST)
 
 **Author:** Elite Quant Algorithmic Trader | SMC Specialist  
 **Date:** {time.strftime('%Y-%m-%d')} (Auto-Generated via collect.py)  
