@@ -200,6 +200,25 @@ def build_signal(symbol):
         if s.risk_inr > 0
         else None
     )
+
+     # ============================================================
+    # NAKED OB DETECTION & STRICT R:R RULE
+    # ============================================================
+    setup_type = "STANDARD SMC"  # Default
+    is_naked_ob = False
+    
+    if setup is not None:
+        # जर FVG नसेल आणि आधीची Liquidity Sweep झाली नसेल, तर हे Naked OB आहे
+        if not setup.has_fvg and not setup.swept:
+            is_naked_ob = True
+            setup_type = "AGGRESSIVE NAKED OB"
+            
+            # Naked OB साठी कडक R:R नियम (किमान 1.5)
+            if rr is not None and rr < 1.5:
+                action = "NO_TRADE"
+                why = f"Aggressive Naked OB requires min 1.5 R:R. Current: {rr}."
+                setup = None
+    # ============================================================
     
     # ============================================================
     # RULE 2: R:R SAFETY LOCK (पैसे वाचवण्यासाठी)
@@ -265,9 +284,10 @@ def build_signal(symbol):
             },
 
             "reason": (
+                f"[{setup_type}] "
                 f"4H {bias} + 15M "
-                f"{'OB+FVG' if setup.has_fvg else 'OB'} "
-                f"after liquidity sweep + "
+                f"{'OB+FVG' if setup.has_fvg else 'Naked OB'} "
+                f"{'(Swept)' if setup.swept else '(No Sweep)'} + "
                 f"5M {trig} shift, "
                 f"entry at OTE ({entry_type})"
             ),
