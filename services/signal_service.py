@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone  # <--- नवीन इम्पोर्ट ॲड केला
 
 import numpy as np
 import pandas as pd
@@ -90,19 +91,37 @@ def build_signal(symbol):
     )
 
     # ============================================================
+    # STRICT 30-MINUTE TIME FILTER (जुने सिग्नल्स रोखण्यासाठी)
+    # ============================================================
+    # Render सर्व्हर UTC टाइमझोनमध्ये असतो, म्हणून आपण UTC ने तुलना करू
+    now_utc = datetime.now(timezone.utc)
+    
+    # ts ला timezone-aware बनवा (जर ते naive असेल तर UTC माना)
+    if ts.tzinfo is None:
+        ts_aware = ts.replace(tzinfo=timezone.utc)
+    else:
+        ts_aware = ts
+        
+    age_minutes = (now_utc - ts_aware).total_seconds() / 60
+    
+    # जर सिग्नल ३० मिनिटांपेक्षा जुना असेल, तर जबरदस्तीने NO_TRADE करा
+    if age_minutes > 30 and action in ["BUY", "SELL"]:
+        action = "NO_TRADE"
+        why = f"Signal too old ({int(age_minutes)} mins). Strictly fresh signals only."
+        setup = None  # सेटअप रद्द करा जेणेकरून पुढे एन्ट्री मिळणार नाही
+    # ============================================================
+
+    # ============================================================
     # RULE 1: MOMENTUM ENTRY OVERRIDE (गाडी पकडण्यासाठी)
-    # जर प्राईस Limit Zone च्या पुढे गेली असेल, तर Market Price ला एन्ट्री घ्या
     # ============================================================
     entry_type = "limit"  # Default: Limit Order at 50% zone
     entry_price = level   # Default entry price
     
     if action in ["BUY", "SELL"] and setup is not None:
         if action == "BUY" and price > level:
-            # BUY मध्ये प्राईस वर गेली आहे - Market Order ने एन्ट्री
             entry_price = price
             entry_type = "market (momentum)"
         elif action == "SELL" and price < level:
-            # SELL मध्ये प्राईस खाली गेली आहे - Market Order ने एन्ट्री
             entry_price = price
             entry_type = "market (momentum)"
     # ============================================================
@@ -139,7 +158,7 @@ def build_signal(symbol):
     s = R.size_position(
         symbol,
         action,
-        entry_price,  # <-- बदल: level ऐवजी entry_price वापरा
+        entry_price,
         sl,
         atr=atr,
         structure_limit=(
@@ -174,7 +193,6 @@ def build_signal(symbol):
     
     # ============================================================
     # RULE 2: R:R SAFETY LOCK (पैसे वाचवण्यासाठी)
-    # जर Momentum Entry मुळे R:R 1.0 च्या खाली गेला, तर ट्रेड SKIP करा
     # ============================================================
     if rr is not None and rr < 1.0:
         base["action"] = "NO_TRADE"
@@ -188,7 +206,7 @@ def build_signal(symbol):
     base.update(
         {
             "action": action,
-            "entry": _f(entry_price),  # <-- बदल: entry_price वापरा
+            "entry": _f(entry_price),
             "sl": _f(sl),
 
             "tp1": s.tps[0] if len(s.tps) > 0 else None,
