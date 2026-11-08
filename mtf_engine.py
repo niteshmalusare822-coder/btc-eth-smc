@@ -81,7 +81,7 @@ PARAMS = {
     # to RETURN to the zone before a trade is allowed. Without this the engine
     # can enter on a bar where price is nowhere near the order block, which is
     # not what the setup describes.
-    "require_retest": True,
+    "require_retest": False,
     "retest_max_wait": 9,      # bars a POI waits to be retested before expiry
     "retest_depth": 0.0,        # 0 = touching the zone edge counts as a retest
 
