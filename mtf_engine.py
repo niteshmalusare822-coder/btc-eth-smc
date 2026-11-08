@@ -49,7 +49,7 @@ PARAMS = {
     "swing_left": 1,
     "swing_right": 1,
     "body_pct": 0.85,        # calibration quantile, not a hand-picked constant
-    "max_age": int(os.environ.get("MAX_AGE_BARS", 16)),   # 15M bars a zone stays valid (8 = ~2h15m)
+    "max_age": int(os.environ.get("MAX_AGE_BARS", 24)),   # 15M bars a zone stays valid (8 = ~2h15m)
     "sweep_window": 24,      # bars allowed between the sweep and the BOS
     "require_liquidity_sweep": False,  # sweep is quality/context, not a mandatory POI gate
     # OB entry model from the source material: "wick", "body" or "50".
