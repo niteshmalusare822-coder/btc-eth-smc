@@ -106,7 +106,7 @@ PARAMS = {
     "fvg_min_size_atr": 0.0,     # optional floor on FVG height
 
     # ── 5M ENTRY QUALITY GATE (blocking, unlike trigger_series) ────────
-    "require_5m_quality_gate": True,
+    "require_5m_quality_gate": False,
     "early_poi": True,
     "volume_expansion_min": 1.2,   # 1.2 वरून 1.0 करा (कमी Volume चालेल)
     "close_ratio_min": 0.5,        # 0.5 वरून 0.4 करा (थोडा कमकुवत Close चालेल)
