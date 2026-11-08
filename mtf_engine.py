@@ -51,7 +51,7 @@ PARAMS = {
     "body_pct": 0.85,        # calibration quantile, not a hand-picked constant
     "max_age": int(os.environ.get("MAX_AGE_BARS", 24)),   # 15M bars a zone stays valid (8 = ~2h15m)
     "sweep_window": 24,      # bars allowed between the sweep and the BOS
-    "require_liquidity_sweep": False,  # sweep is quality/context, not a mandatory POI gate
+    "require_liquidity_sweep": True,  # sweep is quality/context, not a mandatory POI gate
     # OB entry model from the source material: "wick", "body" or "50".
     # OTE is a different school's entry and is no longer used for order blocks.
     "ob_entry_mode": "50",  # "zone_edge" ऐवजी "50" करा
@@ -72,16 +72,16 @@ PARAMS = {
     #
     # OFF by default. Turning it on must be justified out of sample against
     # the unchanged baseline, not assumed.
-    "require_structure_confirmation": False,
+    "require_structure_confirmation": True,
     "confirm_bars": 1,          # closed 15M candles the shift must survive
-    "confirm_max_wait": 12,     # bars allowed to complete confirmation
+    "confirm_max_wait": 8,     # bars allowed to complete confirmation
 
     # ── RETEST (off by default so A/B stays possible) ──────────────────
     # Creating a POI is not an entry. The research architecture requires price
     # to RETURN to the zone before a trade is allowed. Without this the engine
     # can enter on a bar where price is nowhere near the order block, which is
     # not what the setup describes.
-    "require_retest": False,
+    "require_retest": True,
     "retest_max_wait": 9,      # bars a POI waits to be retested before expiry
     "retest_depth": 0.0,        # 0 = touching the zone edge counts as a retest
 
@@ -108,8 +108,8 @@ PARAMS = {
     # ── 5M ENTRY QUALITY GATE (blocking, unlike trigger_series) ────────
     "require_5m_quality_gate": True,
     "early_poi": True,
-    "volume_expansion_min": 1.0,   # 1.2 वरून 1.0 करा (कमी Volume चालेल)
-    "close_ratio_min": 0.4,        # 0.5 वरून 0.4 करा (थोडा कमकुवत Close चालेल)
+    "volume_expansion_min": 1.2,   # 1.2 वरून 1.0 करा (कमी Volume चालेल)
+    "close_ratio_min": 0.5,        # 0.5 वरून 0.4 करा (थोडा कमकुवत Close चालेल)
                                 
 }
 
