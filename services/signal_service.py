@@ -302,6 +302,33 @@ def main():
     if a.gate == "on":
         update_markdown_report(pool, rows)
 
+# ==============================================================================
+# TEMPORARY FIX FOR RENDER DEPLOYMENT
+# app.py ला import करण्यासाठी हे फंक्शन आवश्यक आहे.
+# ==============================================================================
+def build_signal(symbol: str) -> dict:
+    return {
+        "symbol": symbol,
+        "action": "NO_TRADE",
+        "tradeable": False,
+        "reason": "Signal logic is currently under development. Please check back later.",
+        "entry": None,
+        "sl": None,
+        "tp1": None,
+        "tp2": None,
+        "tp3": None,
+        "position_size": 0,
+        "leverage": 1,
+        "risk_inr": 0,
+        "profit": 0,
+        "rr": 0,
+        "fees": 0,
+        "slippage": 0,
+        "bias_4h": "NEUTRAL",
+        "setup_15m": "NONE",
+        "trigger_5m": "NONE"
+    }
+
 
 if __name__ == "__main__":
     main()
