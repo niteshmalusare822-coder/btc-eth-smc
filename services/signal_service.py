@@ -1,297 +1,307 @@
+#!/usr/bin/env python3
+"""
+collect.py — pool trades across many symbols to reach a decidable sample.
+"""
+
+from __future__ import annotations
+
 import os
-from datetime import datetime, timezone  # <--- नवीन इम्पोर्ट ॲड केला
-
+import argparse
+import json
+import sys
+import time
+import traceback
+from datetime import datetime, timedelta, timezone
 import numpy as np
-import pandas as pd
 
+import backtest as B
 import data as D
-import mtf_engine as mtf
-import risk as R
+import mtf_engine as M
+import research_data as RD  # CoinDCX historical loader
+import risk as Risk
+
+ARM = "SMC_MTF"
+MATCHED = "MATCHED_RANDOM_vs_SMC_MTF"
 
 
-LIVE_BARS_5M = int(
-    os.environ.get("LIVE_BARS_5M", 1200)
-)
-
-MAX_COST_IN_R = float(
-    os.environ.get("MAX_COST_IN_R", 0.75)
-)
-
-
-def _f(x):
-    try:
-        v = float(x)
-    except (TypeError, ValueError):
-        return None
-
-    return None if not np.isfinite(v) else round(v, 8)
-
-
-def _atr(df, period=14):
-    h, l, c = df["high"], df["low"], df["close"]
-
-    pc = c.shift(1)
-
-    tr = pd.concat(
-        [
-            h - l,
-            (h - pc).abs(),
-            (l - pc).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-
-    return tr.ewm(
-        alpha=1 / period,
-        adjust=False
-    ).mean()
+def discover_pairs(limit=60):
+    import requests
+    urls = ["https://api.coindcx.com/exchange/v1/derivatives/futures/data/active_instruments",
+            "https://public.coindcx.com/market_data/v3/current_prices/futures/rt"]
+    found = []
+    for u in urls:
+        try:
+            r = requests.get(u, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            items = data if isinstance(data, list) else list(
+                (data.get("prices") or data.get("data") or data).keys())
+            for it in items:
+                s = it if isinstance(it, str) else str(it)
+                if s.startswith("B-") and s.endswith("_USDT"):
+                    found.append(s)
+        except Exception:
+            continue
+    out = sorted(set(found))
+    return out[:limit]
 
 
-def build_signal(symbol):
-    frames, meta = D.load_mtf(
-        symbol,
-        LIVE_BARS_5M
-    )
+def register(symbol, pair):
+    D.PAIR_MAP[symbol] = pair
+    D.CCXT_MAP.setdefault(symbol, f"{symbol}/USDT:USDT")
 
+
+def run_symbol(symbol, bars, cfg):
+    frames, meta = RD.load_research(symbol, bars)
     if frames is None:
-        return {
-            "symbol": symbol,
-            "action": "NO_TRADE",
-            "reason": meta.get("error", "no data"),
-            "data": meta,
-        }
+        return {"symbol": symbol, "error": (meta or {}).get("error", "no data")}
+    rep = B.full_report(symbol, frames["5m"], frames["15m"], frames["4h"],
+                        cfg=cfg)
+    oos = {m["arm"]: m for m in rep.get("out_of_sample", [])}
+    smc, rnd = oos.get(ARM, {}), oos.get(MATCHED, {})
+    log = [t for t in (rep.get("trade_log") or []) if t.get("arm") == "smc_mtf"]
 
-    source = meta.get("source")
-
-    df5 = frames["5m"]
-    df15 = frames["15m"]
-    df4h = frames["4h"]
-
-    ctx = mtf.build_context(
-        df5,
-        df15,
-        df4h
-    )
-
-    i = len(df5) - 1
-
-    ts = mtf._ts(df5["ts"]).iat[i]
-    atr = float(_atr(df5).iat[i])
-    price = float(df5["close"].iat[i])
-
-    bias = ctx["bias"][i]
-    trig = ctx["trigger"][i] or "none"
-
-    action, setup, side, level, why = mtf.decide(
-        bias,
-        ctx["trigger"][i],
-        ctx["setups"],
-        ts,
-        quality=ctx["quality"][i],
-    )
-
-    # ============================================================
-    # STRICT 30-MINUTE TIME FILTER (जुने सिग्नल्स रोखण्यासाठी)
-    # ============================================================
-        # STRICT 30-MINUTE TIME FILTER (सेटअपच्या वेळेची तपासणी)
-    now_utc = datetime.now(timezone.utc)
-    
-    # सेटअपची वेळ तपासा (setup object मधून)
-    if hasattr(setup, 'ts'):
-        setup_ts = setup.ts
-    else:
-        setup_ts = ts  # fallback to current candle time
-    
-    if setup_ts.tzinfo is None:
-        setup_ts_aware = setup_ts.replace(tzinfo=timezone.utc)
-    else:
-        setup_ts_aware = setup_ts
-        
-    age_minutes = (now_utc - setup_ts_aware).total_seconds() / 60
-
-    
-    # जर सिग्नल ३० मिनिटांपेक्षा जुना असेल, तर जबरदस्तीने NO_TRADE करा
-    if age_minutes > 30 and action in ["BUY", "SELL"]:
-        action = "NO_TRADE"
-        why = f"Signal too old ({int(age_minutes)} mins). Strictly fresh signals only."
-        setup = None  # सेटअप रद्द करा जेणेकरून पुढे एन्ट्री मिळणार नाही
-    # ============================================================
-
-    # ============================================================
-    
-        # ============================================================
-    # PROACTIVE LOGIC: फक्त Limit Order (गाडीच्या मागे धावू नका)
-    # ============================================================
-    entry_type = "limit"
-    entry_price = level
-    
-    # बॉट आता नेहमी Zone च्या 50% ला Limit Order लावेल.
-    # जर प्राईस खूप दूर गेली असेल, तर खालील R:R Safety Lock 
-    # ती ऑर्डर आपोआप रद्द (NO_TRADE) करेल.
-    # ============================================================
-
-
-    base = {
+    return {
         "symbol": symbol,
-        "source": source,
-        "price": _f(price),
-        "last_closed": str(ts),
-        "signal_generated_at": str(ts),
-        "htf_bias_4h": bias,
-        "setup_15m": bool(
-            mtf.active_setups_at(
-                ctx["setups"],
-                ts,
-                "bull"
-                if bias == "BULLISH"
-                else "bear"
-                if bias == "BEARISH"
-                else None,
-            )
-        ),
-        "trigger_5m": trig,
-        "atr_5m": _f(atr),
-        "reason": why,
+        "coverage_days": (meta or {}).get("coverage_days"),
+        "source": (meta or {}).get("source"),
+        "trades": smc.get("trades", 0),
+        "win_rate_pct": smc.get("win_rate_pct"),
+        "profit_factor": smc.get("profit_factor"),
+        "expectancy_inr": smc.get("expectancy_inr"),
+        "gross_pnl_inr": smc.get("gross_pnl_inr"),
+        "net_pnl_inr": smc.get("net_pnl_inr"),
+        "max_drawdown_inr": smc.get("max_drawdown_inr"),
+        "median_cost_in_r": smc.get("median_cost_in_r"),
+        "long": smc.get("long"), "short": smc.get("short"),
+        "random_mean_expectancy": rnd.get("random_mean_expectancy"),
+        "random_std_expectancy": rnd.get("random_std_expectancy"),
+        "verdict": (rep.get("verdict") or {}).get("verdict"),
+        "wf": f"{(rep.get('walk_forward') or {}).get('folds_beating_random')}"
+              f"/{(rep.get('walk_forward') or {}).get('folds_scored')}",
+        "_trades": log,
     }
 
-    if action == "NO_TRADE" or setup is None:
-        base["action"] = "NO_TRADE"
-        # जुना सेटअप डॅशबोर्डवर दिसू नये म्हणून टाइमस्टॅम्प क्लिअर करा
-        base["last_closed"] = str(datetime.now(timezone.utc))
-        base["signal_generated_at"] = str(datetime.now(timezone.utc))
-        base["reason"] = why if why else "No fresh setup found in last 30 minutes"
-        return base
+
+def pooled(rows):
+    usable = [r for r in rows
+              if r.get("trades") and r.get("random_std_expectancy")
+              and r.get("expectancy_inr") is not None
+              and r.get("random_mean_expectancy") is not None]
+    if not usable:
+        return {"symbols": 0, "note": "no symbol produced a comparable arm"}
+
+    w = np.array([1.0 / max(r["random_std_expectancy"], 1e-9) ** 2
+                  for r in usable])
+    e = np.array([r["expectancy_inr"] - r["random_mean_expectancy"]
+                  for r in usable])
+    edge = float((w * e).sum() / w.sum())
+    se = float(np.sqrt(1.0 / w.sum()))
+    z = edge / se if se else 0.0
+
+    all_tr = [t for r in usable for t in r["_trades"]]
+    net = np.array([t["net_inr"] for t in all_tr], dtype=float) \
+        if all_tr else np.array([0.0])
+    longs = [t for t in all_tr if t["side"] == "BUY"]
+    shorts = [t for t in all_tr if t["side"] == "SELL"]
+
+    def _side(rows_):
+        if not rows_:
+            return {"trades": 0}
+        a = np.array([t["net_inr"] for t in rows_], dtype=float)
+        return {"trades": len(a),
+                "win_rate_pct": round(float((a > 0).mean() * 100), 1),
+                "per_trade_inr": round(float(a.mean()), 1),
+                "net_inr": round(float(a.sum()), 0)}
+
+    pooled_net = float(net.sum())
+    win_net = float(net[net > 0].sum()) if len(net) else 0.0
+    loss_net = float(abs(net[net <= 0].sum())) if len(net) else 0.0
+    pooled_pf = (win_net / loss_net) if loss_net > 0 else None
+
+    if pooled_net <= 0:
+        verdict = ("NO-GO — relative edge may be positive, but pooled net P&L is "
+                   "not profitable after costs. Keep the strategy in research "
+                   "and improve/validate the rules before deployment.")
+    elif abs(z) < 1.96:
+        verdict = ("NOT DECIDABLE — the pooled edge is inside the noise band. "
+                   "More trades, not different rules.")
+    elif edge > 0:
+        verdict = ("POSITIVE AND PROFITABLE SO FAR — pooled net P&L is positive, "
+                   "but walk-forward and sensitivity confirmation are still "
+                   "required before calling this a robust edge.")
+    else:
+        verdict = ("NO-GO — pooled edge is significantly negative versus the "
+                   "matched-random baseline. Stop tuning and reconsider the "
+                   "premise.")
+
+    return {
+        "symbols": len(usable),
+        "total_trades": len(all_tr),
+        "pooled_edge_inr": round(edge, 1),
+        "standard_error": round(se, 1),
+        "sigma": round(z, 2),
+        "significant_at_95pct": bool(abs(z) > 1.96),
+        "trades_needed_for_95pct": (
+            int(((1.96 + 0.84) * float(np.std(e, ddof=1) if len(e) > 1
+                                       else se) / abs(edge)) ** 2)
+            if edge else None),
+        "pooled_net_inr": round(pooled_net, 0),
+        "pooled_profit_factor": (round(pooled_pf, 2) if pooled_pf is not None else None),
+        "measured_arm": ARM,
+        "matched_null": MATCHED,
+        "long": _side(longs), "short": _side(shorts),
+        "verdict": verdict,
+    }
 
 
-    sl = setup.stop_level
+def update_markdown_report(pool, rows):
+    md_content = f"""# 📅 Daily SMC MTF Audit Report (Auto-Reset at 10:00 AM IST)
 
-    s = R.size_position(
-        symbol,
-        action,
-        entry_price,
-        sl,
-        atr=atr,
-        structure_limit=(
-            entry_price + (6 * atr)
-            if side == "bull"
-            else entry_price - (6 * atr)
-        ),
-    )
+**Author:** Elite Quant Algorithmic Trader | SMC Specialist  
+**Date:** {time.strftime('%Y-%m-%d')} (Auto-Generated via collect.py)  
+**Objective:** Measure the production SMC_MTF rules against a matched-random null, then improve only when the improvement survives out-of-sample testing, walk-forward validation, and sensitivity checks.
 
-    if not s.ok:
-        base["action"] = "NO_TRADE"
-        base["reason"] = (
-            f"setup valid but not sizeable: {s.reason}"
-        )
-        return base
+## Canonical Strategy / Execution Contract
+- **Measured arm:** `SMC_MTF`
+- **Matched null:** `MATCHED_RANDOM_vs_SMC_MTF`
+- **Risk cap:** Rs.{Risk.MAX_RISK_INR:.0f} inclusive of fees and slippage
+- **Backtest max cost gate:** {B.DEFAULT_CFG.get('max_cost_in_r', 0.75):.2f}R
+- **1H bias / 15M setup / 5M trigger:** trigger is informational; 5M quality blocks only when explicitly enabled
+- **Retest requirement:** {bool(M.PARAMS.get('require_retest', False))}
+- **Structure confirmation:** {bool(M.PARAMS.get('require_structure_confirmation', False))}
+- **Entry model:** `{B.DEFAULT_CFG.get('entry_model')}` at the canonical POI edge
 
-    reachable = [
-        t for t in s.tps
-        if t["reachable"]
-    ]
+## Executive Summary & Latest Pooled Metrics
+- **Total Symbols Usable:** {pool.get('symbols', 0)}
+- **Total Trades Pooled:** {pool.get('total_trades', 0)}
+- **Pooled Edge (INR):** {pool.get('pooled_edge_inr', 0)}
+- **Standard Error:** {pool.get('standard_error', 0)}
+- **Sigma (Z-Score):** {pool.get('sigma', 0)}
+- **Significant at 95%:** {pool.get('significant_at_95pct', False)}
+- **Pooled Net PnL (INR):** {pool.get('pooled_net_inr', 0)}
+- **Pooled Profit Factor:** {pool.get('pooled_profit_factor', 'n/a')}
+- **Measured Arm:** {pool.get('measured_arm', ARM)}
+- **Matched Null:** {pool.get('matched_null', MATCHED)}
 
-    potential = max(
-        (t["net_inr"] for t in reachable),
-        default=0,
-    )
-    
-    rr = (
-        round(potential / s.risk_inr, 2)
-        if s.risk_inr > 0
-        else None
-    )
+## Verdict
+> {pool.get('verdict', 'No verdict available')}
 
-     # ============================================================
-    # NAKED OB DETECTION & STRICT R:R RULE
-    # ============================================================
-    setup_type = "STANDARD SMC"  # Default
-    is_naked_ob = False
-    
-    if setup is not None:
-        # जर FVG नसेल आणि आधीची Liquidity Sweep झाली नसेल, तर हे Naked OB आहे
-        if not setup.has_fvg and not setup.swept:
-            is_naked_ob = True
-            setup_type = "AGGRESSIVE NAKED OB"
-            
-            # Naked OB साठी कडक R:R नियम (किमान 1.5)
-            if rr is not None and rr < 1.5:
-                action = "NO_TRADE"
-                why = f"Aggressive Naked OB requires min 1.5 R:R. Current: {rr}."
-                setup = None
-    # ============================================================
-    
-    # ============================================================
-    # RULE 2: R:R SAFETY LOCK (पैसे वाचवण्यासाठी)
-    # ============================================================
-    if rr is not None and rr < 1.0:
-        base["action"] = "NO_TRADE"
-        base["reason"] = (
-            f"Price moved too far. R:R dropped to {rr}. "
-            f"Entry type: {entry_type}. Skipped to protect capital."
-        )
-        return base
-    # ============================================================
+## Profitability Gate
+A relative edge is not enough for production. The strategy is **not considered profitable** unless OOS net P&L is positive, pooled/trade-level profit factor is above 1, the OOS sample is sufficient, walk-forward remains stable, and sensitivity runs do not collapse. A negative pooled net P&L is always a **NO-GO** even when the matched-random edge is positive.
 
-    base.update(
-        {
-            "action": action,
-            "entry": _f(entry_price),
-            "sl": _f(sl),
+## Per-Symbol Performance Table (Latest Run)
+| Symbol | Trades | Win% | PF | Expectancy (INR) | Random Mean | Edge | Net PnL (INR) | WF Folds |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+"""
+    for r in rows:
+        if r.get("error") or not r.get("trades"):
+            continue
+        edge = (r["expectancy_inr"] - r["random_mean_expectancy"] if r.get("random_mean_expectancy") is not None else 0)
+        md_content += f"| {r['symbol']} | {r['trades']} | {r.get('win_rate_pct', 0)}% | {r.get('profit_factor', 0)} | {r.get('expectancy_inr', 0)} | {r.get('random_mean_expectancy', 0)} | {edge:+.1f} | {r.get('net_pnl_inr', 0)} | {r.get('wf', 'N/A')} |\n"
 
-            "tp1": s.tps[0] if len(s.tps) > 0 else None,
-            "tp2": s.tps[1] if len(s.tps) > 1 else None,
-            "tp3": s.tps[2] if len(s.tps) > 2 else None,
+    md_content += """
+---
+*Note: This report is dynamically updated by the automated daily GitHub Action using `collect.py`.*
+"""
+    with open("AUDIT_ENHANCEMENTS.md", "w") as f:
+        f.write(md_content)
+    print("AUDIT_ENHANCEMENTS.md successfully updated with latest metrics!")
 
-            "position_size_qty": _f(s.qty),
-            "notional_inr": _f(s.notional_inr),
-            "margin_inr": _f(s.margin_inr),
 
-            "leverage_allowed": s.leverage_allowed,
-            "leverage_used": s.leverage_used,
-            "leverage_max_venue": s.leverage_max,
+def main():
+    # --- DAILY AUTO-DELETE LOGIC (10:00 AM IST) ---
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(IST)
 
-            "risk_inr": _f(s.risk_inr),
-            "potential_profit_inr": potential,
-            "risk_reward": rr,
+    # जर सकाळी १०:०० ते १०:१५ च्या दरम्यान असेल, तर जुना रिपोर्ट डिलीट करा
+    if now_ist.hour == 10 and now_ist.minute < 15:
+        files_to_clear = ["AUDIT_ENHANCEMENTS.md", "collect_results.json"]
+        for file in files_to_clear:
+            if os.path.exists(file):
+                os.remove(file)
+        print("🧹 10:00 AM IST: जुना रिपोर्ट डिलीट केला! Fresh report सुरू होत आहे...")
+    # ------------------------------------------------
 
-            "fees_inr": _f(s.fees_inr),
-            "slippage_inr": _f(s.slippage_inr),
+    p = argparse.ArgumentParser()
+    p.add_argument("--symbols", help="comma separated, e.g. BTC,ETH,SOL")
+    p.add_argument("--from-file")
+    p.add_argument("--discover", action="store_true",
+                   help="pull active CoinDCX futures pairs and run collection on them")
+    p.add_argument("--discover-limit", type=int, default=60)
+    p.add_argument("--bars", type=int, default=10000)
+    p.add_argument("--seeds", type=int, default=200)
+    p.add_argument("--out", default="collect_results.json")
+    p.add_argument("--gate", choices=["on", "off"], default="on",
+                   help="5M quality gate; off = experiment run only")
+    a = p.parse_args()
 
-            "sl_distance_pct": _f(s.sl_distance_pct),
-            "cost_in_r": _f(s.cost_in_r),
+    # Experiment switch: affects this process only, nothing is saved to disk.
+    if a.gate == "off":
+        M.PARAMS["require_5m_quality_gate"] = False
+        print("5M quality gate: OFF (experiment run)\n")
 
-            "order_type": (
-                "resting limit — fills on a later candle, or not at all"
-                if entry_type == "limit"
-                else "market momentum — fills immediately at current price"
-            ),
+    if a.discover:
+        pairs = discover_pairs(limit=a.discover_limit)
+        if not pairs:
+            print("no pairs returned; check network access to CoinDCX")
+            sys.exit(1)
+        syms = [pr.replace("B-", "").replace("_USDT", "") for pr in pairs]
+        print(f"{len(syms)} futures pairs found via discovery\n")
+    elif a.from_file:
+        syms = [s.strip().upper() for s in open(a.from_file)
+                if s.strip() and not s.startswith("#")]
+    elif a.symbols:
+        syms = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
+    else:
+        syms = list(D.PAIR_MAP)
 
-            "distance_to_entry_pct": _f(
-                (entry_price - price) / price * 100
-            ),
+    if not syms:
+        print("no symbols resolved; nothing to collect. "
+              "Pass --discover, --symbols, or --from-file.")
+        sys.exit(1)
 
-            "tradeable": bool(
-                s.cost_in_r <= MAX_COST_IN_R
-            ),
+    for s in syms:
+        if s not in D.PAIR_MAP:
+            register(s, f"B-{s}_USDT")
 
-            "zone": {
-                "top": _f(setup.zone_top),
-                "bottom": _f(setup.zone_bottom),
-                "has_fvg": setup.has_fvg,
-                "swept": setup.swept,
-                "imbalance": setup.imbalance,
-                "entry_mode": setup.entry_mode,
-            },
+    cfg = {**B.DEFAULT_CFG, "matched_seeds": a.seeds}
+    bars = D.clamp_bars(a.bars)
+    print(f"{len(syms)} symbols, {bars} 5m bars each, {a.seeds} matched seeds\n")
 
-            "reason": (
-                f"[{setup_type}] "
-                f"4H {bias} + 15M "
-                f"{'OB+FVG' if setup.has_fvg else 'Naked OB'} "
-                f"{'(Swept)' if setup.swept else '(No Sweep)'} + "
-                f"5M {trig} shift, "
-                f"entry at OTE ({entry_type})"
-            ),
-        }
-    )
+    rows, t0 = [], time.time()
+    for i, s in enumerate(syms, 1):
+        t1 = time.time()
+        try:
+            r = run_symbol(s, bars, cfg)
+        except Exception as e:
+            traceback.print_exc()
+            r = {"symbol": s, "error": str(e)}
+        rows.append(r)
+        if r.get("error"):
+            print(f"  [{i}/{len(syms)}] {s:8s} FAILED: {r['error']}")
+        else:
+            print(f"  [{i}/{len(syms)}] {s:8s} n={r['trades']:3} "
+                  f"exp=Rs.{str(r['expectancy_inr']):>8} "
+                  f"rnd=Rs.{str(r['random_mean_expectancy']):>8} "
+                  f"{r['coverage_days']}d  {time.time() - t1:.0f}s")
 
-    return base
+    print(f"\ncollected in {time.time() - t0:.0f}s")
+    pool = pooled(rows)
+
+    with open(a.out, "w") as f:
+        json.dump({"gate": a.gate,
+                   "per_symbol": [{k: v for k, v in r.items()
+                                   if k != "_trades"} for r in rows],
+                   "pooled": {k: v for k, v in pool.items()
+                              if not k.startswith("_")}}, f, indent=1,
+                  default=str)
+    print(f"\nwritten to {a.out}")
+
+    # Experiment runs must not overwrite the official daily report.
+    if a.gate == "on":
+        update_markdown_report(pool, rows)
+
+
+if __name__ == "__main__":
+    main()
