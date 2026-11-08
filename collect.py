@@ -212,7 +212,6 @@ A relative edge is not enough for production. The strategy is **not considered p
 
 
 def main():
-    def main():
     # --- DAILY AUTO-DELETE LOGIC (10:00 AM IST) ---
     IST = timezone(timedelta(hours=5, minutes=30))
     now_ist = datetime.now(IST)
