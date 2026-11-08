@@ -41,7 +41,9 @@ import diagnostics as DG
 import mtf_engine as mtf
 import risk as R
 
-from services.signal_service import build_signal
+# Use the actual MTF signal engine, not the old temporary NO_TRADE stub in
+# services.signal_service (that file is the historical data collector CLI).
+from services.live_signal import build_signal
 
 from services.report_service import (
     build_report,
@@ -163,16 +165,11 @@ def _live_ws_worker():
         now = time.time()
 
         with LIVE_WS_LOCK:
-            # ----------------------------------------------------------
             # LIVE PRICE
-            # ----------------------------------------------------------
             LIVE_PRICE[sym] = {"price": price, "updated_at": now}
 
-            # ----------------------------------------------------------
             # DEVELOPING 1M CANDLE
-            # ----------------------------------------------------------
             minute_start = int(now // 60) * 60
-
             bars = LIVE_1M_BARS.setdefault(sym, [])
 
             if not bars or bars[-1]["ts"] != minute_start:
@@ -190,7 +187,6 @@ def _live_ws_worker():
                 candle["low"] = min(candle["low"], price)
                 candle["close"] = price
 
-            # Keep only recent 1M candles.
             if len(bars) > 20:
                 del bars[:-20]
 
@@ -231,11 +227,7 @@ def live_price_fresh(symbol, max_age=LIVE_PRICE_MAX_AGE):
 
 
 def _coindcx_rest_prices():
-    """One CoinDCX public REST call for every futures pair.
-
-    Shape: {"ts": ms, "prices": {"B-BTC_USDT": {"ls": last, ...}}}
-    "ls" is the last traded price.
-    """
+    """One CoinDCX public REST call for every futures pair."""
     r = requests.get(COINDCX_REST_PRICES_URL, timeout=5)
     r.raise_for_status()
     body = r.json()
@@ -295,8 +287,7 @@ def live_status():
 
 @app.route("/api/live-prices")
 def live_prices():
-    """WebSocket price first. Any symbol with no fresh WS price (missing or
-    older than LIVE_PRICE_MAX_AGE seconds) is filled from CoinDCX REST."""
+    """WebSocket price first; REST fills symbols without a fresh WS price."""
     start_live_ws_once()
     now = time.time()
     out = {}
@@ -376,8 +367,6 @@ def report(symbol):
         bars = D.clamp_bars(request.args.get("bars", REPORT_BARS_5M))
         res, hit = cached(("rep", symbol, bars), REPORT_TTL,
                           lambda: build_report(symbol, bars))
-        # FIX 9: the log is large. Opt in with ?trades=1, otherwise it is
-        # stripped so the dashboard poll stays small.
         want = request.args.get("trades") in ("1", "true", "yes")
         payload = dict(res)
         if not want:
@@ -412,7 +401,7 @@ def diagnostic(symbol):
 
 @app.route("/api/portfolio")
 def portfolio():
-    """All four assets plus a portfolio total built from pooled trades."""
+    """All symbols plus pooled trade diagnostics."""
     bars = D.clamp_bars(request.args.get("bars", REPORT_BARS_5M))
     per_asset, all_trades, diags = [], [], []
     for s in SYMBOLS:
@@ -425,10 +414,9 @@ def portfolio():
             per_asset.append(res["per_asset"]["SMC"])
             all_trades.extend(res.get("_trades") or [])
             diags.append({k: v for k, v in res.items()
-                          if k in ("symbol", "significant_moves",
-                                   "true_missed_signals", "valid_no_trades",
-                                   "capture_rate_pct", "true_miss_rate_pct",
-                                   "blockers")})
+                          if k in ("symbol", "significant_moves", "true_missed_signals",
+                                   "valid_no_trades", "capture_rate_pct",
+                                   "true_miss_rate_pct", "blockers")})
         except Exception as e:
             traceback.print_exc()
             per_asset.append({"symbol": s, "error": str(e)})
@@ -454,8 +442,7 @@ def portfolio():
 
 @app.route("/api/entry-quality/<symbol>")
 def entry_quality(symbol):
-    """Root-cause diagnostics: entry vs exit failure, gate value, position
-    modes, score buckets. Heavy — one symbol at a time."""
+    """Root-cause diagnostics: entry vs exit failure and gate value."""
     symbol = symbol.upper()
     if symbol not in SYMBOLS:
         return jsonify({"error": f"symbol must be one of {SYMBOLS}"}), 400
