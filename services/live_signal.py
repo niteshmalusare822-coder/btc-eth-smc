@@ -1,21 +1,23 @@
-"""Live, closed-candle signal generation using the shared MTF strategy engine.
+"""Live, closed-candle SMC setup alerts using the shared MTF strategy engine.
 
-This module only creates scanner alerts. It never submits orders and does not
-claim that an alert is profitable. Entries are limit levels from the existing
-SMC POI logic; ``BUY``/``SELL`` means the most recently closed 5m candle
-reached that planned level, not that an exchange fill is guaranteed.
+This scanner never submits orders and cannot verify an exchange fill. A candle
+wick touching a planned limit is therefore reported as an unverified event,
+never as a BUY/SELL execution signal.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import os
 
 import data as D
 import mtf_engine as M
 import risk as R
 
-
-LIVE_BARS_5M = D.clamp_bars(__import__("os").environ.get("LIVE_BARS_5M", 1200))
-MAX_COST_IN_R = float(__import__("os").environ.get("MAX_COST_IN_R", 0.75))
+LIVE_BARS_5M = D.clamp_bars(os.environ.get("LIVE_BARS_5M", 1200))
+MAX_COST_IN_R = float(os.environ.get("MAX_COST_IN_R", 0.75))
+MAX_SIGNAL_BAR_AGE_SECONDS = float(
+    os.environ.get("MAX_SIGNAL_BAR_AGE_SECONDS", 600)
+)
 
 
 def _base(symbol: str, action: str, reason: str, **extra) -> dict:
@@ -55,12 +57,44 @@ def _base(symbol: str, action: str, reason: str, **extra) -> dict:
     return result
 
 
-def build_signal(symbol: str) -> dict:
-    """Build a causal signal from closed 5m/15m/4h candles.
+def _limit_entry_status(side: str, current: float, entry: float, stop: float,
+                        touched: bool) -> str:
+    """Classify a proposed resting limit without pretending it was filled."""
+    if side == "bull":
+        if current <= stop:
+            return "INVALIDATED"
+        if touched:
+            return "TOUCHED_UNVERIFIED"
+        if current <= entry:
+            return "MISSED_ENTRY"
+    else:
+        if current >= stop:
+            return "INVALIDATED"
+        if touched:
+            return "TOUCHED_UNVERIFIED"
+        if current >= entry:
+            return "MISSED_ENTRY"
+    return "PENDING_LIMIT"
 
-    Data errors are reported in the response; unexpected coding errors are not
-    swallowed and are handled by the Flask route's existing error handler.
-    """
+
+def _setup_fields(setup, entry: float, stop: float) -> dict:
+    return {
+        "entry": entry,
+        "sl": stop,
+        "setup_15m": True,
+        "zone": {
+            "has_fvg": bool(setup.has_fvg),
+            "entry_mode": setup.entry_mode,
+            "top": float(setup.zone_top),
+            "bottom": float(setup.zone_bottom),
+        },
+        "setup_confirmed_ts": str(setup.confirmed_ts),
+        "setup_expires_ts": str(setup.expires_ts),
+    }
+
+
+def build_signal(symbol: str) -> dict:
+    """Build a causal setup from closed candles; never claim an order fill."""
     symbol = str(symbol).upper()
     frames, meta = D.load_mtf(symbol, LIVE_BARS_5M, allow_mixed=False, live=True)
     if frames is None:
@@ -99,14 +133,30 @@ def build_signal(symbol: str) -> dict:
     if action not in ("BUY", "SELL") or setup is None:
         return base
 
-    direction = action
     planned_entry = float(level)
     stop = float(setup.stop_level)
+    setup_fields = _setup_fields(setup, planned_entry, stop)
+
+    # Reject stale candles: a valid historical setup is not a current alert.
+    # Data timestamps are normalized to naive UTC by data.py.
+    closed_at = last_closed.to_pydatetime().replace(tzinfo=timezone.utc) + timedelta(minutes=5)
+    age_seconds = (datetime.now(timezone.utc) - closed_at).total_seconds()
+    base["signal_bar_age_seconds"] = round(age_seconds, 1)
+    if age_seconds < -30 or age_seconds > MAX_SIGNAL_BAR_AGE_SECONDS:
+        base.update({
+            "action": "NO_TRADE",
+            "blocker": "STALE_DATA",
+            "reason": "Latest closed 5m candle is stale or has an invalid timestamp; do not use this setup.",
+            **setup_fields,
+        })
+        return base
+
     structure_targets = M.structure_targets_at(
-        df15, ctx.get("swings_15m", []), last_closed, side, planned_entry, max_targets=3
+        df15, ctx.get("swings_15m", []), last_closed, side,
+        planned_entry, max_targets=3
     )
     sizing = R.size_position(
-        symbol, direction, planned_entry, stop,
+        symbol, action, planned_entry, stop,
         structure_targets=structure_targets,
         structure_limit=(structure_targets[-1] if structure_targets else None),
     )
@@ -114,39 +164,67 @@ def build_signal(symbol: str) -> dict:
         base.update({
             "action": "WATCHING",
             "reason": f"Setup found but sizing rejected it: {sizing.reason}",
-            "entry": planned_entry,
-            "sl": stop,
-            "setup_15m": True,
-            "zone": {"has_fvg": bool(setup.has_fvg), "entry_mode": setup.entry_mode,
-                     "top": float(setup.zone_top), "bottom": float(setup.zone_bottom)},
-            "setup_confirmed_ts": str(setup.confirmed_ts),
-            "setup_expires_ts": str(setup.expires_ts),
+            "order_status": "NOT_TRADEABLE_SIZING",
+            **setup_fields,
         })
         return base
 
-    # Only the last fully closed 5m candle can produce a fresh touch alert.
-    # The signal is not represented as a broker fill.
+    reachable_targets = [t for t in (sizing.tps or []) if t.get("reachable")]
+    if not reachable_targets:
+        base.update({
+            "action": "NO_TRADE",
+            "blocker": "NO_REACHABLE_TARGETS",
+            "reason": "No reachable take-profit target is available; setup is not tradeable.",
+            "order_status": "NOT_TRADEABLE_NO_TARGET",
+            **setup_fields,
+        })
+        return base
+
     bar_low = float(df5["low"].iat[i])
     bar_high = float(df5["high"].iat[i])
     touched = bar_low <= planned_entry if side == "bull" else bar_high >= planned_entry
     cost_ok = sizing.cost_in_r <= MAX_COST_IN_R
-    final_action = action if touched else "WATCHING"
-    if not cost_ok:
-        final_action = "WATCHING"
-        reason = (f"POI touched, but estimated cost is {sizing.cost_in_r:.3f}R; "
-                  f"configured maximum is {MAX_COST_IN_R:.3f}R")
-    elif touched:
-        reason = "Closed 5m candle touched the planned POI limit; exchange fill is not verified"
-    else:
-        reason = "Valid SMC setup; waiting for a future 5m candle to touch the POI limit"
+    entry_status = _limit_entry_status(
+        side, float(df5["close"].iat[i]), planned_entry, stop, touched
+    )
 
     targets = list(sizing.tps or [])[:3]
     targets += [None] * (3 - len(targets))
-    max_r = max((float(t.get("r_multiple", 0)) for t in (sizing.tps or [])), default=None)
+    max_r = max((float(t.get("r_multiple", 0)) for t in reachable_targets), default=None)
+
+    if entry_status == "INVALIDATED":
+        base.update({
+            "action": "NO_TRADE",
+            "blocker": "SETUP_INVALIDATED_BY_PRICE",
+            "reason": "Latest closed price has crossed the planned stop; do not enter this setup.",
+            "order_status": "INVALIDATED",
+            **setup_fields,
+        })
+        return base
+
+    if entry_status == "TOUCHED_UNVERIFIED":
+        reason = "Entry level was touched on a closed 5m candle, but exchange fill is unverified. Do not treat this as a fresh entry."
+        status = "ENTRY_TOUCHED_FILL_UNVERIFIED"
+    elif entry_status == "MISSED_ENTRY":
+        reason = "Price has crossed the planned limit level; cancel/skip it and do not chase with a market order."
+        status = "MISSED_ENTRY_NO_CHASE"
+    else:
+        reason = "Valid setup; dashboard does not place orders. A resting limit at the planned entry is pending."
+        status = "SIGNAL_ONLY_PENDING_LIMIT"
+
+    if not cost_ok:
+        reason = (f"Estimated cost is {sizing.cost_in_r:.3f}R, above the configured "
+                  f"{MAX_COST_IN_R:.3f}R maximum; do not trade this setup.")
+        status = "NOT_TRADEABLE_COST"
+
+    # The scanner cannot verify broker fills, so it must never emit BUY/SELL or
+    # mark a setup tradeable. This prevents a wick touch from being mistaken for
+    # an executable market-entry instruction.
     return {
         **base,
-        "action": final_action,
-        "tradeable": bool(touched and cost_ok),
+        **setup_fields,
+        "action": "WATCHING" if cost_ok else "NO_TRADE",
+        "tradeable": False,
         "reason": reason,
         "entry": planned_entry,
         "sl": stop,
@@ -163,12 +241,5 @@ def build_signal(symbol: str) -> dict:
         "cost_in_r": float(sizing.cost_in_r),
         "risk_reward": max_r,
         "sl_distance_pct": float(sizing.sl_distance_pct),
-        "htf_bias_4h": str(bias),
-        "setup_15m": True,
-        "trigger_5m": trigger or "none",
-        "zone": {"has_fvg": bool(setup.has_fvg), "entry_mode": setup.entry_mode,
-                 "top": float(setup.zone_top), "bottom": float(setup.zone_bottom)},
-        "order_status": "ENTRY_TOUCHED_UNVERIFIED" if touched else "PENDING_LIMIT",
-        "setup_confirmed_ts": str(setup.confirmed_ts),
-        "setup_expires_ts": str(setup.expires_ts),
+        "order_status": status,
     }
