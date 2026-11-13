@@ -1,8 +1,8 @@
 """Live, closed-candle SMC setup alerts using the shared MTF strategy engine.
 
 This scanner never submits orders and cannot verify an exchange fill. A candle
-wick touching a planned limit is therefore reported as an unverified event,
-never as a BUY/SELL execution signal.
+wick touching a planned limit is reported as an unverified event, never as an
+exchange execution signal.
 """
 from __future__ import annotations
 
@@ -15,79 +15,88 @@ import risk as R
 
 LIVE_BARS_5M = D.clamp_bars(os.environ.get("LIVE_BARS_5M", 1200))
 MAX_COST_IN_R = float(os.environ.get("MAX_COST_IN_R", 0.75))
-MAX_SIGNAL_BAR_AGE_SECONDS = float(
-    os.environ.get("MAX_SIGNAL_BAR_AGE_SECONDS", 600)
-)
+MAX_SIGNAL_BAR_AGE_SECONDS = float(os.environ.get("MAX_SIGNAL_BAR_AGE_SECONDS", 600))
 
 
 def _base(symbol: str, action: str, reason: str, **extra) -> dict:
-    """Return a stable response schema for the dashboard on every path."""
     result = {
-        "symbol": symbol,
-        "action": action,
-        "tradeable": False,
-        "reason": reason,
-        "price": None,
-        "entry": None,
-        "sl": None,
-        "tp1": None,
-        "tp2": None,
-        "tp3": None,
-        "position_size_qty": 0.0,
-        "notional_inr": 0.0,
-        "margin_inr": 0.0,
-        "leverage_used": 0.0,
-        "risk_inr": 0.0,
-        "fees_inr": 0.0,
-        "slippage_inr": 0.0,
-        "cost_in_r": None,
-        "max_cost_pct": MAX_COST_IN_R * 100.0,
-        "risk_reward": None,
-        "sl_distance_pct": None,
-        "htf_bias_4h": "NEUTRAL",
-        "setup_15m": False,
-        "trigger_5m": "none",
-        "zone": None,
-        "blocker": None,
-        "source": None,
-        "last_closed": None,
-        "signal_generated_at": datetime.now(timezone.utc).isoformat(),
+        "symbol": symbol, "action": action, "tradeable": False, "reason": reason,
+        "price": None, "entry": None, "sl": None, "tp1": None, "tp2": None,
+        "tp3": None, "position_size_qty": 0.0, "notional_inr": 0.0,
+        "margin_inr": 0.0, "leverage_used": 0.0, "risk_inr": 0.0,
+        "fees_inr": 0.0, "slippage_inr": 0.0, "cost_in_r": None,
+        "max_cost_pct": MAX_COST_IN_R * 100.0, "risk_reward": None,
+        "sl_distance_pct": None, "htf_bias_4h": "NEUTRAL", "setup_15m": False,
+        "trigger_5m": "none", "zone": None, "blocker": None, "source": None,
+        "last_closed": None, "signal_generated_at": datetime.now(timezone.utc).isoformat(),
     }
     result.update(extra)
     return result
 
 
-def _limit_entry_status(side: str, current: float, entry: float, stop: float,
-                        touched: bool) -> str:
-    """Classify a proposed resting limit without pretending it was filled."""
+def entry_mode_label(mode: object) -> str:
+    """Describe the actual entry calculation; unknown modes are not guessed."""
+    key = str(mode or "50").strip().lower().replace(" ", "_")
+    labels = {
+        "50": "POI midpoint", "50%": "POI midpoint", "mid": "POI midpoint",
+        "limit_mid": "POI midpoint", "zone_edge": "POI edge", "edge": "POI edge",
+        "bottom_top": "POI edge", "wick": "OB wick level", "body": "OB body level",
+        "limit_ote": "OTE level",
+    }
+    return labels.get(key, f"POI level ({key})")
+
+
+def classify_entry_state(side: str, current: float, entry: float, stop: float,
+                         touched: bool, now: datetime | None = None,
+                         expires_at: datetime | None = None) -> str:
+    """Classify a proposed limit using current/closed-candle evidence.
+
+    Priority is stop invalidation, setup expiry, price already through entry,
+    historical candle touch, then a genuinely pending limit. Touch is never a
+    broker fill confirmation.
+    """
+    if side not in ("bull", "bear"):
+        raise ValueError("side must be bull or bear")
     if side == "bull":
         if current <= stop:
             return "INVALIDATED"
-        if touched:
-            return "TOUCHED_UNVERIFIED"
-        if current <= entry:
-            return "MISSED_ENTRY"
-    else:
-        if current >= stop:
-            return "INVALIDATED"
-        if touched:
-            return "TOUCHED_UNVERIFIED"
-        if current >= entry:
-            return "MISSED_ENTRY"
+    elif current >= stop:
+        return "INVALIDATED"
+
+    if now is not None and expires_at is not None:
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if now >= expires_at:
+            return "EXPIRED"
+
+    # Price that is already beyond the resting limit is not a fresh opportunity.
+    if (side == "bull" and current <= entry) or (side == "bear" and current >= entry):
+        return "MISSED_ENTRY"
+    if touched:
+        return "TOUCHED_UNVERIFIED"
     return "PENDING_LIMIT"
 
 
+def _as_utc(value) -> datetime | None:
+    try:
+        parsed = value.to_pydatetime() if hasattr(value, "to_pydatetime") else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _setup_fields(setup, entry: float, stop: float) -> dict:
+    mode = getattr(setup, "entry_mode", "50")
     return {
-        "entry": entry,
-        "sl": stop,
-        "setup_15m": True,
-        "zone": {
-            "has_fvg": bool(setup.has_fvg),
-            "entry_mode": setup.entry_mode,
-            "top": float(setup.zone_top),
-            "bottom": float(setup.zone_bottom),
-        },
+        "entry": entry, "sl": stop, "setup_15m": True,
+        "entry_mode": mode, "entry_label": entry_mode_label(mode),
+        "zone": {"has_fvg": bool(setup.has_fvg), "entry_mode": mode,
+                 "entry_label": entry_mode_label(mode),
+                 "top": float(setup.zone_top), "bottom": float(setup.zone_bottom)},
         "setup_confirmed_ts": str(setup.confirmed_ts),
         "setup_expires_ts": str(setup.expires_ts),
     }
@@ -98,148 +107,76 @@ def build_signal(symbol: str) -> dict:
     symbol = str(symbol).upper()
     frames, meta = D.load_mtf(symbol, LIVE_BARS_5M, allow_mixed=False, live=True)
     if frames is None:
-        return _base(symbol, "NO_TRADE", (meta or {}).get("error", "No market data"),
-                     data_quality=meta or {})
-
-    required = ("5m", "15m", "4h")
-    if any(tf not in frames or frames[tf] is None or frames[tf].empty for tf in required):
-        return _base(symbol, "NO_TRADE", "Required closed timeframe data is unavailable",
-                     source=(meta or {}).get("source"), data_quality=meta or {})
+        return _base(symbol, "NO_TRADE", (meta or {}).get("error", "No market data"), data_quality=meta or {})
+    if any(tf not in frames or frames[tf] is None or frames[tf].empty for tf in ("5m", "15m", "4h")):
+        return _base(symbol, "NO_TRADE", "Required closed timeframe data is unavailable", source=(meta or {}).get("source"), data_quality=meta or {})
 
     df5, df15, df4h = (frames["5m"], frames["15m"], frames["4h"])
     ctx = M.build_context(df5, df15, df4h)
     i = len(df5) - 1
     last_closed = M._ts(df5["ts"]).iat[i]
-    bias = ctx["bias"][i]
-    trigger = ctx["trigger"][i]
-    quality = bool(ctx["quality"][i])
-
-    action, setup, side, level, blocker = M.decide(
-        bias, trigger, ctx["setups"], last_closed, quality=quality
-    )
-    base = _base(
-        symbol,
-        "NO_TRADE",
-        M.BLOCKERS.get(blocker, blocker),
-        price=float(df5["close"].iat[i]),
-        htf_bias_4h=str(bias),
-        trigger_5m=trigger or "none",
-        blocker=blocker,
-        source=(meta or {}).get("source"),
-        last_closed=str(last_closed),
-        data_quality=meta or {},
-        quality_5m=quality,
-    )
+    bias, trigger, quality = ctx["bias"][i], ctx["trigger"][i], bool(ctx["quality"][i])
+    action, setup, side, level, blocker = M.decide(bias, trigger, ctx["setups"], last_closed, quality=quality)
+    base = _base(symbol, "NO_TRADE", M.BLOCKERS.get(blocker, blocker),
+                 price=float(df5["close"].iat[i]), htf_bias_4h=str(bias),
+                 trigger_5m=trigger or "none", blocker=blocker, source=(meta or {}).get("source"),
+                 last_closed=str(last_closed), data_quality=meta or {}, quality_5m=quality)
     if action not in ("BUY", "SELL") or setup is None:
         return base
 
-    planned_entry = float(level)
-    stop = float(setup.stop_level)
-    setup_fields = _setup_fields(setup, planned_entry, stop)
+    entry, stop = float(level), float(setup.stop_level)
+    fields = _setup_fields(setup, entry, stop)
+    now = datetime.now(timezone.utc)
+    bar_open = _as_utc(last_closed)
+    if bar_open is None:
+        return {**base, **fields, "action": "NO_TRADE", "blocker": "STALE_DATA",
+                "reason": "Signal candle timestamp is invalid; do not use this setup.", "order_status": "EXPIRED"}
+    signal_age = (now - (bar_open + timedelta(minutes=5))).total_seconds()
+    expires = _as_utc(setup.expires_ts)
+    if signal_age < -30 or signal_age > MAX_SIGNAL_BAR_AGE_SECONDS or (expires and now >= expires):
+        return {**base, **fields, "action": "NO_TRADE", "blocker": "EXPIRED",
+                "reason": "Signal candle is stale or the setup has expired; do not use it as a fresh entry.",
+                "signal_bar_age_seconds": round(signal_age, 1), "order_status": "EXPIRED"}
 
-    # Reject stale candles: a valid historical setup is not a current alert.
-    # Data timestamps are normalized to naive UTC by data.py.
-    closed_at = last_closed.to_pydatetime().replace(tzinfo=timezone.utc) + timedelta(minutes=5)
-    age_seconds = (datetime.now(timezone.utc) - closed_at).total_seconds()
-    base["signal_bar_age_seconds"] = round(age_seconds, 1)
-    if age_seconds < -30 or age_seconds > MAX_SIGNAL_BAR_AGE_SECONDS:
-        base.update({
-            "action": "NO_TRADE",
-            "blocker": "STALE_DATA",
-            "reason": "Latest closed 5m candle is stale or has an invalid timestamp; do not use this setup.",
-            **setup_fields,
-        })
-        return base
-
-    structure_targets = M.structure_targets_at(
-        df15, ctx.get("swings_15m", []), last_closed, side,
-        planned_entry, max_targets=3
-    )
-    sizing = R.size_position(
-        symbol, action, planned_entry, stop,
-        structure_targets=structure_targets,
-        structure_limit=(structure_targets[-1] if structure_targets else None),
-    )
+    targets = M.structure_targets_at(df15, ctx.get("swings_15m", []), last_closed, side, entry, max_targets=3)
+    sizing = R.size_position(symbol, action, entry, stop, structure_targets=targets,
+                              structure_limit=(targets[-1] if targets else None))
     if not sizing.ok:
-        base.update({
-            "action": "WATCHING",
-            "reason": f"Setup found but sizing rejected it: {sizing.reason}",
-            "order_status": "NOT_TRADEABLE_SIZING",
-            **setup_fields,
-        })
-        return base
+        return {**base, **fields, "action": "NO_TRADE", "reason": f"Sizing rejected setup: {sizing.reason}", "order_status": "NOT_TRADEABLE_SIZING"}
+    reachable = [t for t in (sizing.tps or []) if t.get("reachable")]
+    if not reachable:
+        return {**base, **fields, "action": "NO_TRADE", "blocker": "NO_REACHABLE_TARGETS",
+                "reason": "No reachable take-profit target; setup is not tradeable.", "order_status": "NOT_TRADEABLE_NO_TARGET"}
 
-    reachable_targets = [t for t in (sizing.tps or []) if t.get("reachable")]
-    if not reachable_targets:
-        base.update({
-            "action": "NO_TRADE",
-            "blocker": "NO_REACHABLE_TARGETS",
-            "reason": "No reachable take-profit target is available; setup is not tradeable.",
-            "order_status": "NOT_TRADEABLE_NO_TARGET",
-            **setup_fields,
-        })
-        return base
+    low, high = float(df5["low"].iat[i]), float(df5["high"].iat[i])
+    touched = low <= entry if side == "bull" else high >= entry
+    current = float(df5["close"].iat[i])
+    state = classify_entry_state(side, current, entry, stop, touched, now=now, expires_at=expires)
+    if state in ("INVALIDATED", "EXPIRED", "MISSED_ENTRY"):
+        descriptions = {
+            "INVALIDATED": "Price crossed the planned stop; setup invalidated.",
+            "EXPIRED": "Setup expired; it is not a fresh pending entry.",
+            "MISSED_ENTRY": "Price already crossed the planned entry; skip it and do not chase.",
+        }
+        return {**base, **fields, "action": "NO_TRADE", "blocker": state,
+                "reason": descriptions[state], "order_status": state,
+                "signal_bar_age_seconds": round(signal_age, 1)}
 
-    bar_low = float(df5["low"].iat[i])
-    bar_high = float(df5["high"].iat[i])
-    touched = bar_low <= planned_entry if side == "bull" else bar_high >= planned_entry
-    cost_ok = sizing.cost_in_r <= MAX_COST_IN_R
-    entry_status = _limit_entry_status(
-        side, float(df5["close"].iat[i]), planned_entry, stop, touched
-    )
+    if sizing.cost_in_r > MAX_COST_IN_R:
+        return {**base, **fields, "action": "NO_TRADE", "blocker": "COST_GATE",
+                "reason": f"Estimated cost {sizing.cost_in_r:.3f}R exceeds {MAX_COST_IN_R:.3f}R; do not trade.",
+                "order_status": "NOT_TRADEABLE_COST"}
 
-    targets = list(sizing.tps or [])[:3]
-    targets += [None] * (3 - len(targets))
-    max_r = max((float(t.get("r_multiple", 0)) for t in reachable_targets), default=None)
-
-    if entry_status == "INVALIDATED":
-        base.update({
-            "action": "NO_TRADE",
-            "blocker": "SETUP_INVALIDATED_BY_PRICE",
-            "reason": "Latest closed price has crossed the planned stop; do not enter this setup.",
-            "order_status": "INVALIDATED",
-            **setup_fields,
-        })
-        return base
-
-    if entry_status == "TOUCHED_UNVERIFIED":
-        reason = "Entry level was touched on a closed 5m candle, but exchange fill is unverified. Do not treat this as a fresh entry."
-        status = "ENTRY_TOUCHED_FILL_UNVERIFIED"
-    elif entry_status == "MISSED_ENTRY":
-        reason = "Price has crossed the planned limit level; cancel/skip it and do not chase with a market order."
-        status = "MISSED_ENTRY_NO_CHASE"
-    else:
-        reason = "Valid setup; dashboard does not place orders. A resting limit at the planned entry is pending."
-        status = "SIGNAL_ONLY_PENDING_LIMIT"
-
-    if not cost_ok:
-        reason = (f"Estimated cost is {sizing.cost_in_r:.3f}R, above the configured "
-                  f"{MAX_COST_IN_R:.3f}R maximum; do not trade this setup.")
-        status = "NOT_TRADEABLE_COST"
-
-    # The scanner cannot verify broker fills, so it must never emit BUY/SELL or
-    # mark a setup tradeable. This prevents a wick touch from being mistaken for
-    # an executable market-entry instruction.
-    return {
-        **base,
-        **setup_fields,
-        "action": "WATCHING" if cost_ok else "NO_TRADE",
-        "tradeable": False,
-        "reason": reason,
-        "entry": planned_entry,
-        "sl": stop,
-        "tp1": targets[0],
-        "tp2": targets[1],
-        "tp3": targets[2],
-        "position_size_qty": float(sizing.qty),
-        "notional_inr": float(sizing.notional_inr),
-        "margin_inr": float(sizing.margin_inr),
-        "leverage_used": float(sizing.leverage_used),
-        "risk_inr": float(sizing.risk_inr),
-        "fees_inr": float(sizing.fees_inr),
-        "slippage_inr": float(sizing.slippage_inr),
-        "cost_in_r": float(sizing.cost_in_r),
-        "risk_reward": max_r,
-        "sl_distance_pct": float(sizing.sl_distance_pct),
-        "order_status": status,
-    }
+    tps = list(sizing.tps or [])[:3] + [None] * (3 - len(sizing.tps or []))
+    return {**base, **fields, "action": "WATCHING", "tradeable": False,
+            "reason": ("Entry touched on a closed 5m candle; exchange fill is unverified. Do not treat as a fresh entry."
+                       if state == "TOUCHED_UNVERIFIED" else
+                       "Valid setup; scanner does not place orders. This is a setup alert, not an approved trade."),
+            "order_status": state, "signal_bar_age_seconds": round(signal_age, 1),
+            "tp1": tps[0], "tp2": tps[1], "tp3": tps[2],
+            "position_size_qty": float(sizing.qty), "notional_inr": float(sizing.notional_inr),
+            "margin_inr": float(sizing.margin_inr), "leverage_used": float(sizing.leverage_used),
+            "risk_inr": float(sizing.risk_inr), "fees_inr": float(sizing.fees_inr),
+            "slippage_inr": float(sizing.slippage_inr), "cost_in_r": float(sizing.cost_in_r),
+            "risk_reward": max(float(t["r_multiple"]) for t in reachable),
+            "sl_distance_pct": float(sizing.sl_distance_pct)}
