@@ -52,14 +52,38 @@ def _base(symbol: str, action: str, reason: str, **extra) -> dict:
         "source": None,
         "last_closed": None,
         "signal_generated_at": datetime.now(timezone.utc).isoformat(),
+        "entry_mode": None,
+        "entry_label": "POI midpoint",
     }
     result.update(extra)
     return result
 
 
+def _entry_mode_label(mode: object) -> str:
+    """Return the human-readable label used in the dashboard."""
+    normalized = str(mode or "50").strip().lower().replace(" ", "_")
+    mapping = {
+        "50": "POI midpoint",
+        "50%": "POI midpoint",
+        "limit_mid": "POI midpoint",
+        "mid": "POI midpoint",
+        "zone_edge": "OB/FVG edge",
+        "edge": "OB/FVG edge",
+        "bottom_top": "OB/FVG edge",
+        "limit_ote": "OB/FVG edge",
+        "wick": "wick",
+        "body": "body",
+    }
+    return mapping.get(normalized, normalized or "POI midpoint")
+
+
 def _limit_entry_status(side: str, current: float, entry: float, stop: float,
-                        touched: bool) -> str:
-    """Classify a proposed resting limit without pretending it was filled."""
+                        touched: bool, age_seconds: float | None = None,
+                        max_age_seconds: float = MAX_SIGNAL_BAR_AGE_SECONDS) -> str:
+    """Classify the setup without claiming an execution happened."""
+    if age_seconds is not None and age_seconds > max_age_seconds:
+        return "EXPIRED"
+
     if side == "bull":
         if current <= stop:
             return "INVALIDATED"
@@ -82,9 +106,11 @@ def _setup_fields(setup, entry: float, stop: float) -> dict:
         "entry": entry,
         "sl": stop,
         "setup_15m": True,
+        "entry_mode": getattr(setup, "entry_mode", "50"),
+        "entry_label": _entry_mode_label(getattr(setup, "entry_mode", "50")),
         "zone": {
             "has_fvg": bool(setup.has_fvg),
-            "entry_mode": setup.entry_mode,
+            "entry_mode": getattr(setup, "entry_mode", "50"),
             "top": float(setup.zone_top),
             "bottom": float(setup.zone_bottom),
         },
@@ -137,16 +163,21 @@ def build_signal(symbol: str) -> dict:
     stop = float(setup.stop_level)
     setup_fields = _setup_fields(setup, planned_entry, stop)
 
-    # Reject stale candles: a valid historical setup is not a current alert.
-    # Data timestamps are normalized to naive UTC by data.py.
-    closed_at = last_closed.to_pydatetime().replace(tzinfo=timezone.utc) + timedelta(minutes=5)
-    age_seconds = (datetime.now(timezone.utc) - closed_at).total_seconds()
-    base["signal_bar_age_seconds"] = round(age_seconds, 1)
-    if age_seconds < -30 or age_seconds > MAX_SIGNAL_BAR_AGE_SECONDS:
+    signal_age = None
+    if isinstance(last_closed, pd.Timestamp):
+        signal_age = (datetime.now(timezone.utc) - last_closed.to_pydatetime().astimezone(timezone.utc)).total_seconds()
+    elif last_closed is not None:
+        try:
+            signal_age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(last_closed).replace("Z", "+00:00")).astimezone(timezone.utc)).total_seconds()
+        except Exception:
+            signal_age = None
+
+    if signal_age is not None and signal_age > MAX_SIGNAL_BAR_AGE_SECONDS:
         base.update({
             "action": "NO_TRADE",
-            "blocker": "STALE_DATA",
-            "reason": "Latest closed 5m candle is stale or has an invalid timestamp; do not use this setup.",
+            "blocker": "EXPIRED",
+            "reason": "Setup expired because the last closed 5m candle is stale; do not use this entry.",
+            "order_status": "EXPIRED",
             **setup_fields,
         })
         return base
@@ -175,7 +206,7 @@ def build_signal(symbol: str) -> dict:
             "action": "NO_TRADE",
             "blocker": "NO_REACHABLE_TARGETS",
             "reason": "No reachable take-profit target is available; setup is not tradeable.",
-            "order_status": "NOT_TRADEABLE_NO_TARGET",
+            "order_status": "EXPIRED",
             **setup_fields,
         })
         return base
@@ -184,46 +215,90 @@ def build_signal(symbol: str) -> dict:
     bar_high = float(df5["high"].iat[i])
     touched = bar_low <= planned_entry if side == "bull" else bar_high >= planned_entry
     cost_ok = sizing.cost_in_r <= MAX_COST_IN_R
+    current_close = float(df5["close"].iat[i])
     entry_status = _limit_entry_status(
-        side, float(df5["close"].iat[i]), planned_entry, stop, touched
+        side,
+        current_close,
+        planned_entry,
+        stop,
+        touched,
+        age_seconds=signal_age,
+        max_age_seconds=MAX_SIGNAL_BAR_AGE_SECONDS,
     )
 
     targets = list(sizing.tps or [])[:3]
     targets += [None] * (3 - len(targets))
     max_r = max((float(t.get("r_multiple", 0)) for t in reachable_targets), default=None)
 
+    if not cost_ok:
+        return {
+            **base,
+            **setup_fields,
+            "action": "NO_TRADE",
+            "tradeable": False,
+            "reason": f"Estimated cost is {sizing.cost_in_r:.3f}R, above the configured {MAX_COST_IN_R:.3f}R maximum; do not trade this setup.",
+            "entry": planned_entry,
+            "sl": stop,
+            "tp1": targets[0],
+            "tp2": targets[1],
+            "tp3": targets[2],
+            "position_size_qty": float(sizing.qty),
+            "notional_inr": float(sizing.notional_inr),
+            "margin_inr": float(sizing.margin_inr),
+            "leverage_used": float(sizing.leverage_used),
+            "risk_inr": float(sizing.risk_inr),
+            "fees_inr": float(sizing.fees_inr),
+            "slippage_inr": float(sizing.slippage_inr),
+            "cost_in_r": float(sizing.cost_in_r),
+            "risk_reward": max_r,
+            "sl_distance_pct": float(sizing.sl_distance_pct),
+            "htf_bias_4h": str(bias),
+            "setup_15m": True,
+            "trigger_5m": trigger or "none",
+            "order_status": "NOT_TRADEABLE_COST",
+        }
+
     if entry_status == "INVALIDATED":
         base.update({
             "action": "NO_TRADE",
             "blocker": "SETUP_INVALIDATED_BY_PRICE",
-            "reason": "Latest closed price has crossed the planned stop; do not enter this setup.",
+            "reason": "Live price has crossed the planned stop; the setup is invalidated and does not qualify as a fresh entry.",
             "order_status": "INVALIDATED",
+            **setup_fields,
+        })
+        return base
+
+    if entry_status == "MISSED_ENTRY":
+        base.update({
+            "action": "NO_TRADE",
+            "blocker": "MISSED_ENTRY",
+            "reason": "Price has already crossed the planned level; skip this setup and do not chase the market.",
+            "order_status": "MISSED_ENTRY",
+            **setup_fields,
+        })
+        return base
+
+    if entry_status == "EXPIRED":
+        base.update({
+            "action": "NO_TRADE",
+            "blocker": "EXPIRED",
+            "reason": "Setup has expired; stale signal should not be treated as a fresh pending entry.",
+            "order_status": "EXPIRED",
             **setup_fields,
         })
         return base
 
     if entry_status == "TOUCHED_UNVERIFIED":
         reason = "Entry level was touched on a closed 5m candle, but exchange fill is unverified. Do not treat this as a fresh entry."
-        status = "ENTRY_TOUCHED_FILL_UNVERIFIED"
-    elif entry_status == "MISSED_ENTRY":
-        reason = "Price has crossed the planned limit level; cancel/skip it and do not chase with a market order."
-        status = "MISSED_ENTRY_NO_CHASE"
+        status = "TOUCHED_UNVERIFIED"
     else:
         reason = "Valid setup; dashboard does not place orders. A resting limit at the planned entry is pending."
-        status = "SIGNAL_ONLY_PENDING_LIMIT"
+        status = "PENDING_LIMIT"
 
-    if not cost_ok:
-        reason = (f"Estimated cost is {sizing.cost_in_r:.3f}R, above the configured "
-                  f"{MAX_COST_IN_R:.3f}R maximum; do not trade this setup.")
-        status = "NOT_TRADEABLE_COST"
-
-    # The scanner cannot verify broker fills, so it must never emit BUY/SELL or
-    # mark a setup tradeable. This prevents a wick touch from being mistaken for
-    # an executable market-entry instruction.
     return {
         **base,
         **setup_fields,
-        "action": "WATCHING" if cost_ok else "NO_TRADE",
+        "action": "WATCHING",
         "tradeable": False,
         "reason": reason,
         "entry": planned_entry,
@@ -241,5 +316,8 @@ def build_signal(symbol: str) -> dict:
         "cost_in_r": float(sizing.cost_in_r),
         "risk_reward": max_r,
         "sl_distance_pct": float(sizing.sl_distance_pct),
+        "htf_bias_4h": str(bias),
+        "setup_15m": True,
+        "trigger_5m": trigger or "none",
         "order_status": status,
     }
