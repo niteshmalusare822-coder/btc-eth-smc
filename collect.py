@@ -84,6 +84,41 @@ def run_symbol(symbol, bars, cfg):
     }
 
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _t1_trades(trades):
+    """Return only trades whose exit_ts falls on yesterday (IST)."""
+    yesterday = datetime.now(IST).date() - timedelta(days=1)
+    out = []
+    for t in trades or []:
+        try:
+            dt = datetime.fromisoformat(str(t["exit_ts"]).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt.astimezone(IST).date() == yesterday:
+                out.append(t)
+        except Exception:
+            continue
+    return out
+
+
+def _t1_stats(trades):
+    """T-1 stats for one symbol, computed from its filtered trades."""
+    if not trades:
+        return None
+    a = np.array([t["net_inr"] for t in trades], dtype=float)
+    wins = float(a[a > 0].sum())
+    losses = float(abs(a[a <= 0].sum()))
+    return {
+        "trades": len(a),
+        "win_rate_pct": round(float((a > 0).mean() * 100), 1),
+        "profit_factor": round(wins / losses, 2) if losses > 0 else None,
+        "expectancy_inr": round(float(a.mean()), 1),
+        "net_pnl_inr": round(float(a.sum()), 0),
+    }
+
+
 def pooled(rows):
     usable = [r for r in rows
               if r.get("trades") and r.get("random_std_expectancy")
@@ -101,24 +136,9 @@ def pooled(rows):
     z = edge / se if se else 0.0
 
     # --- T-1 filter: only trades whose exit_ts falls on yesterday (IST) ---
-    IST = timezone(timedelta(hours=5, minutes=30))
-    today = datetime.now(IST).date()
-    yesterday = today - timedelta(days=1)
-
     all_tr = []
     for r in usable:
-        for t in r["_trades"]:
-            try:
-                dt = datetime.fromisoformat(
-                    str(t["exit_ts"]).replace("Z", "+00:00"))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                dt = dt.astimezone(IST)
-
-                if dt.date() == yesterday:
-                    all_tr.append(t)
-            except Exception:
-                continue
+        all_tr.extend(_t1_trades(r["_trades"]))
 
     net = np.array([t["net_inr"] for t in all_tr], dtype=float) \
         if all_tr else np.array([0.0])
@@ -213,15 +233,18 @@ def update_markdown_report(pool, rows):
 ## Profitability Gate
 A relative edge is not enough for production. The strategy is **not considered profitable** unless OOS net P&L is positive, pooled/trade-level profit factor is above 1, the OOS sample is sufficient, walk-forward remains stable, and sensitivity runs do not collapse. A negative pooled net P&L is always a **NO-GO** even when the matched-random edge is positive.
 
-## Per-Symbol Performance Table (Latest Run)
-| Symbol | Trades | Win% | PF | Expectancy (INR) | Random Mean | Edge | Net PnL (INR) | WF Folds |
+## Per-Symbol Performance Table (T-1 trades only)
+| Symbol | Trades (T-1) | Win% | PF | Expectancy (INR) | Random Mean (OOS) | Edge (OOS) | Net PnL (INR) | WF Folds (OOS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 """
     for r in rows:
         if r.get("error") or not r.get("trades"):
             continue
-        edge = (r["expectancy_inr"] - r["random_mean_expectancy"] if r.get("random_mean_expectancy") is not None else 0)
-        md_content += f"| {r['symbol']} | {r['trades']} | {r.get('win_rate_pct', 0)}% | {r.get('profit_factor', 0)} | {r.get('expectancy_inr', 0)} | {r.get('random_mean_expectancy', 0)} | {edge:+.1f} | {r.get('net_pnl_inr', 0)} | {r.get('wf', 'N/A')} |\n"
+        s = _t1_stats(_t1_trades(r.get("_trades")))
+        if s is None:
+            continue
+        edge = (r["expectancy_inr"] - r["random_mean_expectancy"] if r.get("random_mean_expectancy") is not None and r.get("expectancy_inr") is not None else 0)
+        md_content += f"| {r['symbol']} | {s['trades']} | {s['win_rate_pct']}% | {s['profit_factor'] if s['profit_factor'] is not None else 'n/a'} | {s['expectancy_inr']} | {r.get('random_mean_expectancy', 0)} | {edge:+.1f} | {s['net_pnl_inr']} | {r.get('wf', 'N/A')} |\n"
 
     md_content += """
 ---
