@@ -101,7 +101,25 @@ def pooled(rows):
     se = float(np.sqrt(1.0 / w.sum()))
     z = edge / se if se else 0.0
 
-    all_tr = [t for r in usable for t in r["_trades"]]
+    IST = timezone(timedelta(hours=5, minutes=30))
+    today = datetime.now(IST).date()
+    yesterday = today - timedelta(days=1)
+
+    all_tr = []
+
+for r in usable:
+    for t in r["_trades"]:
+        try:
+            dt = datetime.fromisoformat(
+                str(t["exit_ts"]).replace("Z", "+00:00")
+            ).astimezone(IST)
+
+            if dt.date() == yesterday:
+                all_tr.append(t)
+
+        except Exception:
+            continue
+
     net = np.array([t["net_inr"] for t in all_tr], dtype=float) \
         if all_tr else np.array([0.0])
     longs = [t for t in all_tr if t["side"] == "BUY"]
@@ -161,6 +179,8 @@ def update_markdown_report(pool, rows):
     md_content = f"""# 📅 Daily SMC MTF Audit Report (Auto-Reset at 10:00 AM IST)
 
 **Author:** Elite Quant Algorithmic Trader | SMC Specialist  
+IST = timezone(timedelta(hours=5, minutes=30))
+report_date = now_ist.date() - timedelta(days=1)
 **Date:** {time.strftime('%Y-%m-%d')} (Auto-Generated via collect.py)  
 **Objective:** Measure the production SMC_MTF rules against a matched-random null, then improve only when the improvement survives out-of-sample testing, walk-forward validation, and sensitivity checks.
 
