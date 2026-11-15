@@ -11,11 +11,10 @@ import json
 import sys
 import time
 import traceback
-from datetime import datetime, timedelta, timezone  # <--- ही एक ओळ इथे ॲड करा
+from datetime import datetime, timedelta, timezone
 import numpy as np
 
 import backtest as B
-# ... (बाकीचे imports तसेच राहू द्या)
 
 import data as D
 import mtf_engine as M
@@ -101,24 +100,25 @@ def pooled(rows):
     se = float(np.sqrt(1.0 / w.sum()))
     z = edge / se if se else 0.0
 
+    # --- T-1 filter: only trades whose exit_ts falls on yesterday (IST) ---
     IST = timezone(timedelta(hours=5, minutes=30))
     today = datetime.now(IST).date()
     yesterday = today - timedelta(days=1)
 
     all_tr = []
+    for r in usable:
+        for t in r["_trades"]:
+            try:
+                dt = datetime.fromisoformat(
+                    str(t["exit_ts"]).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.astimezone(IST)
 
-for r in usable:
-    for t in r["_trades"]:
-        try:
-            dt = datetime.fromisoformat(
-                str(t["exit_ts"]).replace("Z", "+00:00")
-            ).astimezone(IST)
-
-            if dt.date() == yesterday:
-                all_tr.append(t)
-
-        except Exception:
-            continue
+                if dt.date() == yesterday:
+                    all_tr.append(t)
+            except Exception:
+                continue
 
     net = np.array([t["net_inr"] for t in all_tr], dtype=float) \
         if all_tr else np.array([0.0])
@@ -176,12 +176,13 @@ for r in usable:
 
 
 def update_markdown_report(pool, rows):
+    IST = timezone(timedelta(hours=5, minutes=30))
+    report_date = datetime.now(IST).date() - timedelta(days=1)
+
     md_content = f"""# 📅 Daily SMC MTF Audit Report (Auto-Reset at 10:00 AM IST)
 
 **Author:** Elite Quant Algorithmic Trader | SMC Specialist  
-IST = timezone(timedelta(hours=5, minutes=30))
-report_date = now_ist.date() - timedelta(days=1)
-**Date:** {time.strftime('%Y-%m-%d')} (Auto-Generated via collect.py)  
+**Date:** {report_date} (Auto-Generated via collect.py)  
 **Objective:** Measure the production SMC_MTF rules against a matched-random null, then improve only when the improvement survives out-of-sample testing, walk-forward validation, and sensitivity checks.
 
 ## Canonical Strategy / Execution Contract
@@ -235,7 +236,7 @@ def main():
     # --- DAILY AUTO-DELETE LOGIC (10:00 AM IST) ---
     IST = timezone(timedelta(hours=5, minutes=30))
     now_ist = datetime.now(IST)
-    
+
     # जर सकाळी १०:०० ते १०:१५ च्या दरम्यान असेल, तर जुना रिपोर्ट डिलीट करा
     if now_ist.hour == 10 and now_ist.minute < 15:
         files_to_clear = ["AUDIT_ENHANCEMENTS.md", "collect_results.json"]
@@ -244,7 +245,7 @@ def main():
                 os.remove(file)
         print("🧹 10:00 AM IST: जुना रिपोर्ट डिलीट केला! Fresh report सुरू होत आहे...")
     # ------------------------------------------------
-    
+
     p = argparse.ArgumentParser()
     p.add_argument("--symbols", help="comma separated, e.g. BTC,ETH,SOL")
     p.add_argument("--from-file")
