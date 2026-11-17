@@ -1,4 +1,4 @@
- """
+"""
 mtf_engine.py — 4H bias, 15M setup, 5M trigger. One decision, three jobs.
 
     4H   decides DIRECTION.   BULLISH / BEARISH / NEUTRAL. Neutral = no trade.
