@@ -1,4 +1,4 @@
-"""
+ """
 mtf_engine.py — 4H bias, 15M setup, 5M trigger. One decision, three jobs.
 
     4H   decides DIRECTION.   BULLISH / BEARISH / NEUTRAL. Neutral = no trade.
@@ -699,26 +699,28 @@ def structure_targets_at(df_15m, swings, ts, side, entry, max_targets=3):
             unique.append(level)
             continue
 
-        if abs(level - unique[-1]) / unique[-1] > 0.001:
+        # Keep only materially different target levels.
+        if abs(level - unique[-1]) / max(abs(unique[-1]), 1e-12) > 0.001:
             unique.append(level)
 
-        if not unique:
-    atr = abs(entry) * 0.01
+    # Prefer confirmed opposing swing/liquidity levels when available.
+    if unique:
+        return unique[:max_targets]
 
+    # Fallback only when no confirmed opposing swing target exists.
+    atr = abs(entry) * 0.01
     if side == "bull":
         return [
             entry + atr,
             entry + atr * 2,
             entry + atr * 3,
         ][:max_targets]
-    else:
-        return [
-            entry - atr,
-            entry - atr * 2,
-            entry - atr * 3,
-        ][:max_targets]
 
-    return unique[:max_targets]
+    return [
+        entry - atr,
+        entry - atr * 2,
+        entry - atr * 3,
+    ][:max_targets]
 
 
 def build_context(df_5m, df_15m, df_4h, p=None, calib_end=None):
