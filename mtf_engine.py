@@ -702,6 +702,22 @@ def structure_targets_at(df_15m, swings, ts, side, entry, max_targets=3):
         if abs(level - unique[-1]) / unique[-1] > 0.001:
             unique.append(level)
 
+        if not unique:
+    atr = abs(entry) * 0.01
+
+    if side == "bull":
+        return [
+            entry + atr,
+            entry + atr * 2,
+            entry + atr * 3,
+        ][:max_targets]
+    else:
+        return [
+            entry - atr,
+            entry - atr * 2,
+            entry - atr * 3,
+        ][:max_targets]
+
     return unique[:max_targets]
 
 
