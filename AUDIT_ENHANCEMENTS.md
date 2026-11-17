@@ -16,13 +16,13 @@
 
 ## Executive Summary & Latest Pooled Metrics
 - **Total Symbols Usable:** 17
-- **Total Trades Pooled:** 41
-- **Pooled Edge (INR):** 145.2
-- **Standard Error:** 8.8
-- **Sigma (Z-Score):** 16.56
+- **Total Trades Pooled:** 18
+- **Pooled Edge (INR):** 92.1
+- **Standard Error:** 9.5
+- **Sigma (Z-Score):** 9.68
 - **Significant at 95%:** True
-- **Pooled Net PnL (INR):** 4615.0
-- **Pooled Profit Factor:** 1.93
+- **Pooled Net PnL (INR):** 1185.0
+- **Pooled Profit Factor:** 1.62
 - **Measured Arm:** SMC_MTF
 - **Matched Null:** MATCHED_RANDOM_vs_SMC_MTF
 
@@ -35,23 +35,14 @@ A relative edge is not enough for production. The strategy is **not considered p
 ## Per-Symbol Performance Table (T-1 trades only)
 | Symbol | Trades (T-1) | Win% | PF | Expectancy (INR) | Random Mean (OOS) | Edge (OOS) | Net PnL (INR) | WF Folds (OOS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| BTC | 1 | 100.0% | n/a | 1468.0 | -302.1 | +665.2 | 1468.0 | 4/4 |
-| ETH | 3 | 66.7% | 12.07 | 623.7 | -288.1 | +570.7 | 1871.0 | 4/4 |
-| SOL | 2 | 0.0% | 0.0 | -277.0 | -77.6 | +218.1 | -554.0 | 4/4 |
-| XRP | 2 | 50.0% | 2.89 | 35.0 | -85.1 | +155.4 | 70.0 | 4/4 |
-| AVAX | 3 | 66.7% | 1.51 | 33.7 | -147.5 | -25.3 | 101.0 | 3/4 |
-| LINK | 2 | 50.0% | 2.61 | 171.5 | -119.4 | +64.6 | 343.0 | 2/4 |
-| DOGE | 2 | 50.0% | 0.94 | -14.5 | -97.6 | +107.6 | -29.0 | 4/4 |
-| ADA | 3 | 33.3% | 0.24 | -67.0 | -94.3 | +65.9 | -201.0 | 3/4 |
-| DEXE | 5 | 40.0% | 2.09 | 197.6 | -143.1 | +226.9 | 988.0 | 3/4 |
-| BANK | 1 | 0.0% | 0.0 | -553.0 | -33.1 | +295.9 | -553.0 | 3/4 |
-| BNB | 1 | 0.0% | 0.0 | -294.0 | -84.4 | +159.7 | -294.0 | 4/4 |
-| SUI | 2 | 50.0% | 4.98 | 123.5 | -99.5 | +305.6 | 247.0 | 3/4 |
-| HBAR | 4 | 25.0% | 0.73 | -22.8 | -104.7 | +75.5 | -91.0 | 4/4 |
-| LTC | 2 | 50.0% | 0.38 | -116.0 | -65.6 | +100.9 | -232.0 | 3/4 |
-| BCH | 4 | 50.0% | 2.61 | 88.8 | -67.9 | +166.4 | 355.0 | 4/4 |
-| DOT | 2 | 50.0% | 3.29 | 86.0 | -119.5 | +219.8 | 172.0 | 4/4 |
-| 1000PEPE | 2 | 50.0% | 5.3 | 477.0 | -152.6 | +220.0 | 954.0 | 4/4 |
+| SOL | 1 | 0.0% | 0.0 | -200.0 | -44.1 | +131.6 | -200.0 | 3/4 |
+| XRP | 1 | 100.0% | n/a | 107.0 | -98.1 | +109.6 | 107.0 | 4/4 |
+| AVAX | 2 | 50.0% | 1.12 | 11.5 | -106.2 | +1.4 | 23.0 | 3/4 |
+| ADA | 1 | 0.0% | 0.0 | -142.0 | -101.1 | +107.2 | -142.0 | 4/4 |
+| DEXE | 4 | 50.0% | 3.5 | 338.8 | -178.2 | +86.6 | 1355.0 | 4/4 |
+| HBAR | 4 | 50.0% | 1.0 | 0.0 | -98.2 | +97.6 | 0.0 | 4/4 |
+| LTC | 1 | 100.0% | n/a | 143.0 | -89.6 | +45.3 | 143.0 | 4/4 |
+| BCH | 4 | 25.0% | 0.8 | -25.2 | -92.1 | +118.3 | -101.0 | 3/4 |
 
 ---
 *Note: This report is dynamically updated by the automated daily GitHub Action using `collect.py`.*
