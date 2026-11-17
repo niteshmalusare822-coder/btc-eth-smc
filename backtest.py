@@ -313,6 +313,13 @@ def _open_trade(symbol, df, sig_i, side, level, stop_level, atr, cfg, tf_min,
     if not s.ok:
         return None, s.reason
 
+    # LIVE/BACKTEST PARITY: live (services/live_signal.py) returns NO_TRADE with
+    # blocker NO_REACHABLE_TARGETS when every TP is unreachable. The backtest used
+    # to take the trade anyway and let simulate() close it at the max_hold close
+    # as a TIMEOUT, so it counted trades live never takes. Refuse them here.
+    if not any(t.get("reachable") for t in (s.tps or [])):
+        return None, "no reachable take-profit target"
+
     # COST GATE — the backtest must refuse what live refuses.
     #
     # app.py has always computed tradeable = cost_in_r <= MAX_COST_IN_R and
