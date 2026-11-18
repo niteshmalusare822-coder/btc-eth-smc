@@ -17,12 +17,12 @@
 ## Executive Summary & Latest Pooled Metrics
 - **Total Symbols Usable:** 17
 - **Total Trades Pooled:** 18
-- **Pooled Edge (INR):** 92.1
-- **Standard Error:** 9.5
-- **Sigma (Z-Score):** 9.68
+- **Pooled Edge (INR):** 94.6
+- **Standard Error:** 9.8
+- **Sigma (Z-Score):** 9.62
 - **Significant at 95%:** True
-- **Pooled Net PnL (INR):** 1185.0
-- **Pooled Profit Factor:** 1.62
+- **Pooled Net PnL (INR):** 682.0
+- **Pooled Profit Factor:** 1.42
 - **Measured Arm:** SMC_MTF
 - **Matched Null:** MATCHED_RANDOM_vs_SMC_MTF
 
@@ -35,14 +35,14 @@ A relative edge is not enough for production. The strategy is **not considered p
 ## Per-Symbol Performance Table (T-1 trades only)
 | Symbol | Trades (T-1) | Win% | PF | Expectancy (INR) | Random Mean (OOS) | Edge (OOS) | Net PnL (INR) | WF Folds (OOS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| SOL | 1 | 0.0% | 0.0 | -200.0 | -44.1 | +131.6 | -200.0 | 3/4 |
+| SOL | 1 | 0.0% | 0.0 | -200.0 | -44.5 | +141.4 | -200.0 | 3/4 |
 | XRP | 1 | 100.0% | n/a | 107.0 | -98.1 | +109.6 | 107.0 | 4/4 |
 | AVAX | 2 | 50.0% | 1.12 | 11.5 | -106.2 | +1.4 | 23.0 | 3/4 |
 | ADA | 1 | 0.0% | 0.0 | -142.0 | -101.1 | +107.2 | -142.0 | 4/4 |
-| DEXE | 4 | 50.0% | 3.5 | 338.8 | -178.2 | +86.6 | 1355.0 | 4/4 |
-| HBAR | 4 | 50.0% | 1.0 | 0.0 | -98.2 | +97.6 | 0.0 | 4/4 |
+| DEXE | 4 | 75.0% | 4.3 | 213.0 | -159.7 | +169.1 | 852.0 | 4/4 |
+| HBAR | 4 | 50.0% | 1.0 | 0.0 | -90.9 | +103.8 | 0.0 | 4/4 |
 | LTC | 1 | 100.0% | n/a | 143.0 | -89.6 | +45.3 | 143.0 | 4/4 |
-| BCH | 4 | 25.0% | 0.8 | -25.2 | -92.1 | +118.3 | -101.0 | 3/4 |
+| BCH | 4 | 25.0% | 0.8 | -25.2 | -97.4 | +113.9 | -101.0 | 3/4 |
 
 ---
 *Note: This report is dynamically updated by the automated daily GitHub Action using `collect.py`.*
