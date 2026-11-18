@@ -29,13 +29,18 @@ jobs:
       - name: Run Data Collection & Generate Latest Audit Report
         run: python3 collect.py --symbols BTC,ETH,SOL,XRP,AVAX,LINK,DOGE,ADA,DEXE,BANK,BNB,SUI,HBAR,LTC,BCH,DOT,1000PEPE --bars 10000
 
+      - name: Generate Missed Trade Audit (same day window as the audit report)
+        continue-on-error: true
+        run: python3 audit_missed.py --symbols BTC,ETH,SOL,XRP,AVAX,LINK,DOGE,ADA,DEXE,BANK,BNB,SUI,HBAR,LTC,BCH,DOT,1000PEPE --bars 10000 > /dev/null
+
       - name: Cost Breakdown Check
         run: python3 cost_breakdown.py
 
-      - name: Commit and Push Updated Audit Report
+      - name: Commit and Push Updated Audit Reports
         run: |
           git config --global user.name "GitHub Action Bot"
           git config --global user.email "action@github.com"
           git add AUDIT_ENHANCEMENTS.md
-          git commit -m "Auto-update AUDIT_ENHANCEMENTS.md with latest research/pooled data [skip ci]" || exit 0
+          if [ -f MISSED_TRADE_AUDIT.md ]; then git add MISSED_TRADE_AUDIT.md; fi
+          git commit -m "Auto-update AUDIT_ENHANCEMENTS.md and MISSED_TRADE_AUDIT.md [skip ci]" || exit 0
           git push
