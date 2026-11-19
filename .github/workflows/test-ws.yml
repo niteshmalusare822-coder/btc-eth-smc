@@ -5,7 +5,7 @@ on:
   push:
     branches: [ main ]
   schedule:
-    - cron: '0 10 * * *'  # दररोज दुपारी 3:30 PM IST (10:00 UTC)
+    - cron: '30 3 * * *'   # दररोज सकाळी 9:00 AM IST (03:30 UTC)
 
 permissions:
   contents: write
