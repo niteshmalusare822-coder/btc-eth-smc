@@ -6,26 +6,26 @@
 
 ```text
 A) Unique setups by final outcome (what actually happened to each setup)
-     105  NO_REACHABLE_TARGETS
-      22  ALERT
+     103  NO_REACHABLE_TARGETS
+      25  ALERT
       10  COST_GATE
        2  INVALIDATED
        1  MISSED_ENTRY
 
 B) 5M bars by first blocking gate (time spent blocked, not trade count)
-    1824  NO_REACHABLE_TARGETS
-    1108  SETUP_WRONG_WAY
-     807  SETUP_EXPIRED
-     731  SETUP_MITIGATED
-     326  ALERT
+    1711  NO_REACHABLE_TARGETS
+    1187  SETUP_WRONG_WAY
+     775  SETUP_MITIGATED
+     763  SETUP_EXPIRED
+     351  ALERT
       44  COST_GATE
-      32  MISSED_ENTRY
+      41  MISSED_ENTRY
       20  INVALIDATED
        4  EXPIRED
 
 D) Where to look (report only, nothing here is applied automatically)
 
-   NO_REACHABLE_TARGETS  (105)
+   NO_REACHABLE_TARGETS  (103)
       file : risk.py
       where: _rupee_targets() (about line 331), TP_R_LADDER (about line 56); structure_limit is passed from live_signal.py (~143) and backtest.py (~311)
       find : grep -n "TP_R_LADDER\|structure_limit\|def _rupee_targets" risk.py services/live_signal.py backtest.py
@@ -92,17 +92,17 @@ XRP
   Entry Valid        -
   Cost Gate          -
   Root cause: SETUP_WRONG_WAY
-  (last bar of window 2026-11-18 18:25:00, 6 setups seen)
+  (last bar of window 2026-11-18 18:25:00, 8 setups seen)
 
 AVAX
   4H Bias            ✅
   15M Setup          ✅
   Setup Alive        ✅
-  Target Reachable   ❌
-  Entry Valid        -
-  Cost Gate          -
-  Root cause: NO_REACHABLE_TARGETS
-  (last bar of window 2026-11-18 18:25:00, 8 setups seen)
+  Target Reachable   ✅
+  Entry Valid        ✅
+  Cost Gate          ✅
+  Root cause: ALERT (setup would be shown)
+  (last bar of window 2026-11-18 18:25:00, 7 setups seen)
 
 LINK
   4H Bias            ✅

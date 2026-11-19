@@ -17,12 +17,12 @@
 ## Executive Summary & Latest Pooled Metrics
 - **Total Symbols Usable:** 17
 - **Total Trades Pooled:** 16
-- **Pooled Edge (INR):** 105.5
-- **Standard Error:** 9.8
-- **Sigma (Z-Score):** 10.75
+- **Pooled Edge (INR):** 108.4
+- **Standard Error:** 9.9
+- **Sigma (Z-Score):** 10.99
 - **Significant at 95%:** True
-- **Pooled Net PnL (INR):** -468.0
-- **Pooled Profit Factor:** 0.85
+- **Pooled Net PnL (INR):** -32.0
+- **Pooled Profit Factor:** 0.99
 - **Measured Arm:** SMC_MTF
 - **Matched Null:** MATCHED_RANDOM_vs_SMC_MTF
 
@@ -35,16 +35,16 @@ A relative edge is not enough for production. The strategy is **not considered p
 ## Per-Symbol Performance Table (T-1 trades only)
 | Symbol | Trades (T-1) | Win% | PF | Expectancy (INR) | Random Mean (OOS) | Edge (OOS) | Net PnL (INR) | WF Folds (OOS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| BTC | 2 | 0.0% | 0.0 | -673.0 | -362.9 | +229.2 | -1346.0 | 4/4 |
-| ETH | 2 | 100.0% | n/a | 542.0 | -199.8 | +293.0 | 1084.0 | 4/4 |
+| BTC | 1 | 0.0% | 0.0 | -583.0 | -316.6 | +259.2 | -583.0 | 4/4 |
+| ETH | 2 | 100.0% | n/a | 542.0 | -239.5 | +322.1 | 1084.0 | 4/4 |
 | SOL | 2 | 50.0% | 2.44 | 100.5 | -48.5 | +148.0 | 201.0 | 3/4 |
-| XRP | 1 | 0.0% | 0.0 | -175.0 | -84.2 | +94.4 | -175.0 | 4/4 |
-| DEXE | 4 | 50.0% | 2.31 | 173.2 | -136.1 | +160.7 | 693.0 | 4/4 |
-| BANK | 1 | 0.0% | 0.0 | -137.0 | -60.1 | +146.5 | -137.0 | 4/4 |
+| XRP | 2 | 0.0% | 0.0 | -251.0 | -88.8 | +83.7 | -502.0 | 4/4 |
+| DEXE | 4 | 50.0% | 2.31 | 173.2 | -131.2 | +185.0 | 693.0 | 4/4 |
+| BANK | 1 | 0.0% | 0.0 | -137.0 | -56.2 | +159.4 | -137.0 | 4/4 |
 | SUI | 1 | 0.0% | 0.0 | -242.0 | -70.4 | +119.1 | -242.0 | 3/4 |
-| HBAR | 1 | 0.0% | 0.0 | -162.0 | -83.7 | +105.6 | -162.0 | 4/4 |
-| LTC | 1 | 0.0% | 0.0 | -148.0 | -85.8 | +49.9 | -148.0 | 4/4 |
-| BCH | 1 | 0.0% | 0.0 | -236.0 | -97.4 | +113.9 | -236.0 | 3/4 |
+| HBAR | 1 | 0.0% | 0.0 | -162.0 | -84.3 | +98.8 | -162.0 | 4/4 |
+| LTC | 1 | 0.0% | 0.0 | -148.0 | -82.3 | +46.0 | -148.0 | 4/4 |
+| BCH | 1 | 0.0% | 0.0 | -236.0 | -97.4 | +113.9 | -236.0 | 3/3 |
 
 ---
 *Note: This report is dynamically updated by the automated daily GitHub Action using `collect.py`.*
