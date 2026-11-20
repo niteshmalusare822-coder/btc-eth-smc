@@ -1,7 +1,7 @@
 # 📅 Daily SMC MTF Audit Report (Auto-Reset at 10:00 AM IST)
 
 **Author:** Elite Quant Algorithmic Trader | SMC Specialist  
-**Date:** 2026-11-18 (Auto-Generated via collect.py)  
+**Date:** 2026-11-19 (Auto-Generated via collect.py)  
 **Objective:** Measure the production SMC_MTF rules against a matched-random null, then improve only when the improvement survives out-of-sample testing, walk-forward validation, and sensitivity checks.
 
 ## Canonical Strategy / Execution Contract
@@ -16,13 +16,13 @@
 
 ## Executive Summary & Latest Pooled Metrics
 - **Total Symbols Usable:** 17
-- **Total Trades Pooled:** 16
-- **Pooled Edge (INR):** 108.4
-- **Standard Error:** 9.9
-- **Sigma (Z-Score):** 10.99
+- **Total Trades Pooled:** 30
+- **Pooled Edge (INR):** 102.1
+- **Standard Error:** 9.1
+- **Sigma (Z-Score):** 11.23
 - **Significant at 95%:** True
-- **Pooled Net PnL (INR):** -32.0
-- **Pooled Profit Factor:** 0.99
+- **Pooled Net PnL (INR):** -753.0
+- **Pooled Profit Factor:** 0.84
 - **Measured Arm:** SMC_MTF
 - **Matched Null:** MATCHED_RANDOM_vs_SMC_MTF
 
@@ -35,16 +35,20 @@ A relative edge is not enough for production. The strategy is **not considered p
 ## Per-Symbol Performance Table (T-1 trades only)
 | Symbol | Trades (T-1) | Win% | PF | Expectancy (INR) | Random Mean (OOS) | Edge (OOS) | Net PnL (INR) | WF Folds (OOS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| BTC | 1 | 0.0% | 0.0 | -583.0 | -316.6 | +259.2 | -583.0 | 4/4 |
-| ETH | 2 | 100.0% | n/a | 542.0 | -239.5 | +322.1 | 1084.0 | 4/4 |
-| SOL | 2 | 50.0% | 2.44 | 100.5 | -48.5 | +148.0 | 201.0 | 3/4 |
-| XRP | 2 | 0.0% | 0.0 | -251.0 | -88.8 | +83.7 | -502.0 | 4/4 |
-| DEXE | 4 | 50.0% | 2.31 | 173.2 | -131.2 | +185.0 | 693.0 | 4/4 |
-| BANK | 1 | 0.0% | 0.0 | -137.0 | -56.2 | +159.4 | -137.0 | 4/4 |
-| SUI | 1 | 0.0% | 0.0 | -242.0 | -70.4 | +119.1 | -242.0 | 3/4 |
-| HBAR | 1 | 0.0% | 0.0 | -162.0 | -84.3 | +98.8 | -162.0 | 4/4 |
-| LTC | 1 | 0.0% | 0.0 | -148.0 | -82.3 | +46.0 | -148.0 | 4/4 |
-| BCH | 1 | 0.0% | 0.0 | -236.0 | -97.4 | +113.9 | -236.0 | 3/3 |
+| BTC | 2 | 0.0% | 0.0 | -678.5 | -302.4 | +247.9 | -1357.0 | 4/4 |
+| ETH | 4 | 50.0% | 0.59 | -156.8 | -272.1 | +336.7 | -627.0 | 4/4 |
+| SOL | 2 | 50.0% | 0.7 | -25.5 | -59.9 | +137.1 | -51.0 | 3/4 |
+| XRP | 1 | 0.0% | 0.0 | -183.0 | -87.7 | +74.9 | -183.0 | 4/4 |
+| AVAX | 2 | 100.0% | n/a | 481.5 | -102.7 | +33.4 | 963.0 | 3/4 |
+| DOGE | 1 | 0.0% | 0.0 | -147.0 | -121.9 | +52.7 | -147.0 | 2/4 |
+| ADA | 2 | 100.0% | n/a | 197.5 | -94.5 | +139.8 | 395.0 | 4/4 |
+| DEXE | 3 | 66.7% | 1.72 | 75.3 | -100.0 | +206.1 | 226.0 | 4/4 |
+| BANK | 1 | 0.0% | 0.0 | -178.0 | -65.8 | +146.9 | -178.0 | 4/4 |
+| BNB | 2 | 100.0% | n/a | 196.5 | -82.2 | +165.9 | 393.0 | 2/4 |
+| SUI | 1 | 0.0% | 0.0 | -144.0 | -69.0 | +105.6 | -144.0 | 3/4 |
+| HBAR | 4 | 75.0% | 2.48 | 69.5 | -96.1 | +94.7 | 278.0 | 3/4 |
+| LTC | 4 | 25.0% | 0.16 | -112.2 | -88.8 | +48.1 | -449.0 | 4/4 |
+| DOT | 1 | 100.0% | n/a | 128.0 | -129.7 | +86.6 | 128.0 | 4/4 |
 
 ---
 *Note: This report is dynamically updated by the automated daily GitHub Action using `collect.py`.*
