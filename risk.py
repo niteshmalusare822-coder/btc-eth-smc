@@ -360,7 +360,7 @@ def _rupee_targets(direction, entry, qty, usdt_inr, sl_dist,
     # ---------------------------------------------------------------
     if structure_targets:
         minimum_r = TP_R_LADDER
-        for raw_px in structure_targets[:3]:
+        for raw_px in structure_targets[:7]:
             try:
                 px = float(raw_px)
             except (TypeError, ValueError):
