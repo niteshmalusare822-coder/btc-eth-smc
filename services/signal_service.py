@@ -14,6 +14,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 import numpy as np
 
+import pandas as pd
 import backtest as B
 import data as D
 import mtf_engine as M
@@ -302,33 +303,95 @@ def main():
     if a.gate == "on":
         update_markdown_report(pool, rows)
 
-# ==============================================================================
-# TEMPORARY FIX FOR RENDER DEPLOYMENT
-# app.py ला import करण्यासाठी हे फंक्शन आवश्यक आहे.
-# ==============================================================================
+def _calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
+    """15M किंवा 5M डेटाफ्रेमवरून ATR (Average True Range) काढण्यासाठी हेल्पर्स फंक्शन."""
+    if df is None or len(df) < period:
+        return 0.0
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    
+    tr1 = high - low
+    tr2 = abs(high - close.shift(1))
+    tr3 = abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return float(tr.rolling(window=period).mean().iloc[-1])
+
+
 def build_signal(symbol: str) -> dict:
-    return {
-        "symbol": symbol,
-        "action": "NO_TRADE",
-        "tradeable": False,
-        "reason": "Signal logic is currently under development. Please check back later.",
-        "entry": None,
-        "sl": None,
-        "tp1": None,
-        "tp2": None,
-        "tp3": None,
-        "position_size": 0,
-        "leverage": 1,
-        "risk_inr": 0,
-        "profit": 0,
-        "rr": 0,
-        "fees": 0,
-        "slippage": 0,
-        "bias_4h": "NEUTRAL",
-        "setup_15m": "NONE",
-        "trigger_5m": "NONE"
-    }
+    """खरे सिग्नल जनरेट करणारे फंक्शन, जे ATR सह size_position ला कॉल करते."""
+    try:
+        # 1. डेटा लोड करा (5m, 15m, 4h)
+        frames, meta = RD.load_research(symbol, bars=1000)
+        if frames is None:
+            return {"symbol": symbol, "action": "NO_TRADE", "reason": meta.get("error", "No data available")}
 
+        # 2. MTF Engine कडून सिग्नल मिळवा 
+        # (टीप: जर तुमच्या mtf_engine.py मध्ये फंक्शनचे नाव वेगळे असेल, तर ते इथे बदला. 
+        # उदा. M.get_signal किंवा M.analyze)
+        signal = M.evaluate_symbol(symbol, frames.get("5m"), frames.get("15m"), frames.get("4h"))
+        
+        if not signal or signal.get("action") == "NO_TRADE":
+            return {
+                "symbol": symbol, "action": "NO_TRADE", "tradeable": False,
+                "reason": signal.get("reason", "No valid SMC setup found"),
+                "bias_4h": "NEUTRAL", "setup_15m": "NONE", "trigger_5m": "NONE"
+            }
 
-if __name__ == "__main__":
-    main()
+        direction = signal["direction"]
+        entry = float(signal["entry"])
+        sl = float(signal["sl"])
+
+        # 3. 🔥 THE FIX: ATR काढा आणि size_position ला पास करा 🔥
+        # आपण 15M चार्टवरून ATR काढत आहोत कारण setup 15M वर आधारित आहे.
+        atr_15m = _calculate_atr(frames.get("15m"), period=14)
+
+        # 4. Risk Engine ला ATR सह कॉल करा (हेच ते Alignment Fix आहे!)
+        sizing = Risk.size_position(
+            symbol=symbol,
+            direction=direction,
+            entry=entry,
+            sl=sl,
+            atr=atr_15m,  # <--- हे आधी missing होते, आता ते इथे आहे!
+            structure_limit=signal.get("structure_limit"),
+            structure_targets=signal.get("structure_targets", [])
+        )
+
+        # 5. जर Position Size ठरवता आले नाही, तर NO_TRADE रिटर्न करा
+        if not sizing.ok:
+            return {
+                "symbol": symbol, "action": "NO_TRADE", "tradeable": False,
+                "reason": f"Sizing failed: {sizing.reason}",
+                "bias_4h": signal.get("bias_4h", "NEUTRAL"),
+                "setup_15m": signal.get("setup_15m", "NONE"),
+                "trigger_5m": signal.get("trigger_5m", "NONE")
+            }
+
+        # 6. यशस्वी सिग्नल तयार करा
+        tps = sizing.tps
+        return {
+            "symbol": symbol,
+            "action": direction,
+            "tradeable": True,
+            "reason": signal.get("reason", "Valid SMC Setup confirmed"),
+            "entry": entry,
+            "sl": sl,
+            "tp1": tps[0]["price"] if len(tps) > 0 else None,
+            "tp2": tps[1]["price"] if len(tps) > 1 else None,
+            "tp3": tps[2]["price"] if len(tps) > 2 else None,
+            "position_size": round(sizing.qty, 4),
+            "leverage": sizing.leverage_used,
+            "risk_inr": round(sizing.risk_inr, 2),
+            "profit": round(tps[0]["net_inr"] if len(tps) > 0 else 0, 2),
+            "rr": round(tps[0]["r_multiple"] if len(tps) > 0 else 0, 2),
+            "fees": round(sizing.fees_inr, 2),
+            "slippage": round(sizing.slippage_inr, 2),
+            "bias_4h": signal.get("bias_4h", "NEUTRAL"),
+            "setup_15m": signal.get("setup_15m", "NONE"),
+            "trigger_5m": signal.get("trigger_5m", "NONE")
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"symbol": symbol, "action": "NO_TRADE", "reason": f"System Error: {str(e)}"}
