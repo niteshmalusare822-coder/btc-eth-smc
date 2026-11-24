@@ -317,7 +317,6 @@ def _calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     return float(tr.rolling(window=period).mean().iloc[-1])
 
-
 def build_signal(symbol: str) -> dict:
     """खरे सिग्नल जनरेट करणारे फंक्शन, जे ATR सह size_position ला कॉल करते."""
     try:
@@ -326,54 +325,88 @@ def build_signal(symbol: str) -> dict:
         if frames is None:
             return {"symbol": symbol, "action": "NO_TRADE", "reason": meta.get("error", "No data available")}
 
-        # 2. MTF Engine कडून सिग्नल मिळवा 
-        # (टीप: जर तुमच्या mtf_engine.py मध्ये फंक्शनचे नाव वेगळे असेल, तर ते इथे बदला. 
-        # उदा. M.get_signal किंवा M.analyze)
-        signal = M.evaluate_symbol(symbol, frames.get("5m"), frames.get("15m"), frames.get("4h"))
+        df_5m = frames.get("5m")
+        df_15m = frames.get("15m")
+        df_4h = frames.get("4h")
+
+        if df_5m is None or df_15m is None or df_4h is None:
+            return {"symbol": symbol, "action": "NO_TRADE", "reason": "Insufficient timeframe data"}
+
+        # 2. MTF Engine कडून Context आणि Signal मिळवा (अचूक फंक्शन्स)
+        ctx = M.build_context(df_5m, df_15m, df_4h)
         
-        if not signal or signal.get("action") == "NO_TRADE":
+        # latest bar चा index आणि timestamp घ्या
+        latest_idx = len(df_5m) - 1
+        latest_ts = pd.Timestamp(df_5m["ts"].iloc[-1])
+
+        # decide फंक्शन वापरून सिग्नल तपासा
+        action, setup, side, level, reason = M.decide(
+            bias=ctx["bias"][latest_idx],
+            trigger=ctx["trigger"][latest_idx],
+            setups=ctx["setups"],
+            ts=latest_ts,
+            quality=ctx["quality"][latest_idx]
+        )
+
+        # जर NO_TRADE असेल किंवा setup सापडला नाही
+        if action == "NO_TRADE" or setup is None:
             return {
                 "symbol": symbol, "action": "NO_TRADE", "tradeable": False,
-                "reason": signal.get("reason", "No valid SMC setup found"),
-                "bias_4h": "NEUTRAL", "setup_15m": "NONE", "trigger_5m": "NONE"
+                "reason": reason or "No valid SMC setup found",
+                "bias_4h": ctx["bias"][latest_idx],
+                "setup_15m": "NONE",
+                "trigger_5m": ctx["trigger"][latest_idx] or "NONE"
             }
 
-        direction = signal["direction"]
-        entry = float(signal["entry"])
-        sl = float(signal["sl"])
+        direction = "BUY" if side == "bull" else "SELL"
+        entry = float(level)
+        sl = float(setup.stop_level)
 
         # 3. 🔥 THE FIX: ATR काढा आणि size_position ला पास करा 🔥
-        # आपण 15M चार्टवरून ATR काढत आहोत कारण setup 15M वर आधारित आहे.
-        atr_15m = _calculate_atr(frames.get("15m"), period=14)
+        # 15M चार्टवरून 14-Period ATR काढत आहोत
+        high = df_15m['high']
+        low = df_15m['low']
+        close = df_15m['close']
+        tr1 = high - low
+        tr2 = abs(high - close.shift(1))
+        tr3 = abs(low - close.shift(1))
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr_15m = float(tr.rolling(window=14).mean().iloc[-1])
 
-        # 4. Risk Engine ला ATR सह कॉल करा (हेच ते Alignment Fix आहे!)
+        # 4. Structure Targets काढा (mtf_engine मधील फंक्शन वापरून)
+        structure_targets = M.structure_targets_at(
+            df_15m, ctx["swings_15m"], latest_ts, side, entry, max_targets=3
+        )
+        structure_limit = structure_targets[0] if structure_targets else None
+
+        # 5. Risk Engine ला ATR सह कॉल करा (हेच ते Alignment Fix आहे!)
         sizing = Risk.size_position(
             symbol=symbol,
             direction=direction,
             entry=entry,
             sl=sl,
             atr=atr_15m,  # <--- हे आधी missing होते, आता ते इथे आहे!
-            structure_limit=signal.get("structure_limit"),
-            structure_targets=signal.get("structure_targets", [])
+            structure_limit=structure_limit,
+            structure_targets=structure_targets
         )
 
-        # 5. जर Position Size ठरवता आले नाही, तर NO_TRADE रिटर्न करा
+        # 6. जर Position Size ठरवता आले नाही, तर NO_TRADE रिटर्न करा
         if not sizing.ok:
             return {
                 "symbol": symbol, "action": "NO_TRADE", "tradeable": False,
                 "reason": f"Sizing failed: {sizing.reason}",
-                "bias_4h": signal.get("bias_4h", "NEUTRAL"),
-                "setup_15m": signal.get("setup_15m", "NONE"),
-                "trigger_5m": signal.get("trigger_5m", "NONE")
+                "bias_4h": ctx["bias"][latest_idx],
+                "setup_15m": "ACTIVE",
+                "trigger_5m": ctx["trigger"][latest_idx] or "NONE"
             }
 
-        # 6. यशस्वी सिग्नल तयार करा
+        # 7. यशस्वी सिग्नल तयार करा
         tps = sizing.tps
         return {
             "symbol": symbol,
             "action": direction,
             "tradeable": True,
-            "reason": signal.get("reason", "Valid SMC Setup confirmed"),
+            "reason": reason or "Valid SMC Setup confirmed",
             "entry": entry,
             "sl": sl,
             "tp1": tps[0]["price"] if len(tps) > 0 else None,
@@ -386,9 +419,9 @@ def build_signal(symbol: str) -> dict:
             "rr": round(tps[0]["r_multiple"] if len(tps) > 0 else 0, 2),
             "fees": round(sizing.fees_inr, 2),
             "slippage": round(sizing.slippage_inr, 2),
-            "bias_4h": signal.get("bias_4h", "NEUTRAL"),
-            "setup_15m": signal.get("setup_15m", "NONE"),
-            "trigger_5m": signal.get("trigger_5m", "NONE")
+            "bias_4h": ctx["bias"][latest_idx],
+            "setup_15m": "ACTIVE",
+            "trigger_5m": ctx["trigger"][latest_idx] or "NONE"
         }
 
     except Exception as e:
